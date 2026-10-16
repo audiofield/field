@@ -16,6 +16,7 @@
 
 #include "capture.h"
 #include "click.h"
+#include "midi_out.h"
 #include "dsp/resample.h"
 
 namespace field
@@ -117,6 +118,17 @@ public:
     void closeInputs();
     bool liveMode() const { return liveSession != nullptr; }
 
+    // MIDI outputs (sequencer.md §2.5): `midi_out` opens an output or
+    // replaces its schedule, and answers {error} or {name, events,
+    // pulses}. An output closes with the connection that opened it,
+    // `owner`, as an input does, and every close ends its notes.
+    juce::var openMidiOutput (const juce::var& request, const void* owner);
+    juce::String closeMidiOutput (const juce::String& name);
+    void closeMidiOutputsOwnedBy (const void* owner);
+    void closeMidiOutputs();
+    // Heartbeat: frees the schedules the callback has swapped out.
+    void serviceMidiOutputs() { midiOutputs.reclaim(); }
+
     juce::String play();
     void pause();
     void stop(); // pause + rewind to 0
@@ -148,8 +160,8 @@ public:
     // while recording is refused.
     juce::var arm (const juce::String& track, const juce::String& device, int input);
     // Arming for MIDI (keyboard-instrument.md §12.4) opens every MIDI
-    // input the system lists and no audio input, so it never asks for
-    // the microphone. Returns {error} or {kind, sources, sample_rate,
+    // input the system lists but the daemon's own outputs' sources, and
+    // no audio input, so it never asks for the microphone. Returns {error} or {kind, sources, sample_rate,
     // output_latency}. Like arm, it moves an existing arm of either kind.
     juce::var armMidi (const juce::String& track, const std::vector<ChaseSeed>& seeds = {});
     // Arms several tracks at once (arming.md §2.2): each entry is
@@ -313,6 +325,10 @@ private:
     // FIELD_AUDIOD_LATCH_STALL_MS, so a test can land record's hold
     // between the two.
     const int latchStallMs;
+    // And whether MIDI capture hears the daemon's own outputs, from
+    // FIELD_AUDIOD_CAPTURE_OUTPUTS=1, so a test can record a schedule in
+    // the daemon that sends it.
+    const bool captureOwnOutputs;
     // locate without its refusal under a take: record jumps to `at` once
     // its transactions are open.
     juce::String seek (juce::int64 sample);
@@ -441,6 +457,17 @@ private:
     // hold of that lock, so a block that saw it pulled after the jump, and
     // one that did not may have read the position from before it.
     bool blockSawRequest = false;
+    // Audio thread: what the MIDI outputs need to know of the bed this
+    // block's pull played, read under liveLock with its position.
+    struct BedFacts
+    {
+        bool missed = false; // the pull missed liveLock
+        double rate = 0.0;
+        bool exact = true; // the bed advances by the block's frames exactly
+        juce::int64 wrapFrom = 0;
+        juce::int64 wrapTo = 0;
+    };
+    BedFacts blockBed;
     std::atomic<bool> captureStarted { false };
     // The position the requested take waits for (record's `at` when a
     // `start` was given); -1 means the next block, whatever its position.
@@ -506,6 +533,9 @@ private:
     std::atomic<bool> companionMidiRunning { false };
     field::Click click;
     std::atomic<juce::uint64> callbackEpoch { 0 };
+    // Returns once a block begun after the call has finished, or after
+    // 300 ms when the device is not running, where nothing is in a block.
+    void waitOutBlocks() const;
     // Largest |sample| on the armed input since status last read it; the
     // V1 meter (recording.md §11's meters question, resolved in §12).
     std::atomic<float> inputPeak { 0.0f };
@@ -575,4 +605,7 @@ private:
     int chaseSeedCount = 0;
     std::atomic<bool> chaseSeeded { false };
     juce::SpinLock chaseSeedLock;
+
+    field::MidiOutputs midiOutputs;
+    field::MidiSender midiSender { midiOutputs };
 };

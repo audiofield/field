@@ -4,10 +4,11 @@
 device I/O, a sample-accurate transport, audition of built labels, live
 evaluation of the session graph with the build cache as automatic track
 freezing ([projects/realtime/readme.md](projects/realtime/readme.md)),
-hosted plugins, and the input side of recording — arm, record, stop, a
+hosted plugins, the input side of recording — arm, record, stop, a
 crash-safe transaction and its recovery — described in
 [architecture.md](architecture.md) and under
-[Capture as built](#capture-as-built) below. Takes land in the project
+[Capture as built](#capture-as-built) below, and MIDI outputs that send
+scheduled MIDI and MIDI clock on time ([MIDI outputs](#midi-outputs)). Takes land in the project
 and build in place
 ([projects/recording/readme.md](projects/recording/readme.md));
 monitoring through the engine is `field record --monitoring host`
@@ -313,7 +314,9 @@ rides it now instead of being refused. A file bed loops only whole.
 §12.4). The daemon opens every MIDI input the system lists at that
 moment and no audio input, so arming for MIDI never asks for the
 microphone; a source that appears later, such as a restarted
-`field keys`, is not heard until the next arm. It answers
+`field keys`, is not heard until the next arm. It leaves out the
+virtual sources of its own [MIDI outputs](#midi-outputs), so a take
+records what you play and not the part playing beside it. It answers
 `{kind: "midi", sources, sample_rate, output_latency}`, where `sources`
 names the inputs it opened. With no MIDI input to open, `arm` refuses
 and tells you to start `field keys` or connect a controller. `disarm`
@@ -434,3 +437,108 @@ where it was in the track's own time
 ([project-model.md](project-model.md) "MIDI takes"). `field record
 --recover <id>` lands what it recovers, and `field record --land <id>`
 lands a finalized transaction nothing landed.
+
+## MIDI outputs
+
+The daemon sends MIDI on time from schedules
+([sequencer.md](projects/sequencer/readme.md) §2.5). Like the click, a
+schedule is samples and bytes: the CLI projects the tempo map into it,
+and the daemon never learns what a note or a bar is. The `midi_out` op
+opens an output under a name, or replaces the schedule of the output
+open under that name:
+
+```json
+{ "op": "midi_out", "name": "seq:creek/keys", "source": "Field Seq creek/keys",
+  "rate": 48000, "lead": 192, "lead_input": "seq:creek/keys",
+  "events": [ { "sample": 1536000, "midi": [144, 48, 110] },
+              { "sample": 1560000, "midi": [128, 48, 0] } ] }
+{ "ok": true, "name": "seq:creek/keys", "events": 2 }
+```
+
+| Field | Meaning |
+| --- | --- |
+| `name` | The output's name, which `midi_out_close` and `status` use. |
+| `source` | The name of a virtual MIDI source the daemon publishes for the output. |
+| `destination` | Instead of `source`: the name of an existing MIDI output port, such as a hardware synth's. An output takes one or the other. |
+| `rate` | The rate `sample` counts in: the bed's, as the click's `rate` is. |
+| `events` | Each `{sample, midi}`, a message of 1 to 3 bytes that starts with a status byte, in time order. At one sample, put note-offs first, then controller changes and bends, then note-ons. SysEx is refused. |
+| `lead` | Samples to send each event early, for the time the receiver takes before its sound reaches the daemon. |
+| `lead_input` | Optional. An input whose reader margin, a block plus 256 frames, the output leads by too. The input can open after the output. |
+| `clock` | Optional. `{pulses}`, the samples of MIDI clock pulses, described below. |
+
+A replaced schedule keeps the output's port, so whatever listens to a
+source stays connected. The daemon refuses a replacement that names
+another port, a second output on a source or destination already in
+use, and a 65th output. `midi_out_close` with the `name` closes an
+output, and an output closes on its own when the connection that opened
+it drops, as an input does. Windows has no virtual MIDI sources, so
+there the daemon refuses a `source` and sends only to destinations.
+
+Each block, the callback takes the events whose sample falls in the
+block's lookahead window: the block's span on the bed's timeline, moved
+later by the lead. A window that crosses the end of a loop, the live
+session's region or its own, or a looping file's, continues at the
+loop's start, so the first notes after a wrap leave on time. The
+callback pushes each event onto the output's queue, with no allocation
+and no lock, with its time: the block's start on the high-resolution
+clock MIDI capture stamps against, plus the event's offset, less the
+lead. An event that the lead puts before the block's start, which only
+the first block after play or a jump has, leaves at the block's start,
+so the first notes after play or a locate leave late by up to the lead.
+A schedule is built off the audio thread, swapped in by pointer at a
+block's start, and freed off it.
+
+A sender thread, at realtime priority, sends each event to a virtual
+source at its time. On macOS it hands a destination's events to
+CoreMIDI as soon as they are queued, each stamped with its host time,
+which CoreMIDI delivers it at; `getMillisecondCounterHiRes()` and
+CoreMIDI's host time both count `mach_absolute_time()`. Elsewhere it
+sends a destination's events at their times, as it does a source's.
+
+The daemon keeps the notes each output has started, and sends a
+note-off for each on stop, pause, a locate, a loop wrap, a replaced
+schedule, `midi_out_close`, and the end of the connection that opened
+the output. A note that a locate lands inside is not started again.
+Before the note-offs of anything but a wrap, the daemon unschedules
+what CoreMIDI still holds for a destination with `MIDIFlushOutput`, so
+nothing queued for a bed that stopped or jumped reaches the synth. It
+flushes only when CoreMIDI holds something, because a flush reaches a
+virtual destination as a System Reset (`0xFF`). The callback queues only
+the events of the block it is in, so CoreMIDI holds some only when
+blocks run back to back.
+
+An output's `clock` lists the samples of its MIDI clock pulses (`0xF8`),
+24 to the quarter note, which the CLI projects from the tempo map as it
+projects the click. Pulses go out only while the transport plays,
+through the same window and lead as events, and around them the daemon
+sends the transport's changes:
+
+| When the transport | The daemon sends |
+| --- | --- |
+| Plays from pulse 0 | Start (`0xFA`) |
+| Plays from anywhere else | Song Position Pointer (`0xF2`), then Continue (`0xFB`) |
+| Locates or wraps the loop while playing | Stop (`0xFC`), Song Position Pointer, then Continue |
+| Stops or pauses | Stop |
+
+Song Position Pointer counts sixteenth notes, 6 pulses each. It names
+the first sixteenth at or after the transport's position, `ceil(i / 6)`
+for the next pulse `i`, and the pulses resume at pulse 6 times that, so
+the gear's count and the song's agree. An output that opens while the
+transport plays starts as though it played from there.
+
+`status` lists the open outputs as `outputs`: each one's `name`, its
+`source` or `destination`, the messages it `sent`, those it sent more
+than a millisecond after their time as `late`, and those its full queue
+`dropped`. A destination on macOS also reports `early`, the messages
+handed to CoreMIDI ahead of their time. The counts include the note-offs
+and clock messages the daemon adds. A daemon that does this lists
+`midi-out` in `hello.features`.
+
+`field-audiod --midi-out-selftest` checks the callback's selection, the
+lead and an input's margin, held notes, the clock's transport messages,
+and a stop with events handed to CoreMIDI early, against a fake clock
+and fake sinks. In null-output mode, `FIELD_AUDIOD_CAPTURE_OUTPUTS=1`
+lets a MIDI take hear the daemon's own outputs, so a test can measure a
+schedule's timing in the daemon that sends it, and on macOS the null
+clock runs as a realtime thread, as a device's callback does, so its
+blocks start on time on a loaded machine.

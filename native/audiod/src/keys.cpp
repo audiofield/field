@@ -1,9 +1,14 @@
 #include "keys.h"
 
 #include "keyboard-layout.h"
+#include "midi_out.h"
 
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_events/juce_events.h>
+
+#if JUCE_MAC
+#include <CoreMIDI/CoreMIDI.h>
+#endif
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -21,6 +26,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -88,25 +94,23 @@ juce::String readMidiLine (const juce::String& line, juce::MidiMessage& message)
         || ! parsed["midi"].isArray())
         return "expected a line like {\"midi\":[144,60,100]}, got " + line;
 
-    const auto& bytes = *parsed["midi"].getArray();
-    if (bytes.isEmpty() || bytes.size() > 3)
-        return "a MIDI message is 1 to 3 bytes, got " + juce::String (bytes.size()) + " in " + line;
-
     juce::uint8 data[3] {};
-    for (int i = 0; i < bytes.size(); ++i)
-    {
-        const auto& byte = bytes.getReference (i);
-        if (! (byte.isInt() || byte.isInt64()) || (juce::int64) byte < 0 || (juce::int64) byte > 255)
-            return "a MIDI byte is an integer from 0 to 255, got " + juce::JSON::toString (byte, true)
-                   + " in " + line;
-        data[i] = (juce::uint8) (int) byte;
-    }
-    if (data[0] < 0x80)
-        return "a MIDI message starts with a status byte, 128 or above, got "
-               + juce::String (data[0]) + " in " + line;
-
-    message = juce::MidiMessage (data, bytes.size());
+    int size = 0;
+    if (const auto error = readMidiBytes (parsed["midi"], data, size); error.isNotEmpty())
+        return error + " in " + line;
+    message = juce::MidiMessage (data, size);
     return {};
+}
+
+void printMessage (const juce::uint8* data, int size, double hostMs, std::optional<double> timestampMs = {})
+{
+    juce::Array<juce::var> bytes;
+    for (int i = 0; i < size; ++i)
+        bytes.add ((int) data[i]);
+    auto line = jsonObject ({ { "midi", bytes }, { "host_ms", hostMs } });
+    if (timestampMs)
+        line.getDynamicObject()->setProperty ("timestamp_ms", *timestampMs);
+    printLine (line);
 }
 
 class MidiPrinter final : public juce::MidiInputCallback
@@ -114,12 +118,65 @@ class MidiPrinter final : public juce::MidiInputCallback
 public:
     void handleIncomingMidiMessage (juce::MidiInput*, const juce::MidiMessage& message) override
     {
-        juce::Array<juce::var> bytes;
-        for (int i = 0; i < message.getRawDataSize(); ++i)
-            bytes.add ((int) message.getRawData()[i]);
-        printLine (jsonObject ({ { "midi", bytes } }));
+        // Read here rather than taken from the message, as the daemon's
+        // capture does: JUCE's ALSA input stamps with another clock.
+        printMessage (message.getRawData(), message.getRawDataSize(), juce::Time::getMillisecondCounterHiRes());
     }
 };
+
+#if JUCE_MAC
+// A virtual destination through CoreMIDI itself, because JUCE's MidiInput
+// stamps each message with its arrival and drops the time it carries.
+class TimestampedDestination
+{
+public:
+    explicit TimestampedDestination (const juce::String& name)
+    {
+        const auto cfName = name.toCFString();
+        if (MIDIClientCreate (CFSTR ("field-audiod --midi-monitor"), nullptr, nullptr, &client) == noErr)
+            MIDIDestinationCreateWithProtocol (client, cfName, kMIDIProtocol_1_0, &endpoint,
+                                               ^(const MIDIEventList* list, void*) { print (list); });
+        CFRelease (cfName);
+    }
+    ~TimestampedDestination()
+    {
+        if (endpoint != 0)
+            MIDIEndpointDispose (endpoint);
+        if (client != 0)
+            MIDIClientDispose (client);
+    }
+    bool published() const { return endpoint != 0; }
+
+private:
+    static void print (const MIDIEventList* list)
+    {
+        const double hostMs = juce::Time::getMillisecondCounterHiRes();
+        const auto* packet = &list->packet[0];
+        for (UInt32 p = 0; p < list->numPackets; ++p, packet = MIDIEventPacketNext (packet))
+            for (UInt32 w = 0; w < packet->wordCount;)
+            {
+                // Universal MIDI Packets, as a MIDI 1.0 destination receives
+                // them: type 1 a system message and type 2 a channel voice
+                // message, one word each; other types are skipped by their
+                // length.
+                const UInt32 word = packet->words[w];
+                const UInt32 type = word >> 28;
+                const juce::uint8 data[3] { (juce::uint8) (word >> 16), (juce::uint8) ((word >> 8) & 0x7f), (juce::uint8) (word & 0x7f) };
+                const int status = data[0] & 0xf0;
+                if (type == 1)
+                    printMessage (data, data[0] == 0xf2 ? 3 : (data[0] == 0xf1 || data[0] == 0xf3) ? 2 : 1, hostMs,
+                                  msForHostTime (packet->timeStamp));
+                else if (type == 2)
+                    printMessage (data, status == 0xc0 || status == 0xd0 ? 2 : 3, hostMs, msForHostTime (packet->timeStamp));
+                constexpr UInt32 words[16] { 1, 1, 1, 2, 2, 4, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4 };
+                w += words[type];
+            }
+    }
+
+    MIDIClientRef client = 0;
+    MIDIEndpointRef endpoint = 0;
+};
+#endif
 
 std::unique_ptr<juce::MidiInput> openSource (const juce::String& name, juce::MidiInputCallback& callback)
 {
@@ -184,7 +241,43 @@ juce::String defaultOutputDevice()
 }
 
 std::atomic<bool> stopRequested { false };
+
+void runUntilStopped()
+{
+    while (! stopRequested && ! stdinEnded())
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
+}
 } // namespace
+
+juce::String readMidiBytes (const juce::var& value, juce::uint8 (&data)[3], int& size)
+{
+    const auto* bytes = value.getArray();
+    if (bytes == nullptr || bytes->isEmpty() || bytes->size() > 3)
+        return "a MIDI message is 1 to 3 bytes, got " + juce::String (bytes == nullptr ? 0 : bytes->size());
+    for (int i = 0; i < bytes->size(); ++i)
+    {
+        const auto& byte = bytes->getReference (i);
+        if (! (byte.isInt() || byte.isInt64()) || (juce::int64) byte < 0 || (juce::int64) byte > 255)
+            return "a MIDI byte is an integer from 0 to 255, got " + juce::JSON::toString (byte, true);
+        data[i] = (juce::uint8) (int) byte;
+    }
+    if (data[0] < 0x80)
+        return "a MIDI message starts with a status byte, 128 or above, got " + juce::String (data[0]);
+    size = bytes->size();
+    return {};
+}
+
+std::unique_ptr<juce::MidiOutput> createVirtualSource (const juce::String& name)
+{
+    // JUCE declares createNewDevice only where the OS lets a process
+    // publish a MIDI port (macOS, Linux); Windows has no virtual ports.
+#if JUCE_WINDOWS
+    juce::ignoreUnused (name);
+    return nullptr;
+#else
+    return juce::MidiOutput::createNewDevice (name);
+#endif
+}
 
 int runKeys (const juce::String& name)
 {
@@ -195,14 +288,9 @@ int runKeys (const juce::String& name)
     const KeyboardLayoutWatcher watcher (printKeyboardLayout);
     printKeyboardLayout();
 
-    // JUCE declares createNewDevice only where the OS lets a process
-    // publish a MIDI port (macOS, Linux); Windows has no virtual ports, so
-    // there the helper refuses below with the same message as a failure.
-#if JUCE_WINDOWS
-    std::unique_ptr<juce::MidiOutput> source;
-#else
-    auto source = juce::MidiOutput::createNewDevice (name);
-#endif
+    // Windows has no virtual ports, so there the helper refuses below
+    // with the same message as a failure.
+    auto source = createVirtualSource (name);
     if (source == nullptr)
     {
         printError ("cannot create a virtual MIDI source named " + name + " on this system");
@@ -246,10 +334,38 @@ int runKeys (const juce::String& name)
     return exitCode;
 }
 
-int runMidiMonitor (const juce::String& name)
+int runMidiMonitor (const juce::String& name, bool destination)
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
     auto* messageManager = juce::MessageManager::getInstance();
+    std::signal (SIGTERM, [] (int) { stopRequested = true; });
+    std::signal (SIGINT, [] (int) { stopRequested = true; });
+
+    if (destination)
+    {
+#if JUCE_MAC
+        TimestampedDestination published (name);
+        const bool ready = published.published();
+#elif JUCE_WINDOWS
+        const bool ready = false; // no virtual ports
+#else
+        // JUCE's virtual destination (ALSA), with the arrival time alone:
+        // the time a message carries is CoreMIDI's.
+        MidiPrinter printer;
+        auto published = juce::MidiInput::createNewDevice (name, &printer);
+        if (published != nullptr)
+            published->start();
+        const bool ready = published != nullptr;
+#endif
+        if (! ready)
+        {
+            printError ("cannot create a virtual MIDI destination named " + name + " on this system");
+            return 1;
+        }
+        printLine (jsonObject ({ { "ready", true }, { "name", name } }));
+        runUntilStopped();
+        return 0;
+    }
 
     MidiPrinter printer;
     const auto giveUpAt = juce::Time::currentTimeMillis() + 5000;
@@ -265,14 +381,9 @@ int runMidiMonitor (const juce::String& name)
         return 1;
     }
 
-    std::signal (SIGTERM, [] (int) { stopRequested = true; });
-    std::signal (SIGINT, [] (int) { stopRequested = true; });
     input->start();
     printLine (jsonObject ({ { "ready", true }, { "name", name } }));
-
-    while (! stopRequested && ! stdinEnded())
-        messageManager->runDispatchLoopUntil (100);
-
+    runUntilStopped();
     input->stop();
     return 0;
 }

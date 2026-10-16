@@ -50,6 +50,10 @@ class LiveInput
 public:
     virtual ~LiveInput() = default;
     virtual void read (float* left, float* right, int n) = 0;
+    // The frames the reader holds back beyond what it plays, which a MIDI
+    // output with this input as its `lead_input` leads by too
+    // (sequencer.md §2.5). Audio thread, as read() is.
+    virtual juce::int64 readerMargin() const { return 0; }
 };
 
 // The sources a session's input windows name, by name.

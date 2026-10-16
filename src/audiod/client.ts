@@ -17,6 +17,7 @@ import {
   helloResponseSchema,
   inputResponseSchema,
   loadResponseSchema,
+  midiOutResponseSchema,
   okResponseSchema,
   PROTOCOL_VERSION,
   recordResponseSchema,
@@ -29,6 +30,7 @@ import {
   type ChasedController,
   type AudiodEvent,
   type ClickSchedule,
+  type MidiOut,
 } from './protocol.js';
 
 // Client for the per-project field-audiod daemon (playback.md §3): connects
@@ -338,6 +340,15 @@ export class AudiodClient extends EventEmitter {
   // a new bed.
   click(schedule: ClickSchedule) {
     return this.request('click', schedule, okResponseSchema);
+  }
+  // A MIDI output (protocol.ts midiOutSchema). Requires supports('midi-out').
+  // Under a name already open, it replaces the schedule and keeps the
+  // port; the output closes with this connection.
+  midiOut(output: MidiOut) {
+    return this.request('midi_out', output, midiOutResponseSchema);
+  }
+  closeMidiOut(name: string) {
+    return this.request('midi_out_close', { name }, okResponseSchema);
   }
   // Every transaction under .field/recording/, complete or not.
   recordings() {

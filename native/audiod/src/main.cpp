@@ -4,6 +4,7 @@
 #include "hosting.h"
 #include "keys.h"
 #include "live.h"
+#include "midi_out.h"
 #include "render.h"
 #include "ring_input.h"
 #include "server.h"
@@ -78,6 +79,7 @@ public:
         // finalizes here, on the message thread, and a loop opens its
         // next standby.
         player.serviceCapture();
+        player.serviceMidiOutputs();
 
         auto status = player.status();
 
@@ -153,6 +155,7 @@ int main (int argc, char* argv[])
     std::vector<std::string> renderLiveInputs; // with --render-live: name=file.wav, each an input
     bool ringSelfTest = false;
     bool captureSelfTest = false;
+    bool midiOutSelfTest = false;
     int ringFeedId = 0;
     std::string ringFeedWav;
     juce::String scanFormat;
@@ -165,6 +168,7 @@ int main (int argc, char* argv[])
     juce::String captureOut;
     std::optional<juce::String> keysName;
     std::optional<juce::String> monitorName;
+    bool monitorDestination = false;
     bool nullOutput = false;
     int idleSeconds = 300;
 
@@ -203,12 +207,16 @@ int main (int argc, char* argv[])
             keysName = juce::String::fromUTF8 (argv[++i]);
         else if (arg == "--midi-monitor" && i + 1 < argc)
             monitorName = juce::String::fromUTF8 (argv[++i]);
+        else if (arg == "--destination" && monitorName)
+            monitorDestination = true; // with --midi-monitor: publish a virtual destination
         else if (arg == "--null-output")
             nullOutput = true;
         else if (arg == "--ring-selftest")
             ringSelfTest = true;
         else if (arg == "--capture-selftest")
             captureSelfTest = true;
+        else if (arg == "--midi-out-selftest")
+            midiOutSelfTest = true;
         else if (arg == "--ring-feed" && i + 2 < argc)
         {
             const juce::String id (argv[++i]);
@@ -236,9 +244,10 @@ int main (int argc, char* argv[])
                           "<paramsJson> <out>\n"
                           "       field-audiod --ring-selftest\n"
                           "       field-audiod --capture-selftest\n"
+                          "       field-audiod --midi-out-selftest\n"
                           "       field-audiod --ring-feed <ring> <file.wav>\n"
                           "       field-audiod --keys <name>\n"
-                          "       field-audiod --midi-monitor <name>\n");
+                          "       field-audiod --midi-monitor <name> [--destination]\n");
             return 2;
         }
     }
@@ -250,7 +259,7 @@ int main (int argc, char* argv[])
     if (keysName)
         return field::runKeys (*keysName);
     if (monitorName)
-        return field::runMidiMonitor (*monitorName);
+        return field::runMidiMonitor (*monitorName, monitorDestination);
 
     // Scanning is a subprocess tree for the same isolation reasons as
     // --render: the parent iterates candidates and spawns itself with
@@ -349,6 +358,19 @@ int main (int argc, char* argv[])
         if (auto error = field::runCaptureSelfTest(); ! error.empty())
         {
             std::fprintf (stderr, "field-audiod: capture self-test failed: %s\n", error.c_str());
+            return 1;
+        }
+        std::printf ("{\"ok\":true}\n");
+        return 0;
+    }
+
+    // The MIDI outputs' own check (midi_out.h): the callback's selection
+    // and the sender's, against a fake clock and fake sinks.
+    if (midiOutSelfTest)
+    {
+        if (auto error = field::runMidiOutSelfTest(); ! error.empty())
+        {
+            std::fprintf (stderr, "field-audiod: MIDI output self-test failed: %s\n", error.c_str());
             return 1;
         }
         std::printf ("{\"ok\":true}\n");
@@ -490,6 +512,7 @@ int main (int argc, char* argv[])
     // Rings outlive the process unless unlinked, and the exit below skips
     // the destructors that would unlink them.
     player.closeInputs();
+    player.closeMidiOutputs();
     // A daemon that hosted a plugin (a live session's chain) has the
     // same static-teardown hazard the render subprocess measured: a
     // loaded plugin module's memory in the DeletedAtShutdown list. The

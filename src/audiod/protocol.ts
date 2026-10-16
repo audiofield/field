@@ -187,6 +187,56 @@ export const clickScheduleSchema = z.strictObject({
 });
 export type ClickSchedule = z.infer<typeof clickScheduleSchema>;
 
+// A MIDI output (sequencer.md §2.5, daemon feature "midi-out"): MIDI
+// messages on the bed's timeline at `rate`, as the click's ticks are,
+// which the daemon sends on time from a virtual `source` it publishes or
+// to an existing `destination` port. Events are in time order, and at one
+// sample note-offs come first, then controller changes and bends, then
+// note-ons. `lead` sends each event that many samples early, and
+// `lead_input` adds the reader margin of the input it names. `clock`
+// adds MIDI clock pulses, with the transport's Start, Stop, Song Position
+// Pointer, and Continue around them. A `midi_out` under a name already
+// open replaces the schedule and keeps the port.
+export const midiOutEventSchema = z.strictObject({
+  sample: z.number().int().min(0),
+  midi: z.array(z.number().int().min(0).max(255)).min(1).max(3),
+});
+export const midiClockSchema = z.strictObject({ pulses: z.array(z.number().int().min(0)) });
+const midiOutFields = {
+  name: z.string().min(1),
+  rate: z.number().positive(),
+  lead: z.number().int().min(0),
+  lead_input: z.string().min(1).optional(),
+  events: z.array(midiOutEventSchema),
+  clock: midiClockSchema.optional(),
+};
+export const midiOutSchema = z.union([
+  z.strictObject({ ...midiOutFields, source: z.string().min(1) }),
+  z.strictObject({ ...midiOutFields, destination: z.string().min(1) }),
+]);
+export type MidiOut = z.infer<typeof midiOutSchema>;
+
+export const midiOutResponseSchema = z.object({
+  ok: z.literal(true),
+  name: z.string(),
+  events: z.number().int(),
+  pulses: z.number().int().optional(), // with a clock
+});
+
+// An open MIDI output in status: the messages it sent, those sent more
+// than a millisecond after their time, and those its queue had no room
+// for. A destination on macOS also counts as `early` the messages handed
+// to CoreMIDI ahead of their time.
+export const outputStatusSchema = z.object({
+  name: z.string(),
+  source: z.string().optional(),
+  destination: z.string().optional(),
+  sent: z.number().int(),
+  late: z.number().int(),
+  early: z.number().int().optional(),
+  dropped: z.number().int(),
+});
+
 // A take's manifest (capture.cpp writeManifest): the transaction's
 // facts, plus the frame count once it is complete. `recordings` lists
 // these, `stop` and `pause` return the one they finalized, `recover`
@@ -356,6 +406,7 @@ export const statusResponseSchema = z.object({
   loop_from: z.number().int().optional(),
   loop_to: z.number().int().optional(),
   inputs: z.array(inputStatusSchema).optional(), // open live inputs (daemon feature "live-input")
+  outputs: z.array(outputStatusSchema).optional(), // open MIDI outputs (daemon feature "midi-out")
 });
 
 export const okResponseSchema = z.object({ ok: z.literal(true) });

@@ -8,6 +8,8 @@
 
 #if JUCE_MAC
 #include <CoreAudio/CoreAudio.h>
+#include <mach/mach.h>
+#include <mach/thread_policy.h>
 #endif
 
 #include <algorithm>
@@ -53,6 +55,22 @@ juce::DynamicObject::Ptr obj() { return new juce::DynamicObject(); }
 constexpr int nullBlockSize = 512;
 constexpr double nullSampleRate = 48000.0;
 
+// The null clock stands in for a device, whose callback Core Audio runs
+// on a realtime thread, so it wakes on time on a loaded machine as a
+// device's does: MIDI outputs and MIDI capture time each message from
+// the start of its block. Elsewhere it keeps the priority it starts
+// with, since raising it takes privileges a CI runner does not have.
+void scheduleAsAudioThread()
+{
+#if JUCE_MAC
+    const auto ticks = [] (double seconds) { return (uint32_t) juce::Time::secondsToHighResolutionTicks (seconds); };
+    const double block = nullBlockSize / nullSampleRate;
+    thread_time_constraint_policy_data_t policy { ticks (block), ticks (block / 2), ticks (block), 1 };
+    thread_policy_set (pthread_mach_thread_np (pthread_self()), THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t) &policy,
+                       THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+#endif
+}
+
 // Hosted teardown needs a free message thread, exactly like hosted
 // construction: ~AudioUnitPluginInstance posts its dispose to the
 // message thread and waits for it unconditionally, so a caller holding
@@ -89,7 +107,14 @@ Player::Player (bool useNullOutput)
       latchStallMs (useNullOutput
                         ? juce::SystemStats::getEnvironmentVariable ("FIELD_AUDIOD_LATCH_STALL_MS", "0").getIntValue()
                         : 0),
-      captureBlock (std::make_shared<field::CaptureBlock>())
+      captureOwnOutputs (useNullOutput && juce::SystemStats::getEnvironmentVariable ("FIELD_AUDIOD_CAPTURE_OUTPUTS", "0") == "1"),
+      captureBlock (std::make_shared<field::CaptureBlock>()),
+      midiOutputs (field::makeMidiSink, [this] { midiSender.wake(); },
+                   [this]
+                   {
+                       waitOutBlocks();
+                       midiSender.waitOutPass();
+                   })
 {
     formatManager.registerBasicFormats();
 }
@@ -100,6 +125,9 @@ Player::~Player()
     // the callback can still acknowledge; what it cannot reach is left
     // as a recoverable transaction by ~Capture.
     stopRecording();
+    // Here, not in the outputs' destructor: closing waits out the sender,
+    // a member destroyed before them.
+    closeMidiOutputs();
     closeMidiInputs();
     removeHardwareListeners();
     if (nullClockRunning.exchange (false) && nullClock.joinable())
@@ -186,6 +214,7 @@ juce::String Player::initialise()
         nullClockRunning = true;
         nullClock = std::thread ([this]
         {
+            scheduleAsAudioThread();
             juce::AudioBuffer<float> scratch (2, nullBlockSize);
             // The null input (recording.md §5): channel 1 is a sawtooth
             // over one second of the input clock — consecutive samples
@@ -736,26 +765,33 @@ juce::var Player::openInput (const juce::String& name, const void* owner)
         result->setProperty ("error", "input needs a name");
         return juce::var (result.get());
     }
-    std::lock_guard<std::mutex> hold (inputsLock);
-    if (rings.count (name.toStdString()) > 0 || captures.count (name.toStdString()) > 0)
+    std::shared_ptr<field::RingInput> ring;
     {
-        result->setProperty ("error", "input \"" + name + "\" is already open");
-        return juce::var (result.get());
+        std::lock_guard<std::mutex> hold (inputsLock);
+        if (rings.count (name.toStdString()) > 0 || captures.count (name.toStdString()) > 0)
+        {
+            result->setProperty ("error", "input \"" + name + "\" is already open");
+            return juce::var (result.get());
+        }
+        try
+        {
+            ring = std::make_shared<field::RingInput> ((uint32_t) std::lround (currentDeviceRate()));
+            result->setProperty ("name", name);
+            result->setProperty ("ring", (int) ring->id());
+            result->setProperty ("capacity", (int) ring->capacity());
+            result->setProperty ("channels", 2);
+            result->setProperty ("sample_rate", currentDeviceRate());
+            rings[name.toStdString()] = { ring, owner };
+        }
+        catch (const std::exception& e)
+        {
+            result->setProperty ("error", juce::String (e.what()));
+            return juce::var (result.get());
+        }
     }
-    try
-    {
-        auto ring = std::make_shared<field::RingInput> ((uint32_t) std::lround (currentDeviceRate()));
-        result->setProperty ("name", name);
-        result->setProperty ("ring", (int) ring->id());
-        result->setProperty ("capacity", (int) ring->capacity());
-        result->setProperty ("channels", 2);
-        result->setProperty ("sample_rate", currentDeviceRate());
-        rings[name.toStdString()] = { std::move (ring), owner };
-    }
-    catch (const std::exception& e)
-    {
-        result->setProperty ("error", juce::String (e.what()));
-    }
+    // An output can name its lead input before the input opens, as
+    // `field seq` does before its voice connects.
+    midiOutputs.bindLeadInput (name, ring);
     return juce::var (result.get());
 }
 
@@ -970,6 +1006,8 @@ juce::var Player::status (bool consumePeak)
         result->setProperty ("record", juce::var (rec.get()));
     }
     result->setProperty ("click_ticks", click.tickCount());
+    if (! midiOutputs.empty())
+        result->setProperty ("outputs", midiOutputs.describe());
 
     double deviceRate = nullMode ? nullSampleRate : 0.0;
     if (! nullMode)
@@ -1026,6 +1064,7 @@ void Player::rebuildLiveConverter()
 juce::int64 Player::pullAudio (const float* const* in, int numInputs, float* const* out, int numChannels, int n)
 {
     blockSawRequest = false;
+    blockBed = {};
     {
         // The pointer is only readable under the lock (cursor's finding:
         // checking it first races a message-thread load). A missed lock
@@ -1035,6 +1074,7 @@ juce::int64 Player::pullAudio (const float* const* in, int numInputs, float* con
         {
             for (int c = 0; c < numChannels; ++c)
                 std::fill (out[c], out[c] + n, 0.0f);
+            blockBed.missed = true;
             return -1;
         }
         // What the latch may act on: a request this pull saw, so the
@@ -1057,6 +1097,9 @@ juce::int64 Player::pullAudio (const float* const* in, int numInputs, float* con
             // into whichever loop is in force, as status reports it —
             // which is where a take beginning here is placed.
             const juce::int64 position = liveSession->wrappedPosition();
+            const bool region = liveSession->loopRegionTo() > liveSession->loopRegionFrom();
+            blockBed = { false, (double) liveRate, liveConverter == nullptr, region ? liveSession->loopRegionFrom() : 0,
+                         region ? liveSession->loopRegionTo() : liveLoop ? liveLength : 0 };
             if (livePlaying.load())
             {
                 if (liveConverter == nullptr)
@@ -1142,6 +1185,8 @@ juce::int64 Player::pullAudio (const float* const* in, int numInputs, float* con
         // A file bed's position and pull under the same lock as a live
         // one's, so record's jump falls wholly before or after them.
         const juce::int64 position = transport.isPlaying() ? positionSamples() : -1;
+        blockBed = { false, fileSampleRate, juce::exactlyEqual (fileSampleRate, currentDeviceRate()), 0,
+                     looping ? fileLengthSamples : 0 };
         juce::AudioBuffer<float> buffer (const_cast<float**> (out), numChannels, n);
         juce::AudioSourceChannelInfo info (&buffer, 0, n);
         transport.getNextAudioBlock (info);
@@ -1161,6 +1206,23 @@ void Player::processBlock (const float* const* in, int numInputs, float* const* 
     // same block-start position the capture latches on; with no bed it
     // counts on the free clock, which is a metronome by itself.
     click.render (position == -2 ? freeBefore : position, currentDeviceRate(), out, numOutputs, n);
+    {
+        const double deviceRate = currentDeviceRate();
+        field::MidiBlock midi;
+        midi.startMs = blockStartMs;
+        midi.missed = blockBed.missed;
+        midi.rolling = position >= 0;
+        midi.position = position;
+        midi.bedPerFrame = blockBed.rate > 0.0 && deviceRate > 0.0 ? blockBed.rate / deviceRate : 1.0;
+        midi.advance = std::llround (n * midi.bedPerFrame);
+        // Converted delivery renders the bed in steps of its own, and a
+        // resampled file through a buffer, so their advance only
+        // approximates a block's.
+        midi.slack = blockBed.exact ? 0 : n + 1024;
+        midi.wrapFrom = blockBed.wrapFrom;
+        midi.wrapTo = blockBed.wrapTo;
+        midiOutputs.play (midi);
+    }
     // Counted after the pull: a finalize that has seen two more epochs
     // knows the block that was in flight when it cleared activeCapture
     // has fully passed through here.
@@ -1737,7 +1799,11 @@ juce::var Player::armSet (const juce::Array<juce::var>& tracks, const juce::Stri
     juce::StringArray sources;
     if (! midi.empty())
     {
-        const auto available = juce::MidiInput::getAvailableDevices();
+        // A take records what you play, not the parts the daemon's own
+        // outputs play beside it (sequencer.md §2.5).
+        auto available = juce::MidiInput::getAvailableDevices();
+        if (! captureOwnOutputs)
+            available.removeIf ([this] (const juce::MidiDeviceInfo& source) { return midiOutputs.publishes (source.identifier); });
         if (available.isEmpty())
             return fail ("no MIDI sources to record from: start field keys or connect a controller first");
         for (const auto& source : available)
@@ -2259,11 +2325,7 @@ juce::Array<juce::var> Player::stopRecording()
     for (int c = 0; c < companionCount; ++c)
         midi = midi || companions[(size_t) c].midiTake.load() != nullptr;
     if (midi)
-    {
-        const auto epoch = callbackEpoch.load();
-        for (int i = 0; i < 300 && callbackEpoch.load() < epoch + 2; ++i)
-            std::this_thread::sleep_for (std::chrono::milliseconds (1));
-    }
+        waitOutBlocks();
     // Detach first, then wait out the callback: the block that read
     // activeCapture before the store may still be pushing, and the epoch
     // counter advances only after a block's push is done. Two epochs
@@ -2281,19 +2343,13 @@ juce::Array<juce::var> Player::stopRecording()
     captureStartAt = -1;
     captureUntil = -1;
     captureLoop = false;
-    const auto epoch = callbackEpoch.load();
-    for (int i = 0; i < 300 && callbackEpoch.load() < epoch + 2; ++i)
-        std::this_thread::sleep_for (std::chrono::milliseconds (1));
+    waitOutBlocks();
     // Under a loop, the block in flight at those stores can have taken
     // the standby over just before them and stored activeCapture just
     // after. No later block takes one over, so a second detach and wait
     // leave nothing pushing.
     if (wasLoop && activeCapture.exchange (nullptr) != nullptr)
-    {
-        const auto again = callbackEpoch.load();
-        for (int i = 0; i < 300 && callbackEpoch.load() < again + 2; ++i)
-            std::this_thread::sleep_for (std::chrono::milliseconds (1));
-    }
+        waitOutBlocks();
     captureStarted = false;
     capturesEnded = 0;
     companionMidiRunning = false;
@@ -2525,3 +2581,34 @@ juce::String Player::setClick (const juce::var& schedule)
     }
     return {};
 }
+
+void Player::waitOutBlocks() const
+{
+    // Two epochs: the block in flight when the caller let go of something
+    // may already have counted one.
+    const auto epoch = callbackEpoch.load();
+    for (int i = 0; i < 300 && callbackEpoch.load() < epoch + 2; ++i)
+        std::this_thread::sleep_for (std::chrono::milliseconds (1));
+}
+
+// ---- MIDI outputs (sequencer.md §2.5) ---------------------------------------
+
+juce::var Player::openMidiOutput (const juce::var& request, const void* owner)
+{
+    midiSender.start();
+    return midiOutputs.open (request, owner, [this] (const juce::String& name) -> std::shared_ptr<field::LiveInput>
+    {
+        std::lock_guard<std::mutex> hold (inputsLock);
+        if (const auto ring = rings.find (name.toStdString()); ring != rings.end())
+            return ring->second.ring;
+        if (const auto monitored = captures.find (name.toStdString()); monitored != captures.end())
+            return monitored->second.input;
+        return nullptr;
+    });
+}
+
+juce::String Player::closeMidiOutput (const juce::String& name) { return midiOutputs.close (name); }
+
+void Player::closeMidiOutputsOwnedBy (const void* owner) { midiOutputs.closeOwnedBy (owner); }
+
+void Player::closeMidiOutputs() { midiOutputs.closeAll(); }

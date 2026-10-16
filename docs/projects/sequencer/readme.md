@@ -858,3 +858,95 @@ The first seven rows of §4 pass, each in a test:
 | The four `field check` errors | `src/graph/parts.test.ts`, "refuses a notes entry with no instrument, a missing part, a note name that is not one, and an instrument on record:" |
 | A MIDI take, then a tempo edit, then its entry moved; a take in samples | `src/commands/land.test.ts`, "writes the take in ticks" and "counts started_at_ticks from the tick its record entry starts on"; `src/generators/voice-render.test.ts`, "follows a tempo edit there", "moves with its record entry by the same musical distance", and "plays a take recorded in samples as it was recorded" |
 | A take copied into a part at its position | `src/graph/parts.test.ts`, "has the take's action key when it is placed at the take's position" |
+
+## 10 MIDI outputs, as built
+
+Chunk 4 built §2.5 in `native/audiod/src/midi_out.cpp` and
+`midi_out.h`, with `midi_out` and `midi_out_close` in
+`src/audiod/protocol.ts` and `src/audiod/client.ts`. audio-engine.md
+"MIDI outputs" describes it as it runs. Building it settled these
+points, each measured on macOS 27 with JUCE 8.0.4:
+
+- **The claim about the clocks holds.** JUCE's
+  `getMillisecondCounterHiRes()` multiplies `mach_absolute_time()` by
+  the timebase (`juce_SystemStats_mac.mm`), and JUCE's own CoreMIDI
+  sender stamps with `AudioGetCurrentHostTime()`, the same count
+  (`juce_CoreMidi_mac.mm`). The daemon converts with JUCE's
+  `secondsToHighResolutionTicks`, which counts it too.
+- **CoreMIDI holds at most a block, not a block and the lead.** An event
+  leaves `lead` samples before its own sample, and the window holds the
+  samples from `lead` to `lead` plus the block's span ahead of the
+  block's start, so every event the callback queues falls due within
+  the block it was queued in. A stop seen at the next block's start
+  finds CoreMIDI holding nothing, unless blocks ran back to back.
+- **A flush reaches a virtual destination as a System Reset.**
+  `MIDIFlushOutput` unschedules what is pending, and also delivers
+  `0xFF`, stamped 0, to the destination's owner, even when nothing was
+  pending. So the daemon flushes only when it has handed CoreMIDI a
+  message due after the moment it ends the notes. What a hardware
+  port's driver does on a flush was not observed, because no hardware
+  was attached.
+- **CoreMIDI delivers to a virtual destination at the time stamped on
+  a message, not when it arrives.** So a destination's arrival times
+  cannot show that the sender handed a message over early. `status`
+  reports `early` for a destination on macOS, the messages handed to
+  CoreMIDI ahead of their time, and the destination test asserts it.
+- **A block's window starts where the last one ended.** The callback
+  compares each block's position with the last one's plus that block's
+  advance, along the loop in force. A different position is a jump, as
+  a locate is: the daemon ends the notes and, with a clock, sends Stop,
+  Song Position Pointer, and Continue. The advance is exact for a live
+  session the device plays at its own rate. Converted delivery renders
+  in steps of its own and a resampled file reads through a buffer, so
+  for them a position within a block and 1024 samples of the expected
+  one still continues. A block in which the pull missed the live lock is
+  skipped, because the bed did not move in it.
+- **An event that the lead puts before its block's start leaves at the
+  block's start**, and does not count as late. Only the first block
+  after play or a jump has such events, so `late` counts only the
+  sender's misses.
+- **Each output has its own queue,** so one output's events never wait
+  behind another's. The callback wakes the sender with a semaphore,
+  which takes no lock: a Mach semaphore on macOS, a POSIX one on
+  Linux, and a Windows semaphore. The sender is a JUCE realtime thread.
+- **The lead input binds by name, whenever it opens.** `field seq`
+  opens its output before the voice's input, so the daemon binds an
+  output to its `lead_input` when either one opens. The margin is the
+  ring reader's own, a block plus 256 frames, read on the audio thread
+  each block; a capture input has none. The binding rides the schedule,
+  so binding a new input swaps in a schedule that shares the old one's
+  events, and leaves the notes sounding.
+- **The daemon refuses** a replacement that names another port, a
+  second output on a source or destination already in use, SysEx, and
+  a 65th output.
+- **Capture leaves out an output by its source's identifier**, which
+  JUCE gives a virtual source and lists it under alike on macOS and
+  Linux. §4's timing row records a take from an output's source in the
+  daemon that sends it, which that exclusion forbids. A test seam
+  honoured only with null output, `FIELD_AUDIOD_CAPTURE_OUTPUTS=1`, lets
+  the take hear it, as the other `FIELD_AUDIOD_*` seams bend one rule
+  for a test.
+- **The null clock runs as a realtime thread on macOS.** As an ordinary
+  thread on a loaded machine its blocks started up to 2 ms late, and
+  because an output and a take both time from block starts, captures
+  strayed up to 114 samples from their schedule. Under the
+  time-constraint policy a device's callback runs at, the worst was 11
+  samples and the median 5. Linux keeps the null clock's priority,
+  because raising it takes privileges a CI runner lacks, so the timing
+  row there depends on the runner's load.
+- **`--midi-monitor` prints `host_ms`** on each line, the arrival on the
+  daemon's clock. With `--destination` it publishes a virtual
+  destination: through CoreMIDI on macOS, adding `timestamp_ms`, and
+  through JUCE's ALSA port on Linux, with the arrival alone. Windows
+  refuses.
+
+The tests are `src/audiod/midi-out.test.ts` and
+`field-audiod --midi-out-selftest`, which it runs. They cover §4's
+rows on schedule timing through a MIDI take across a wrap with none
+late, note-offs in every case, the lead and `lead_input` with a fake
+clock, capture leaving out the outputs, a destination's timestamps
+against a source's arrivals across a wrap with every event handed over
+early, no event handed over early reaching the destination after a
+stop with a fake CoreMIDI, and the clock's transport messages through
+`--midi-monitor`. Only macOS ran them. Linux and Windows were not built
+here; CI builds and tests them. The clock's projection row is chunk 5's.
