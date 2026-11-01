@@ -20,8 +20,8 @@
 // sclang has no FieldOut class). Field puts FieldOut's directory on
 // SC_PLUGIN_PATH, which scsynth searches beside its own plugins.
 // sclang's own port, which Field also chooses (-u), takes /field/reload:
-// load every program again, as one has changed (§14), keeping them all as
-// they were if one does not load.
+// load every program again, as one has changed (keyboard-instrument.md
+// §14), keeping them all as they were if one does not load.
 (
 var here = PathName(thisProcess.nowExecutingPath).pathOnly;
 var loadVoice = thisProcess.interpreter.executeFile(here +/+ "voice-load.scd");
@@ -87,8 +87,9 @@ fail = { |message|
 	1.exit;
 };
 // scsynth falls back to the default input and output for a name it does
-// not find, which opens the microphone (§10.1), and SuperCollider passes
-// the name to the shell that starts scsynth between bare double quotes.
+// not find, which opens the microphone (keyboard-instrument.md §10.1), and
+// SuperCollider passes the name to the shell that starts scsynth between
+// bare double quotes.
 deviceProblem = { |name|
 	case
 	{ name.any { |char| "\"`$\\".includes(char) } } {
