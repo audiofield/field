@@ -240,7 +240,7 @@ sc.command('voice <targets...>')
   )
   .option(
     '--source <name>',
-    'a MIDI source to play from, by name (repeatable; default: every source but the Field Seq ones)',
+    'a MIDI source to play from, by its name or its device (repeatable; default: every source but the Field Seq ones)',
     (value: string, previous: string[]) => [...previous, value],
     [] as string[],
   )
