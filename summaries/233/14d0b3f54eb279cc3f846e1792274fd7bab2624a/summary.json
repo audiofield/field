@@ -3,7 +3,7 @@
  "name": "Written parts and live sequencing",
  "project": "sequencer",
  "pr": {
-  "repo": "okamnesiac/field",
+  "repo": "audiofield/field",
   "number": 233,
   "title": "Write parts in bars and beats, land MIDI takes in ticks, and give the track its instrument (sequencer.md chunks 1–2)",
   "head": "14d0b3f54eb279cc3f846e1792274fd7bab2624a",
@@ -26,7 +26,7 @@
    {
     "id": "validation",
     "title": "Review evidence",
-    "html": "The earlier loop-timing finding is fixed. Each repetition resolves its notes at its own position, and equal resolutions share a render. At this head, 174 focused tests passed, together with type checking, project validation, and whitespace checks. Live daemon routing remains unverified because the available daemon has an older session protocol."
+    "html": "<p>Two models have reviewed this head. The newest review requests changes, so the pull request is a draft.</p><ul class=\"tight\"><li><b>Still fixed:</b> the earlier loop-timing finding. Each repetition resolves its notes at its own position.</li><li><b>Open findings:</b> four, each flagged on its line below. A steady song renders one part many times at most tempos, notes played before a track starts all sound on its first tick, a documented step fails <code>field check</code>, and two edited lines break the surrounding line wrapping.</li><li><b>Checked in the newest review:</b> type checking, project validation, and whitespace checks pass. The six test files nearest the change pass 140 of 140 against an existing <code>field-audiod</code> binary and real <code>sclang</code>.</li><li><b>Not run in the newest review:</b> the other daemon tests, including live MIDI capture.</li></ul>"
    }
   ]
  },
@@ -80,6 +80,11 @@
       {
        "kind": "verify",
        "text": "Resolver tests passed for meter changes, tempo changes, relative positions, note lengths, legacy sample-timed takes, and musical take anchors."
+      },
+      {
+       "kind": "flag",
+       "line": 88,
+       "text": "Open review finding: a steady song renders one part many times at most tempos. This line rounds a note's tick and the placement's tick to samples separately and then subtracts them, so a note's offset moves by a sample with where the part is placed whenever a bar is not a whole number of samples. At 133 bpm and 48 kHz, one part at bars 1 and 17 gets two action keys, the cache keys that decide whether a render is reused. A one-bar, 16-note loop of 32 repetitions makes 26 renders, each its own <code>sclang</code> run, where the plan and <code>docs/project-model.md</code> promise one. The fix is to round once, on the difference from the placement's start, and to add a test at 133 bpm, because the current tests use 120 bpm, where a tick is exactly 25 samples."
       }
      ]
     },
@@ -150,7 +155,14 @@
    "files": [
     {
      "path": "src/commands/land.ts",
-     "note": "Converts captured times into ticks and records the take’s distance from its record entry."
+     "note": "Converts captured times into ticks and records the take’s distance from its record entry.",
+     "checks": [
+      {
+       "kind": "flag",
+       "line": 383,
+       "text": "Open review finding: notes played before a track starts all sound on its first tick. When a take starts before its track does, <code>tickAt</code> clamps both a note's end and <code>start</code> to 0, so this filter keeps every note that ended before the track's first sample, and each lands as a zero-length note at tick 0. A take recorded from bar 1 on a track placed at bar 5 kept three lead-in notes that way. Before this change, the render's negative placement read past them. The fix is to also drop a note whose unclamped end falls before the track's start, and to add that case to <code>land.test.ts</code>."
+      }
+     ]
     },
     {
      "path": "src/commands/land.test.ts"
@@ -210,13 +222,27 @@
      "path": "docs/build-graph.md"
     },
     {
-     "path": "docs/cli.md"
+     "path": "docs/cli.md",
+     "checks": [
+      {
+       "kind": "flag",
+       "line": 435,
+       "text": "Open review finding: two edited lines break the line wrapping around them. <code>AGENTS.md</code> says to match the wrapping around a Markdown edit. This line runs to 87 columns, and <code>docs/keys.md</code> line 537 runs to 91, among prose wrapped near 72 columns. The fix is to rewrap both paragraphs at the surrounding width."
+      }
+     ]
     },
     {
      "path": "docs/keys.md"
     },
     {
-     "path": "docs/project-model.md"
+     "path": "docs/project-model.md",
+     "checks": [
+      {
+       "kind": "flag",
+       "line": 512,
+       "text": "Open review finding: deleting the record entry, as this step offers, fails <code>field check</code>. With the <code>- record:</code> entry deleted and the take's <code>takes.yaml</code> still in <code>audio/keys/</code>, <code>field check</code> reports <code>no record entry claims audio/keys/</code> as an error, which stops every build. <code>field choose</code> also refuses a node that has no record entry, so the take is no longer choosable, as the section says it is. The fix is to drop <code>, or delete it</code>, so that the step says to mute the record entry."
+      }
+     ]
     },
     {
      "path": "docs/tracks.md"
