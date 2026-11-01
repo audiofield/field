@@ -1,0 +1,588 @@
+diff --git a/README.md b/README.md
+index 5eac72be..9f07798b 100644
+--- a/README.md
++++ b/README.md
+@@ -112,7 +112,7 @@ To work on Field itself, install a checkout instead. Run `pnpm setup`
+ once, then:
+ 
+ ```sh
+-git clone https://github.com/okamnesiac/field
++git clone https://github.com/audiofield/field
+ cd field
+ ./install.sh             # links this checkout onto your PATH as field
+ ```
+diff --git a/docs/cli.md b/docs/cli.md
+index 11a99b92..cf53b47f 100644
+--- a/docs/cli.md
++++ b/docs/cli.md
+@@ -634,7 +634,7 @@ somewhere other than `<program>.wav` in the current directory.
+ | `FIELD_REMOTE` | the remote's API base in place of the one `origin` implies, or `off` to stop reading from any remote |
+ | `FIELD_TOKEN` | the token to send, ahead of the stored one, for CI and agents |
+ | `FIELD_OFFLINE` | `install.sh` and `field upgrade` download nothing: a checkout compares against the last fetch of its upstream, and a release install's `status` compares nothing |
+-| `FIELD_REPO`, `FIELD_REF` | the repository and ref a release install follows, `okamnesiac/field` and `v0` unless set |
++| `FIELD_REPO`, `FIELD_REF` | the repository and ref a release install follows, `audiofield/field` and `v0` unless set |
+ | `FIELD_DATA_DIR`, `FIELD_BIN_DIR` | where a release install keeps its versions and its `field` shim; see [install.md](install.md#environment-variables) |
+ 
+ `FIELD_SCLANG` and `FIELD_AUDIOD` point at a binary the default search
+diff --git a/docs/install.md b/docs/install.md
+index 7108d4a8..dd9ba2a0 100644
+--- a/docs/install.md
++++ b/docs/install.md
+@@ -16,13 +16,13 @@ curl -fsSL https://field.one/install.sh | bash
+ 
+ field.one serves `install.sh` from the `v0` tag, so this is the same
+ installer as
+-`https://raw.githubusercontent.com/okamnesiac/field/v0/install.sh`, which
++`https://raw.githubusercontent.com/audiofield/field/v0/install.sh`, which
+ `field upgrade` downloads.
+ 
+ To install a checkout, clone it and run the installer in it:
+ 
+ ```sh
+-git clone https://github.com/okamnesiac/field
++git clone https://github.com/audiofield/field
+ cd field
+ ./install.sh
+ ```
+@@ -51,7 +51,7 @@ target needs. When any is missing or too old, it lists them all, prints
+ the commands that install them, and stops with exit status 69:
+ 
+ ```console
+-$ curl -fsSL https://raw.githubusercontent.com/okamnesiac/field/v0/install.sh | bash
++$ curl -fsSL https://raw.githubusercontent.com/audiofield/field/v0/install.sh | bash
+ install.sh: this machine is missing what Field needs to build:
+ 
+   node-missing       Field needs Node 24 or newer
+@@ -63,7 +63,7 @@ Install what is missing:
+   # Homebrew first, from https://brew.sh
+   brew install node pnpm cmake
+ 
+-Then open a new shell and run curl -fsSL https://raw.githubusercontent.com/okamnesiac/field/v0/install.sh | bash again.
++Then open a new shell and run curl -fsSL https://raw.githubusercontent.com/audiofield/field/v0/install.sh | bash again.
+ ```
+ 
+ On macOS the commands use Homebrew. On Linux they use `apt-get` and the
+@@ -194,11 +194,24 @@ installs it as above. When it names the version you have, nothing
+ downloads or builds: the installer builds any piece that is missing,
+ re-syncs your workers, and rewrites the shim.
+ 
++An install from before Field moved to `audiofield/field` recorded
++`okamnesiac/field`. The installer follows `audiofield/field` instead and
++records that name. `field` 0.3.5 and older download the installer from the
++recorded name themselves, so once GitHub stops redirecting it, their
++`field upgrade` fails. To upgrade one of those installs, run the install
++command again:
++
++```sh
++curl -fsSL https://field.one/install.sh | bash
++```
++
++Here is what a normal upgrade prints:
++
+ ```console
+ $ field upgrade
+-+ curl -fsSL https://raw.githubusercontent.com/okamnesiac/field/6f28530dc4b06a162b38e66c14428754e070a25f/install.sh | bash
+-release        okamnesiac/field v0 is at 0.3.0
+-downloading    https://github.com/okamnesiac/field/archive/refs/tags/v0.3.0.tar.gz
+++ curl -fsSL https://raw.githubusercontent.com/audiofield/field/6f28530dc4b06a162b38e66c14428754e070a25f/install.sh | bash
++release        audiofield/field v0 is at 0.3.0
++downloading    https://github.com/audiofield/field/archive/refs/tags/v0.3.0.tar.gz
+ ...
+ setting-up     field-aced in 0.3.0, as it was in 0.2.0
+ switched       ~/.local/share/field/current -> 0.3.0
+@@ -447,9 +460,9 @@ each piece of the installed version is built:
+ 
+ ```console
+ $ field upgrade status
+-+ curl -fsSL https://raw.githubusercontent.com/okamnesiac/field/6f28530dc4b06a162b38e66c14428754e070a25f/install.sh | bash -s -- status
+++ curl -fsSL https://raw.githubusercontent.com/audiofield/field/6f28530dc4b06a162b38e66c14428754e070a25f/install.sh | bash -s -- status
+ installed      0.3.0 in ~/.local/share/field/0.3.0
+-release        okamnesiac/field v0 is at 0.3.0
++release        audiofield/field v0 is at 0.3.0
+ release-latest 0.3.0 is installed
+ previous       0.2.0 in ~/.local/share/field/0.2.0, kept to switch back to by hand
+ node           24.19.0
+@@ -479,7 +492,7 @@ worker-absent  field-aced is not set up — field setup aced sets it up
+ | Variable | Effect |
+ | --- | --- |
+ | `FIELD_OFFLINE=1` | In a checkout, skips the fetch and compares the checkout against the last fetch of its upstream. In a release install, `field upgrade` runs the installed version's own `install.sh` instead of downloading the newest one, `status` compares nothing, and `all` refuses, because it has nothing to download from. |
+-| `FIELD_REPO`, `FIELD_REF` | The repository and ref a release install follows: `okamnesiac/field` and `v0` unless set. The installer records both in `release.conf`. |
++| `FIELD_REPO`, `FIELD_REF` | The repository and ref a release install follows: `audiofield/field` and `v0` unless set. The installer records both in `release.conf`. |
+ | `FIELD_VERBOSE=1` | Prints every line the installer's commands print, as it arrives, instead of the dimmed five-line window, and keeps no log. |
+ | `FIELD_DATA_DIR` | Where release installs live. The default is `$XDG_DATA_HOME/field` when `XDG_DATA_HOME` is an absolute path, and `~/.local/share/field` otherwise. |
+ | `FIELD_BIN_DIR` | Where the release install's shim goes: `~/.local/bin` unless set. The installer records it in `release.conf`. |
+diff --git a/docs/projects/arming/readme.md b/docs/projects/arming/readme.md
+index bed18ac0..780d7bab 100644
+--- a/docs/projects/arming/readme.md
++++ b/docs/projects/arming/readme.md
+@@ -268,5 +268,5 @@ Found along the way, and not this chunk's: an audio punch-out against a
+ with one track as with several. A live session's position is exact, so
+ the punch-out tests, which use one, never saw it. A file bed's position
+ comes from JUCE's transport, which reports a few samples ahead of what it
+-has delivered. okamnesiac/field#194 tracks it. Still owed: criteria 6
++has delivered. audiofield/field#194 tracks it. Still owed: criteria 6
+ to 8 by hand, on a real interface with two inputs and a controller.
+diff --git a/docs/projects/install/readme.md b/docs/projects/install/readme.md
+index 35079fa5..38025c12 100644
+--- a/docs/projects/install/readme.md
++++ b/docs/projects/install/readme.md
+@@ -251,7 +251,7 @@ Without a checkout, `install.sh` installs a release by building it.
+ 
+ 1. It asks GitHub's git server, with `git ls-remote`, which commit
+    `FIELD_REF` (default `v0`) names in `FIELD_REPO` (default
+-   `okamnesiac/field`), and reads the version from `package.json` at
++   `audiofield/field`), and reads the version from `package.json` at
+    that commit, which is how Projector's installer learns the version
+    it is installing. It accepts only `X.Y.Z`. When git cannot answer, it
+    reads `package.json` at the ref instead (§10.1).
+@@ -350,7 +350,7 @@ curl -fsSL https://field.one/install.sh | bash
+ ```
+ 
+ `apps/field-one` in `okamnesiac/audiofield` rewrites `/install.sh` to
+-`https://raw.githubusercontent.com/okamnesiac/field/v0/install.sh`, as
++`https://raw.githubusercontent.com/audiofield/field/v0/install.sh`, as
+ `projector.bot` does for Projector, so the URL always serves the newest
+ release's installer rather than `main`'s. The rewrite proxies rather
+ than redirects, so the command is one request to `field.one`. It needs
+@@ -1027,3 +1027,27 @@ building it found.
+   and `field upgrade status` reported `release-latest 0.3.0 is
+   installed`. Chunk 4 shipped in okamnesiac/audiofield#40, and
+   `field.one/install.sh` serves the same installer.
++
++## 11 The move to `audiofield/field` (2026-11-01)
++
++Field's repository moved from `okamnesiac/field` to `audiofield/field`,
++which holds the open source code from now on. `okamnesiac/fyra` then
++takes the old name, as the home of the private code, and that ends
++GitHub's redirect from it.
++
++- **The record moves, not only the default.** `release.conf` comes ahead
++  of the default, so changing the default alone would leave every
++  existing install asking for the old name. `install.sh` and `field
++  upgrade` each read a recorded `okamnesiac/field` as `audiofield/field`,
++  and the installer writes the new name when it next installs. Only that
++  exact name changes: a fork's record stays, and `FIELD_REPO` still wins.
++- **`field` 0.3.5 and older can't move themselves after the rename.** They
++  download the installer from the recorded name. Before the rename, the
++  redirect gives them the new installer, and it moves them. After the
++  rename, the download fails, and running
++  `curl -fsSL https://field.one/install.sh | bash` moves them instead.
++- **The order is website, release, rename.** okamnesiac/audiofield#46
++  pointed field.one at the new name. This change reaches installs in the
++  release after it, and the rename waits for that release.
++
++§1 and §10.3 keep the old name, because they record what was true then.
+diff --git a/examples/bloom/README.md b/examples/bloom/README.md
+index 371b9076..ff785e4a 100644
+--- a/examples/bloom/README.md
++++ b/examples/bloom/README.md
+@@ -68,7 +68,7 @@ the CLI displays them. The comments in the YAML files survive
+ ## Playing with it
+ 
+ ```bash
+-git clone https://github.com/okamnesiac/field
++git clone https://github.com/audiofield/field
+ cd field && nvm use && ./install.sh   # the field command and its daemon (needs CMake + Xcode CLT)
+ 
+ cd examples/bloom
+diff --git a/install.sh b/install.sh
+index 70be8b1a..6e24a865 100755
+--- a/install.sh
++++ b/install.sh
+@@ -12,7 +12,7 @@
+ # `status` says how far the checkout is behind its upstream instead.
+ # Without one -- piped from curl, or downloaded by `field upgrade` -- it
+ # installs a release: the version package.json names at the commit
+-# FIELD_REF (default v0) names in FIELD_REPO (default okamnesiac/field),
++# FIELD_REF (default v0) names in FIELD_REPO (default audiofield/field),
+ # from the source archive of that version's tag, built in a directory of
+ # its own under ~/.local/share/field and run through a shim in
+ # ~/.local/bin (install.md §3.2).
+@@ -662,8 +662,12 @@ show_status() {
+ #   release.conf               the repository, ref, and bin directory followed
+ # ~/.local/bin/field           BIN_DIR: the shim, which runs current
+ 
+-DEFAULT_REPO=okamnesiac/field
++DEFAULT_REPO=audiofield/field
+ DEFAULT_REF=v0
++# Field's repository before it moved to DEFAULT_REPO. GitHub's redirect from
++# the old name ends when another repository takes it, so an install that
++# recorded it follows DEFAULT_REPO (install.md §11).
++MOVED_REPO=okamnesiac/field
+ RAW_URL="${FIELD_RAW_URL:-https://raw.githubusercontent.com}"
+ ARCHIVE_URL="${FIELD_ARCHIVE_URL:-https://github.com}"
+ SHIM_MARKER="# Field's release shim, written by install.sh."
+@@ -710,8 +714,9 @@ release_init() {
+   DATA_DIR="${DATA_DIR%/}"
+   RECORD="$DATA_DIR/release.conf"
+   FETCH_CACHE="$DATA_DIR/cache/fetchcontent"
+-  RELEASE_REPO="${FIELD_REPO:-$(recorded repo)}"
+-  RELEASE_REPO="${RELEASE_REPO:-$DEFAULT_REPO}"
++  RELEASE_REPO="$(recorded repo)"
++  [ "$RELEASE_REPO" != "$MOVED_REPO" ] || RELEASE_REPO="$DEFAULT_REPO"
++  RELEASE_REPO="${FIELD_REPO:-${RELEASE_REPO:-$DEFAULT_REPO}}"
+   RELEASE_REF="${FIELD_REF:-$(recorded ref)}"
+   RELEASE_REF="${RELEASE_REF:-$DEFAULT_REF}"
+   BIN_DIR="${FIELD_BIN_DIR:-$(recorded bin)}"
+diff --git a/src/commands/upgrade.test.ts b/src/commands/upgrade.test.ts
+index 3b4ee25f..b895b064 100644
+--- a/src/commands/upgrade.test.ts
++++ b/src/commands/upgrade.test.ts
+@@ -194,10 +194,18 @@ describe.skipIf(process.platform === 'win32')('field upgrade in a release instal
+     expect(readFileSync(argsFile, 'utf8')).toBe(`1:all\n${realpathSync(data)}\n`);
+   });
+ 
+-  it('follows okamnesiac/field at v0 when nothing is recorded', () => {
++  it('follows audiofield/field when the record names the repository before it moved', () => {
++    writeFileSync(join(data, 'release.conf'), 'repo=okamnesiac/field\nref=v0\n');
++    serveInstaller('audiofield/field', 'v0', 0);
++    const lines: string[] = [];
++    expect(upgrade(undefined, { root: join(data, '0.2.0'), env: env(), err: (line) => lines.push(line) })).toBe(0);
++    expect(lines).toEqual([`+ curl -fsSL file://${raw}/audiofield/field/v0/install.sh | bash`]);
++  });
++
++  it('follows audiofield/field at v0 when nothing is recorded', () => {
+     const loose = join(scratch, 'loose', '0.1.0');
+     mkdirSync(loose, { recursive: true });
+-    serveInstaller('okamnesiac/field', 'v0', 0);
++    serveInstaller('audiofield/field', 'v0', 0);
+     expect(upgrade('status', { root: loose, env: env(), err: () => {} })).toBe(0);
+     // Not a data directory, so the installer chooses its own.
+     expect(readFileSync(argsFile, 'utf8')).toBe('1:status\n\n');
+@@ -220,11 +228,11 @@ describe.skipIf(process.platform === 'win32')('field upgrade in a release instal
+     mkdirSync(unpacked);
+     symlinkSync('2.0.1', join(opt, 'current'));
+     writeFileSync(join(opt, 'release.conf'), 'repo=someone/field\nref=v9\n');
+-    serveInstaller('okamnesiac/field', 'v0', 0);
++    serveInstaller('audiofield/field', 'v0', 0);
+     const lines: string[] = [];
+     expect(upgrade('status', { root: unpacked, env: env(), err: (line) => lines.push(line) })).toBe(0);
+     expect(readFileSync(argsFile, 'utf8')).toBe('1:status\n\n');
+-    expect(lines).toEqual([`+ curl -fsSL file://${raw}/okamnesiac/field/v0/install.sh | bash -s -- status`]);
++    expect(lines).toEqual([`+ curl -fsSL file://${raw}/audiofield/field/v0/install.sh | bash -s -- status`]);
+   });
+ 
+   it('refuses with the URL when the installer does not download', () => {
+@@ -249,7 +257,7 @@ describe.skipIf(process.platform === 'win32')('field upgrade in a release instal
+ 
+ describe('the installer download', () => {
+   it("sends GITHUB_TOKEN to GitHub in curl's config, never on its command line", () => {
+-    const url = 'https://raw.githubusercontent.com/okamnesiac/field/v0/install.sh';
++    const url = 'https://raw.githubusercontent.com/audiofield/field/v0/install.sh';
+     const request = curlRequest(url, '/tmp/install.sh', { GITHUB_TOKEN: 'secret-token' });
+     expect(request.args).toEqual(['-fsSL', '--retry', '2', '-o', '/tmp/install.sh', '--config', '-', url]);
+     expect(request.input).toBe('header = "Authorization: Bearer secret-token"\n');
+diff --git a/src/commands/upgrade.ts b/src/commands/upgrade.ts
+index bc542f79..56b189f8 100644
+--- a/src/commands/upgrade.ts
++++ b/src/commands/upgrade.ts
+@@ -18,8 +18,12 @@ import { fileURLToPath } from 'node:url';
+ //   inside the installed version is as old as the version, so it runs only
+ //   under FIELD_OFFLINE, when nothing newer can download.
+ 
+-export const DEFAULT_REPO = 'okamnesiac/field';
++export const DEFAULT_REPO = 'audiofield/field';
+ export const DEFAULT_REF = 'v0';
++// Field's repository before it moved to DEFAULT_REPO. GitHub's redirect from
++// the old name ends when another repository takes it, so an install that
++// recorded it follows DEFAULT_REPO, as install.sh's does (install.md §11).
++const MOVED_REPO = 'okamnesiac/field';
+ // install.sh's VERSION_PATTERN.
+ const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+$/;
+ const RAW_URL = 'https://raw.githubusercontent.com';
+@@ -73,8 +77,9 @@ export function releaseSource(root: string, env: NodeJS.ProcessEnv): ReleaseSour
+   const parent = dirname(root);
+   const dataDir = VERSION.test(basename(root)) && isSymlink(join(parent, 'current')) ? parent : undefined;
+   const record = dataDir === undefined ? new Map<string, string>() : readRecord(join(dataDir, 'release.conf'));
++  const recorded = record.get('repo');
+   return {
+-    repo: env['FIELD_REPO'] || record.get('repo') || DEFAULT_REPO,
++    repo: env['FIELD_REPO'] || (recorded === MOVED_REPO ? DEFAULT_REPO : recorded) || DEFAULT_REPO,
+     ref: env['FIELD_REF'] || record.get('ref') || DEFAULT_REF,
+     dataDir,
+   };
+diff --git a/src/install.test.ts b/src/install.test.ts
+index 1e89accf..5fd39be6 100644
+--- a/src/install.test.ts
++++ b/src/install.test.ts
+@@ -415,7 +415,7 @@ interface Publish {
+ // the ref, and the tag's source archive, made as GitHub makes one, from
+ // "github". Returns the commit.
+ function publish(version: string, options: Publish = {}): string {
+-  const slug = options.repo ?? 'okamnesiac/field';
++  const slug = options.repo ?? 'audiofield/field';
+   const ref = options.ref ?? 'v0';
+   const manifest = `{\n  "name": "field",\n  "version": "${version}"\n}\n`;
+   write(join(upstream, 'package.json'), manifest);
+@@ -1012,7 +1012,7 @@ posix('install.sh tells a checkout from a release', () => {
+     const run = install('status', { FAKE_SERVE: serve }, join(unpacked, 'install.sh'));
+     const status = rows(run.stdout);
+     expect(status.has('checkout')).toBe(false);
+-    expect(status.get('release')).toBe('okamnesiac/field v0 is at 0.2.0');
++    expect(status.get('release')).toBe('audiofield/field v0 is at 0.2.0');
+     expect(status.get('not-installed')).toContain('no release of Field is installed in ~/.local/share/field');
+   });
+ 
+@@ -1025,7 +1025,7 @@ posix('install.sh tells a checkout from a release', () => {
+     });
+     expect(result.status).toBe(0);
+     expect(rows(result.stdout).get('not-installed')).toBe(
+-      'no release of Field is installed in ~/.local/share/field — run curl -fsSL https://raw.githubusercontent.com/okamnesiac/field/v0/install.sh | bash',
++      'no release of Field is installed in ~/.local/share/field — run curl -fsSL https://raw.githubusercontent.com/audiofield/field/v0/install.sh | bash',
+     );
+   });
+ });
+@@ -1038,9 +1038,9 @@ posix('install.sh installs a release', () => {
+     expect(run.status).toBe(0);
+     const version = join(data, '0.2.0');
+     expect(changes(run)).toEqual([
+-      'git ls-remote https://github.com/okamnesiac/field.git',
+-      `curl https://raw.githubusercontent.com/okamnesiac/field/${commit}/package.json`,
+-      'curl https://github.com/okamnesiac/field/archive/refs/tags/v0.2.0.tar.gz',
++      'git ls-remote https://github.com/audiofield/field.git',
++      `curl https://raw.githubusercontent.com/audiofield/field/${commit}/package.json`,
++      'curl https://github.com/audiofield/field/archive/refs/tags/v0.2.0.tar.gz',
+       `pnpm --dir ${version} install --frozen-lockfile`,
+       `pnpm --dir ${version} run build`,
+       `pnpm --dir ${version} run build:ui`,
+@@ -1048,14 +1048,14 @@ posix('install.sh installs a release', () => {
+     ]);
+     expect(current()).toBe('0.2.0');
+     expect(readFileSync(join(data, 'release.conf'), 'utf8')).toBe(
+-      `repo=okamnesiac/field\nref=v0\nbin=${join(root, '.local', 'bin')}\n`,
++      `repo=audiofield/field\nref=v0\nbin=${join(root, '.local', 'bin')}\n`,
+     );
+     // JUCE's download goes to a cache beside the versions, not into this one.
+     expect(readFileSync(join(version, 'native/audiod/build/fetchcontent'), 'utf8')).toBe(
+       `${join(data, 'cache', 'fetchcontent')}\n`,
+     );
+     const status = rows(run.stdout);
+-    expect(status.get('release')).toBe('okamnesiac/field v0 is at 0.2.0');
++    expect(status.get('release')).toBe('audiofield/field v0 is at 0.2.0');
+     expect(status.get('switched')).toBe('~/.local/share/field/current -> 0.2.0');
+     expect(status.get('linked')).toBe('~/.local/bin/field -> ~/.local/share/field/current');
+     expect(status.get('cli')).toBe('~/.local/bin/field -> ~/.local/share/field/current');
+@@ -1114,7 +1114,7 @@ posix('install.sh installs a release', () => {
+     publish('0.3.0', { archive: false });
+     const run = release();
+     expect(run.status).toBe(1);
+-    expect(run.stderr).toContain('could not download https://github.com/okamnesiac/field/archive/refs/tags/v0.3.0.tar.gz');
++    expect(run.stderr).toContain('could not download https://github.com/audiofield/field/archive/refs/tags/v0.3.0.tar.gz');
+     expect(run.stderr).toContain('0.3.0 did not install, so 0.2.0 stays current and field still runs it');
+     expect(current()).toBe('0.2.0');
+     expect(field('--version').stdout).toBe('0.2.0\n');
+@@ -1193,8 +1193,8 @@ posix('install.sh installs a release', () => {
+     const run = release();
+     expect(run.status).toBe(0);
+     expect(changes(run)).toEqual([
+-      'git ls-remote https://github.com/okamnesiac/field.git',
+-      `curl https://raw.githubusercontent.com/okamnesiac/field/${commit}/package.json`,
++      'git ls-remote https://github.com/audiofield/field.git',
++      `curl https://raw.githubusercontent.com/audiofield/field/${commit}/package.json`,
+       'field@0.2.0 setup --existing',
+     ]);
+     expect(rows(run.stdout).get('installed')).toBe('0.2.0 is installed');
+@@ -1211,13 +1211,13 @@ posix('install.sh installs a release', () => {
+   });
+ 
+   it('takes the archive\'s single top-level directory whatever it is called', () => {
+-    publish('0.2.0', { prefix: 'okamnesiac-field-1a2b3c4' });
++    publish('0.2.0', { prefix: 'audiofield-field-1a2b3c4' });
+     expect(release().status).toBe(0);
+     expect(field('--version').stdout).toBe('0.2.0\n');
+   });
+ 
+   it('refuses a version that is not X.Y.Z, since it names a directory', () => {
+-    write(join(serve, 'raw/okamnesiac/field/v0/package.json'), '{\n  "version": "../../x"\n}\n');
++    write(join(serve, 'raw/audiofield/field/v0/package.json'), '{\n  "version": "../../x"\n}\n');
+     const run = release();
+     expect(run.status).toBe(1);
+     expect(run.stderr).toContain("names version '../../x', which is not X.Y.Z");
+@@ -1241,11 +1241,11 @@ posix('install.sh installs a release', () => {
+     const commit = publish('0.3.0');
+     // raw.githubusercontent.com caches a file at a ref for up to five
+     // minutes, so just after a release v0 can still read as the last one.
+-    write(join(serve, 'raw/okamnesiac/field/v0/package.json'), '{\n  "name": "field",\n  "version": "0.2.0"\n}\n');
++    write(join(serve, 'raw/audiofield/field/v0/package.json'), '{\n  "name": "field",\n  "version": "0.2.0"\n}\n');
+     const run = release();
+     expect(run.status).toBe(0);
+-    expect(run.log).toContain(`curl https://raw.githubusercontent.com/okamnesiac/field/${commit}/package.json`);
+-    expect(rows(run.stdout).get('release')).toBe('okamnesiac/field v0 is at 0.3.0');
++    expect(run.log).toContain(`curl https://raw.githubusercontent.com/audiofield/field/${commit}/package.json`);
++    expect(rows(run.stdout).get('release')).toBe('audiofield/field v0 is at 0.3.0');
+     expect(current()).toBe('0.3.0');
+   });
+ 
+@@ -1254,8 +1254,8 @@ posix('install.sh installs a release', () => {
+     rmSync(join(serve, 'git'), { recursive: true });
+     const run = release();
+     expect(run.status).toBe(0);
+-    expect(run.log).toContain('git ls-remote https://github.com/okamnesiac/field.git');
+-    expect(run.log).toContain('curl https://raw.githubusercontent.com/okamnesiac/field/v0/package.json');
++    expect(run.log).toContain('git ls-remote https://github.com/audiofield/field.git');
++    expect(run.log).toContain('curl https://raw.githubusercontent.com/audiofield/field/v0/package.json');
+     expect(current()).toBe('0.2.0');
+   });
+ 
+@@ -1271,6 +1271,21 @@ posix('install.sh installs a release', () => {
+     expect(current()).toBe('0.3.0');
+   });
+ 
++  it('moves an install that recorded the repository before it moved', () => {
++    publish('0.2.0');
++    expect(release().status).toBe(0);
++    const record = join(data, 'release.conf');
++    write(record, readFileSync(record, 'utf8').replace('repo=audiofield/field', 'repo=okamnesiac/field'));
++    const commit = publish('0.3.0');
++    expect(rows(release('status').stdout).get('release')).toBe('audiofield/field v0 is at 0.3.0');
++    const run = release();
++    expect(run.status).toBe(0);
++    expect(run.log).toContain('git ls-remote https://github.com/audiofield/field.git');
++    expect(run.log).toContain(`curl https://raw.githubusercontent.com/audiofield/field/${commit}/package.json`);
++    expect(current()).toBe('0.3.0');
++    expect(readFileSync(record, 'utf8')).toContain('repo=audiofield/field\n');
++  });
++
+   it('refuses a FIELD_REPO that is not owner/repository', () => {
+     const run = release(undefined, { FIELD_REPO: 'someone/../field' });
+     expect(run.status).toBe(64);
+@@ -1282,8 +1297,8 @@ posix('install.sh installs a release', () => {
+     const run = release(undefined, { GITHUB_TOKEN: 'secret-token' });
+     expect(run.status).toBe(0);
+     const header = '[header = "Authorization: Bearer secret-token"]';
+-    expect(run.log).toContain(`curl https://raw.githubusercontent.com/okamnesiac/field/${commit}/package.json ${header}`);
+-    expect(run.log).toContain(`curl https://github.com/okamnesiac/field/archive/refs/tags/v0.2.0.tar.gz ${header}`);
++    expect(run.log).toContain(`curl https://raw.githubusercontent.com/audiofield/field/${commit}/package.json ${header}`);
++    expect(run.log).toContain(`curl https://github.com/audiofield/field/archive/refs/tags/v0.2.0.tar.gz ${header}`);
+     publish('0.3.0');
+     const elsewhere = release(undefined, {
+       GITHUB_TOKEN: 'secret-token',
+@@ -1291,8 +1306,8 @@ posix('install.sh installs a release', () => {
+       FIELD_ARCHIVE_URL: `file://${serve}/github`,
+     });
+     expect(elsewhere.status).toBe(0);
+-    expect(elsewhere.log).toContain(`curl file://${serve}/raw/okamnesiac/field/v0/package.json`);
+-    expect(elsewhere.log).toContain(`curl file://${serve}/github/okamnesiac/field/archive/refs/tags/v0.3.0.tar.gz`);
++    expect(elsewhere.log).toContain(`curl file://${serve}/raw/audiofield/field/v0/package.json`);
++    expect(elsewhere.log).toContain(`curl file://${serve}/github/audiofield/field/archive/refs/tags/v0.3.0.tar.gz`);
+     expect(current()).toBe('0.3.0');
+   });
+ 
+@@ -1354,7 +1369,7 @@ posix('install.sh installs a release', () => {
+     expect(run.status).toBe(69);
+     expect(run.stderr).toContain('  sudo apt-get install -y curl tar\n');
+     expect(run.stderr).toContain(
+-      'Then open a new shell and run curl -fsSL https://raw.githubusercontent.com/okamnesiac/field/v0/install.sh | bash again.',
++      'Then open a new shell and run curl -fsSL https://raw.githubusercontent.com/audiofield/field/v0/install.sh | bash again.',
+     );
+     expect(existsSync(data)).toBe(false);
+   });
+@@ -1413,8 +1428,8 @@ posix('install.sh release targets', () => {
+     expect(audiod.status).toBe(0);
+     expect(changes(audiod)).toEqual([
+       `pnpm --dir ${version} run build:native`,
+-      'git ls-remote https://github.com/okamnesiac/field.git',
+-      `curl https://raw.githubusercontent.com/okamnesiac/field/${commit}/package.json`,
++      'git ls-remote https://github.com/audiofield/field.git',
++      `curl https://raw.githubusercontent.com/audiofield/field/${commit}/package.json`,
+     ]);
+     expect(readFileSync(join(version, 'native/audiod/build/fetchcontent'), 'utf8')).toBe(
+       `${join(data, 'cache', 'fetchcontent')}\n`,
+@@ -1446,7 +1461,7 @@ posix('install.sh status in a release install', () => {
+     expect(run.status).toBe(0);
+     const status = rows(run.stdout);
+     expect(status.get('installed')).toBe('0.2.0 in ~/.local/share/field/0.2.0');
+-    expect(status.get('release')).toBe('okamnesiac/field v0 is at 0.2.0');
++    expect(status.get('release')).toBe('audiofield/field v0 is at 0.2.0');
+     expect(status.get('release-latest')).toBe('0.2.0 is installed');
+     expect(status.get('cli')).toBe('~/.local/bin/field -> ~/.local/share/field/current');
+     expect(status.get('ui-current')).toBe('~/.local/share/field/0.2.0/ui/dist');
+@@ -1460,14 +1475,14 @@ posix('install.sh status in a release install', () => {
+     release();
+     publish('0.3.0');
+     const status = rows(release('status').stdout);
+-    expect(status.get('release')).toBe('okamnesiac/field v0 is at 0.3.0');
++    expect(status.get('release')).toBe('audiofield/field v0 is at 0.3.0');
+     expect(status.get('release-behind')).toBe('0.2.0 is installed, and v0 is at 0.3.0 — run field upgrade all');
+   });
+ 
+   it('says when the installed version is newer than the one its ref names', () => {
+     const commit = publish('0.3.0');
+     release();
+-    write(join(serve, 'raw/okamnesiac/field', commit, 'package.json'), '{\n  "version": "0.2.0"\n}\n');
++    write(join(serve, 'raw/audiofield/field', commit, 'package.json'), '{\n  "version": "0.2.0"\n}\n');
+     expect(rows(release('status').stdout).get('release-ahead')).toBe('0.3.0 is installed, newer than 0.2.0 at v0');
+   });
+ 
+@@ -1485,7 +1500,7 @@ posix('install.sh status in a release install', () => {
+     expect(status.get('audiod-missing')).toBe('field-audiod is not built — run field upgrade audiod');
+     rmSync(shim);
+     expect(rows(release('status').stdout).get('cli-missing')).toBe(
+-      'no field shim in ~/.local/bin — run curl -fsSL https://raw.githubusercontent.com/okamnesiac/field/v0/install.sh | bash',
++      'no field shim in ~/.local/bin — run curl -fsSL https://raw.githubusercontent.com/audiofield/field/v0/install.sh | bash',
+     );
+   });
+ 
+@@ -1503,14 +1518,14 @@ posix('install.sh status in a release install', () => {
+     publish('0.2.0');
+     release();
+     const run = release('status', { FIELD_OFFLINE: '1' });
+-    expect(rows(run.stdout).get('release')).toBe('okamnesiac/field v0 (offline; not compared)');
++    expect(rows(run.stdout).get('release')).toBe('audiofield/field v0 (offline; not compared)');
+     expect(run.log.some((line) => line.startsWith('curl'))).toBe(false);
+   });
+ 
+   it('names the token when GitHub does not answer', () => {
+     const status = rows(release('status').stdout);
+     expect(status.get('release')).toBe(
+-      'okamnesiac/field v0 (could not read its version from https://raw.githubusercontent.com — for a private repository, set GITHUB_TOKEN)',
++      'audiofield/field v0 (could not read its version from https://raw.githubusercontent.com — for a private repository, set GITHUB_TOKEN)',
+     );
+   });
+ });
+diff --git a/src/release.test.ts b/src/release.test.ts
+index c8d6dc4a..89c9ddcd 100644
+--- a/src/release.test.ts
++++ b/src/release.test.ts
+@@ -193,9 +193,9 @@ describe('tagging a release', GIT_HEAVY, () => {
+   });
+ 
+   it('reads GitHub slugs from every URL form git accepts', () => {
+-    expect(repoSlug('git@github.com:okamnesiac/field.git')).toBe('okamnesiac/field');
+-    expect(repoSlug('ssh://git@github.com/okamnesiac/field.git')).toBe('okamnesiac/field');
+-    expect(repoSlug('https://github.com/okamnesiac/field')).toBe('okamnesiac/field');
++    expect(repoSlug('git@github.com:audiofield/field.git')).toBe('audiofield/field');
++    expect(repoSlug('ssh://git@github.com/audiofield/field.git')).toBe('audiofield/field');
++    expect(repoSlug('https://github.com/audiofield/field')).toBe('audiofield/field');
+     expect(repoSlug('/tmp/origin.git')).toBeUndefined();
+   });
+ 
+diff --git a/src/remote/origin.test.ts b/src/remote/origin.test.ts
+index 2e6db680..1fb9b1f8 100644
+--- a/src/remote/origin.test.ts
++++ b/src/remote/origin.test.ts
+@@ -41,11 +41,11 @@ describe('parseCloneUrl', () => {
+   });
+ 
+   it('gives a slug but no API for hosts Field does not recognize', () => {
+-    expect(parseCloneUrl('https://github.com/okamnesiac/field.git')).toEqual({
+-      slug: { owner: 'okamnesiac', project: 'field' },
++    expect(parseCloneUrl('https://github.com/audiofield/field.git')).toEqual({
++      slug: { owner: 'audiofield', project: 'field' },
+     });
+-    expect(parseCloneUrl('git@github.com:okamnesiac/field.git')).toEqual({
+-      slug: { owner: 'okamnesiac', project: 'field' },
++    expect(parseCloneUrl('git@github.com:audiofield/field.git')).toEqual({
++      slug: { owner: 'audiofield', project: 'field' },
+     });
+     expect(parseCloneUrl('file:///tmp/remotes/howlo/chemicals.git')).toEqual({
+       slug: { owner: 'howlo', project: 'chemicals' },
+@@ -81,7 +81,7 @@ describe('resolveProjectRemote', () => {
+ 
+   it('has no remote without an origin, or with one Field has no API for', () => {
+     expect(resolveProjectRemote(root, {})).toMatchObject({ kind: 'none' });
+-    git(['remote', 'add', 'origin', 'https://github.com/okamnesiac/field.git'], { cwd: root });
++    git(['remote', 'add', 'origin', 'https://github.com/audiofield/field.git'], { cwd: root });
+     expect(resolveProjectRemote(root, {})).toMatchObject({ kind: 'none', reason: expect.stringContaining('git.<site>') });
+     // A cleartext audiofield-shaped origin is the same answer, and the
+     // reason says why, so the silence can be explained.
