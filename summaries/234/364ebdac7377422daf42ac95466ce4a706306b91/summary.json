@@ -3,7 +3,7 @@
  "name": "Live notes and MIDI sequencing",
  "project": "sequencer",
  "pr": {
-  "repo": "okamnesiac/field",
+  "repo": "audiofield/field",
   "number": 234,
   "title": "Send scheduled MIDI and MIDI clock from field-audiod's audio callback (sequencer.md chunk 4)",
   "head": "364ebdac7377422daf42ac95466ce4a706306b91",
@@ -14,19 +14,21 @@
  },
  "overview": {
   "summary": [
-   "This layer adds the daemon’s scheduled MIDI output engine. Callers submit sample-positioned events through <code>midi_out</code>, choose a virtual source or destination, and close the output with <code>midi_out_close</code>.",
-   "The audio callback selects event windows; a sender delivers messages and MIDI clock. This head rebases the unchanged engine layer onto #233’s corrected take placement and repeated-part rendering. The <code>field seq</code> projection and command callers remain later work."
+   "<code>field-audiod</code> is the daemon that owns the audio device and the transport. The coming <code>field seq</code> command has to play a part's notes on time, to a SuperCollider voice or a hardware synth, and to send MIDI clock to gear that runs its own patterns. Node timers cannot keep that deadline, so the sequencer plan has the engine send the MIDI from its audio callback, as it already does for the click.",
+   "This layer is that engine half. The new <code>midi_out</code> op opens a named output and gives it a schedule, which is a list of MIDI messages, each with the sample it belongs to on the bed's timeline. The bed is whatever the transport plays, either a live session or a file. In each audio block, the callback picks the messages due soon and queues them with no allocation and no lock. A realtime sender thread then delivers each message at its time.",
+   "The daemon also ends an output's notes whenever the transport stops or jumps, and it can send MIDI clock with the transport messages that external gear follows. <code>field seq</code> and the projection of the tempo map into a schedule stay with chunk 5, so only tests call <code>midi_out</code> at this head.",
+   "Seven review findings are open at this head, including a Windows compile failure. The <b>Review at 364ebda</b> card lists them, and each one sits under the code it concerns."
   ],
   "cards": [
    {
-    "id": "timing",
-    "title": "Timing vocabulary",
-    "html": "<ul class=\"tight\"><li><b>Schedule:</b> MIDI bytes indexed by transport sample.</li><li><b>Lead:</b> advance delivery by a configured number of samples.</li><li><b>Clock:</b> tick and transport messages that follow playback and loop position.</li></ul>"
+    "id": "terms",
+    "title": "Terms on this page",
+    "html": "<ul class=\"tight\"><li><b>Schedule:</b> MIDI bytes, each with a sample on the bed's timeline. The daemon never learns what a note or a bar is.</li><li><b>Source:</b> a virtual MIDI port that the daemon publishes for an output, which a voice listens to.</li><li><b>Destination:</b> an existing MIDI port that an output sends to, such as a hardware synth's.</li><li><b>Lead:</b> how many samples early an output sends each event, to cover the time a receiver takes to produce sound.</li><li><b>Lookahead window:</b> the block's span on the timeline, moved later by the lead. The callback takes the events inside it.</li><li><b>Wrap:</b> the moment a loop jumps from its end back to its start.</li><li><b>Converted delivery:</b> a session rendered at its own rate and resampled for a device at another rate. The session advances in steps of its own, not by the block.</li><li><b>MIDI clock:</b> timing pulses, 24 to the quarter note, with Start, Stop, Continue, and Song Position Pointer (SPP), which names a position in sixteenth notes.</li></ul>"
    },
    {
-    "id": "validation",
+    "id": "review",
     "title": "Review at 364ebda",
-    "html": "Native build, typecheck, project validation, native self-test, and 76 focused tests pass, with one environmental skip. Both existing P2 findings remain reproducible with native fake-sink probes. Physical MIDI hardware and other operating systems were not tested."
+    "html": "<p>Five findings are new in this review:</p><ul class=\"tight\"><li><b>P1, Windows build:</b> a helper named <code>near</code> collides with a <code>windows.h</code> macro, and the <code>windows</code> CI job fails.</li><li><b>P2, lost events:</b> converted delivery at lead 0 loses about 8% of a schedule.</li><li><b>P2, file beds:</b> a false jump on the second block cuts the first notes and restarts the clock.</li><li><b>P2, schedule swap:</b> the callback reads a schedule that another thread can already have freed.</li><li><b>P2, replaced clock:</b> a new tempo sends no reposition, so external gear runs at the wrong position.</li></ul><p>Two findings from an earlier review remain open, and both reproduce on the real daemon: a wrap on a block boundary at lead 0, and sustain-pedal notes that outlast a stop.</p><p class=\"note\">Not tested: Linux, Windows, and physical MIDI hardware. Linux and Windows results come from CI, where Linux passes and Windows fails to compile.</p>"
    }
   ]
  },
@@ -34,20 +36,24 @@
   {
    "id": "contract",
    "title": "Define output schedules",
-   "kicker": "Start with the wire contract and ownership",
+   "kicker": "Start with the wire contract and who owns an output",
    "intro": [
-    "The TypeScript client validates schedules before sending them. The native model separates events, loop/clock settings, and output state so replacement schedules can retain their port."
+    "A client describes an output in one JSON request. It names the output, chooses a source or a destination, and gives the rate, the lead, and the events. Sending <code>midi_out</code> again under an open name replaces the schedule and keeps the port, so whatever listens to a source stays connected.",
+    "An output belongs to the connection that opened it and closes when that connection ends, as an input does. So a killed <code>field seq</code> leaves no output playing."
    ],
    "checks": [],
    "files": [
     {
-     "path": "src/audiod/protocol.ts"
+     "path": "src/audiod/protocol.ts",
+     "note": "Adds the request and response schemas for <code>midi_out</code>, and <code>outputs</code> in <code>status</code>."
     },
     {
-     "path": "src/audiod/client.ts"
+     "path": "src/audiod/client.ts",
+     "note": "Adds the client's <code>midiOut</code> and <code>closeMidiOut</code> calls."
     },
     {
-     "path": "native/audiod/src/midi_out.h"
+     "path": "native/audiod/src/midi_out.h",
+     "note": "Describes the three threads that share an output, and the block facts the callback receives from the player."
     }
    ]
   },
@@ -56,23 +62,50 @@
    "title": "Select and deliver MIDI events",
    "kicker": "Read the scheduling engine before its callers",
    "intro": [
-    "<code>MidiOutputs</code> takes callback windows, queues timestamped messages, and uses a sender thread for delivery. It tracks held notes and future note-offs so interruption can end notes whose release was queued ahead."
+    "<code>MidiOutputs</code> is the core of this layer, and three threads share each output:",
+    "<ol><li><b>The message thread</b> opens, replaces, and closes outputs. It passes a new schedule to the callback by pointer and frees the old one later.</li><li><b>The audio callback</b> runs <code>play</code> each block. <code>take</code> finds the events in the lookahead window, continuing at the loop's start past its end, and <code>push</code> queues each one with its time.</li><li><b>The sender thread</b> runs <code>service</code>. It sends a source's messages when they fall due, and it hands a destination's messages to CoreMIDI at once, stamped with their times, on macOS.</li></ol>",
+    "The sender also records which notes each output holds, so it can send their note-offs when the transport stops or jumps. A queued <code>Entry::cut</code> means the bed stopped or jumped, so the sender ends the held notes and drops what was queued for after it. An <code>Entry::wrap</code> ends the held notes at the loop's end and drops nothing."
    ],
-   "checks": [],
+   "checks": [
+    {
+     "kind": "verify",
+     "text": "The callback's path allocates nothing and takes no lock. I traced <code>play</code>, <code>take</code>, <code>push</code>, and the wake of the sender by reading them, and no tool measured this."
+    }
+   ],
    "files": [
     {
      "path": "native/audiod/src/midi_out.cpp",
-     "note": "Follow selection, loop wrapping, sender delivery, and teardown in that order.",
+     "note": "Holds the whole engine. Read selection first, then wrapping, delivery, and teardown. The second half of the file is the sinks and the self-test.",
      "checks": [
       {
        "kind": "flag",
+       "line": 414,
+       "text": "P2: <code>play</code> publishes <code>outgoing</code> through <code>spent</code> on the line above and then reads <code>outgoing-&gt;events</code>. By then <code>reclaim</code>, a <code>midi_out</code>, or an input opening can have freed it, so the realtime callback can read freed memory. This comes from reading the code, not from a reproduction. To fix it, compute the comparison before the store."
+      },
+      {
+       "kind": "flag",
+       "line": 415,
+       "text": "P2: A swap pushes only a cut, so a schedule with different <code>pulses</code> sends no Stop, SPP, or Continue. Replacing pulses 1000 samples apart with pulses 2000 apart at about sample 48000 left the gear at pulse 48 where the new list says 24. The gear stays one beat ahead until the next locate or wrap. To fix it, compare the pulse lists in <code>open</code> and reposition the clock only when they differ."
+      },
+      {
+       "kind": "flag",
+       "line": 444,
+       "text": "P2: Converted delivery can move a block's position past the end of the last window. <code>from</code> then clamps to 0, and the events in between never leave. A 44.1 kHz session on the 48 kHz null device at lead 0 sent 367 of 401 due events, with <code>late</code> and <code>dropped</code> both 0. <code>field seq --destination</code>, <code>--clock</code>, and <code>--midi-only</code> all use lead 0. To fix it, let <code>from</code> go negative so that <code>take</code> also sends that stretch."
+      },
+      {
+       "kind": "flag",
        "line": 500,
-       "text": "P2: A wrap exactly at the window end returns before boundary cleanup and clock repositioning. A 1024-sample loop in 512-frame blocks reproduces repeated note-ons without the intervening note-off."
+       "text": "P2: A wrap exactly at the window's end returns before it pushes the note cleanup and the clock reposition, and at lead 0 the next block starts at the loop's start, so nothing pushes them later. A long note in a loop of exactly 94 blocks sent three note-ons and no note-off until the stop, with no clock reposition at any wrap."
       },
       {
        "kind": "flag",
        "line": 663,
-       "text": "P2: Teardown tracks held keys but not CC64 sustain. A released note under the pedal survives stop, locate, or close; the probe observes no pedal release."
+       "text": "P2: Teardown tracks held keys but not the sustain pedal, CC 64. A schedule that sends pedal down, note-on, and note-off sends nothing further at the stop, so <code>sc/voicer.scd</code> keeps holding the voice."
+      },
+      {
+       "kind": "flag",
+       "line": 916,
+       "text": "P1: <code>windows.h</code> defines <code>near</code> as an empty macro, so this helper loses its name and MSVC stops with <code>error C2062</code>. The <code>windows</code> CI job fails with that error at this head and passes on the <code>seq-notes</code> base. To fix it, rename the helper and its callers."
       }
      ]
     }
@@ -83,81 +116,129 @@
    "title": "Connect output to playback",
    "kicker": "Transport position and callback timing feed selection",
    "intro": [
-    "The player passes playback windows, loop position, and timing margins to MIDI outputs. Live routing and ring input expose the information needed to avoid recording the daemon’s own virtual sources."
+    "Each block, <code>processBlock</code> tells the outputs where the bed is: its position, how far it advances, and the loop in force. <code>MidiOutputs::play</code> compares each position with the last one plus its advance. A different position counts as a jump, as a locate does, and <code>slack</code> says how far the position may stray first.",
+    "A session the device plays at its own rate advances exactly, so its <code>slack</code> is 0. Converted delivery and a resampled file do not advance exactly, so they get a block plus 1024 samples.",
+    "A voice's audio returns through a ring input, whose reader holds back a block plus 256 frames. <code>readerMargin</code> exposes that margin, so an output with a <code>lead_input</code> can lead by it too. Arming for a MIDI take also leaves out the daemon's own sources, so a take records what you play and not the part playing beside it."
    ],
    "checks": [],
    "files": [
     {
-     "path": "native/audiod/src/player.cpp"
+     "path": "native/audiod/src/player.cpp",
+     "note": "Feeds each block's facts to the outputs, binds an output's lead input when that input opens, and runs the null clock as a realtime thread on macOS.",
+     "checks": [
+      {
+       "kind": "flag",
+       "line": 1188,
+       "text": "P2: This line marks a file bed at the device's rate as exact, but JUCE's resampler reads 3 extra samples on its first block after a flush, so the second block counts as a jump. A 48 kHz file played from the top sends <code>Start, note-on, note-off, Stop, SPP 1, Continue</code>, where a session bed sends only <code>Start, note-on</code> until the stop. To fix it, give a file bed a <code>slack</code> of at least those 3 samples."
+      }
+     ]
     },
     {
-     "path": "native/audiod/src/player.h"
+     "path": "native/audiod/src/player.h",
+     "note": "Declares the output ops and the block facts. The sender is declared after the outputs, so the sender stops first."
     },
     {
-     "path": "native/audiod/src/live.h"
+     "path": "native/audiod/src/live.h",
+     "note": "Adds <code>readerMargin</code> to the input interface, with a default of 0."
     },
     {
-     "path": "native/audiod/src/ring_input.h"
+     "path": "native/audiod/src/ring_input.h",
+     "note": "Reports a ring reader's margin, a block plus one writer burst."
     }
    ]
   },
   {
    "id": "integration",
    "title": "Wire requests and monitor timestamps",
-   "kicker": "Daemon lifetime, IPC, and native build targets",
+   "kicker": "Daemon lifetime, requests, and the MIDI monitor",
    "intro": [
-    "The server handles output requests and connection cleanup. The daemon owns output lifetime; the keys helper preserves source identity and timestamp information for monitoring."
+    "The server routes the two new ops and closes an output when its connection ends. The daemon's exit path closes outputs too, so their notes end before it quits.",
+    "<code>--midi-monitor</code> is the tool that reads what an output sends. Each line now gives the message's arrival on the daemon's clock as <code>host_ms</code>. With <code>--destination</code> it publishes a virtual destination, and on macOS each line also gives <code>timestamp_ms</code>, the time stamped on the message."
    ],
    "checks": [],
    "files": [
     {
-     "path": "native/audiod/src/server.cpp"
+     "path": "native/audiod/src/server.cpp",
+     "note": "Dispatches <code>midi_out</code> and <code>midi_out_close</code>, and closes a connection's outputs in the sweep. Both ops run under the message lock, so they do not race the heartbeat."
     },
     {
-     "path": "native/audiod/src/main.cpp"
+     "path": "native/audiod/src/main.cpp",
+     "note": "Adds the <code>--midi-out-selftest</code> and <code>--destination</code> flags, the heartbeat's reclaim of old schedules, and the close at exit."
     },
     {
-     "path": "native/audiod/src/keys.cpp"
+     "path": "native/audiod/src/keys.cpp",
+     "note": "Moves virtual-source creation and MIDI byte parsing into shared helpers, and adds the monitor's timestamps and its destination mode. The signal handlers now install before the wait for a source, so a SIGTERM during that wait takes effect only after up to 5 seconds."
     },
     {
-     "path": "native/audiod/src/keys.h"
+     "path": "native/audiod/src/keys.h",
+     "note": "Declares those shared helpers."
     },
     {
-     "path": "native/audiod/CMakeLists.txt"
+     "path": "native/audiod/CMakeLists.txt",
+     "note": "Adds <code>midi_out.cpp</code> to the build."
     }
    ]
   },
   {
    "id": "evidence",
    "title": "Exercise and document the engine",
-   "kicker": "Tests and current behavior references",
+   "kicker": "Tests and the docs that describe current behavior",
    "intro": [
-    "The tests cover validation, port lifecycle, scheduling, clock, and CoreMIDI integration. Documentation records the daemon API and the completed engine slice while keeping the CLI projection as future work."
+    "Two layers of test cover the engine. <code>--midi-out-selftest</code> drives the callback's selection against a fake clock and fake sinks. <code>midi-out.test.ts</code> runs the real daemon in null-output mode, sends through real virtual MIDI, and reads the result back with <code>--midi-monitor</code> and MIDI takes.",
+    "The docs describe the engine as it runs, and the plan's new section 10 records what building it measured."
    ],
    "checks": [
     {
      "kind": "verify",
-     "text": "Built native targets and ran the daemon self-test, typecheck, project check, MIDI suites, and updated-base part, voice-render, take-landing, and note-time suites: 76 passed, one environmental skip."
+     "text": "On macOS at this head, these pass: the native build, <code>--midi-out-selftest</code>, <code>pnpm typecheck</code>, <code>project check</code>, and the three test files the Testing section names. The whole <code>pnpm test</code> suite was not run."
+    },
+    {
+     "kind": "context",
+     "text": "In the first run of those test files, <code>record-midi-daemon.test.ts</code> timed out waiting for a note-off to reach a take file. It then passed eight times out of eight, and this pull request does not change that test. The cause is unknown, so no finding rests on it."
     }
    ],
    "files": [
     {
-     "path": "src/audiod/midi-out.test.ts"
+     "path": "src/audiod/midi-out.test.ts",
+     "note": "Runs the daemon end to end: timing across a wrap, note-offs in every case, capture leaving out the outputs, destination timestamps, and the clock's transport messages.",
+     "checks": [
+      {
+       "kind": "context",
+       "text": "Every test here plays a session at the device's rate, so neither converted delivery nor a file bed runs in this suite. Those are the two beds behind the lost-events and false-jump findings. The destination test's loop sits on the block grid at lead 0, but its notes end before each wrap, so that test does not show the missing wrap."
+      }
+     ]
     },
     {
-     "path": "src/keys/helper-native.test.ts"
+     "path": "src/keys/helper-native.test.ts",
+     "note": "Expects <code>host_ms</code> on each monitor line."
     },
     {
-     "path": "docs/architecture.md"
+     "path": "docs/architecture.md",
+     "note": "Says that the daemon sends MIDI on the clock the audio callback keeps."
     },
     {
-     "path": "docs/audio-engine.md"
+     "path": "docs/audio-engine.md",
+     "note": "Adds the <b>MIDI outputs</b> section, the reference for the op, its fields, and its counters.",
+     "checks": [
+      {
+       "kind": "context",
+       "text": "Its description of the lookahead window holds for a session at the device's rate. Under converted delivery at a low lead, windows leave gaps, as the finding on <code>midi_out.cpp</code> describes."
+      }
+     ]
     },
     {
-     "path": "docs/keys.md"
+     "path": "docs/keys.md",
+     "note": "Documents <code>host_ms</code> and the monitor's <code>--destination</code> mode."
     },
     {
-     "path": "docs/projects/sequencer/readme.md"
+     "path": "docs/projects/sequencer/readme.md",
+     "note": "Adds section 10, which records what building the engine measured.",
+     "checks": [
+      {
+       "kind": "context",
+       "text": "Section 10 corrects section 2.5 on one point: CoreMIDI holds at most one block of a destination's events, not a block and the lead, because each queued event falls due within the block that queued it. It also records that <code>MIDIFlushOutput</code> reaches a virtual destination as a System Reset, so the daemon flushes only when CoreMIDI still holds something."
+      }
+     ]
     }
    ]
   }
