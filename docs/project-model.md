@@ -454,8 +454,8 @@ hashes, and `field fmt` covers them.
 
 A part is a notes file you write: `songs/<song>/notes/<name>.yaml`, by
 hand, with an agent, by copying a take, or from a SuperCollider pattern
-with `field sc notes`. A `- notes: <name>` entry
-places it on a track, which plays it through the track's instrument
+with `field sc notes`. A `- notes: <name>` entry places it on a track,
+which plays it through the track's instrument
 ([projects/sequencer/readme.md](projects/sequencer/readme.md) §2.2).
 
 ```yaml
