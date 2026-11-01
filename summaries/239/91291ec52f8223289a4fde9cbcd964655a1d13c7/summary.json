@@ -1,0 +1,199 @@
+{
+ "version": 1,
+ "name": "Repository move to audiofield",
+ "project": "install",
+ "pr": {
+  "repo": "audiofield/field",
+  "number": 239,
+  "title": "Move Field's release source to audiofield/field, and carry existing installs over from okamnesiac/field",
+  "head": "91291ec52f8223289a4fde9cbcd964655a1d13c7",
+  "headRef": "move-to-audiofield",
+  "base": "ab35678dd4f0554d0585fe282da2c4a26c5b465d",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "A release install is Field installed without a clone. <code>install.sh</code> downloads a tagged source archive from GitHub, builds it under <code>~/.local/share/field</code>, and writes the repository it came from into a small file, <code>release.conf</code>. <code>field upgrade</code> reads that file to find the newest installer, downloads it, and runs it.",
+   "Field's repository moved from <code>okamnesiac/field</code> to <code>audiofield/field</code>. GitHub redirects the old name for now, but <code>okamnesiac/fyra</code>, a private repository, is about to take that name, and that ends the redirect. Both programs put what <code>release.conf</code> recorded ahead of their default, so changing the default alone would leave every existing install asking for a name that then answers 404.",
+   "This change makes <code>audiofield/field</code> the default, and it has both programs read a recorded <code>okamnesiac/field</code> as <code>audiofield/field</code>. The installer then writes the new name the next time it installs. A fork's record stays as it is, and an explicit <code>FIELD_REPO</code> still wins.",
+   "The code change adds 16 lines across <code>install.sh</code> and <code>src/commands/upgrade.ts</code>. The rest of the diff replaces the old name in the docs and the tests, and adds the two tests that pin the mapping."
+  ],
+  "cards": [
+   {
+    "id": "installs",
+    "title": "What happens to each kind of install",
+    "html": "<div class=\"tblwrap\"><table class=\"tbl\"><thead><tr><th>Install</th><th>Before the rename</th><th>After the rename</th></tr></thead><tbody><tr><td><code>field</code> 0.3.5 or older</td><td><code>field upgrade</code> downloads the new installer through the redirect, and that installer moves the record.</td><td><code>field upgrade</code> and <code>field uninstall</code> fail, because the download answers 404. <code>curl -fsSL https://field.one/install.sh | bash</code> moves the install, and <code>curl -fsSL https://field.one/uninstall.sh | bash</code> removes it. An install made with <code>FIELD_DATA_DIR</code> needs that variable set again.</td></tr><tr><td>The release that carries this change, or newer</td><td>Follows <code>audiofield/field</code>.</td><td>Follows <code>audiofield/field</code>.</td></tr><tr><td>A fork's install</td><td>Follows the fork.</td><td>Follows the fork.</td></tr><tr><td>A clone</td><td><code>origin</code> still reaches Field through the redirect.</td><td><code>origin</code> names the private repository until you run the <code>git remote set-url</code> command that <code>docs/install.md</code> gives.</td></tr></tbody></table></div>"
+   },
+   {
+    "id": "order",
+    "title": "The move has to happen in order",
+    "html": "<ol><li>Point field.one at the new name. okamnesiac/audiofield#46 did this, and it is merged.</li><li>Release this change, which moves the <code>v0</code> tag to it.</li><li>Rename <code>okamnesiac/fyra</code> to take the old name.</li></ol><p class=\"note\">The pull request's check for step 2: after the release, run <code>field upgrade</code>, then <code>head -1 ~/.local/share/field/release.conf</code>. It prints <code>repo=audiofield/field</code>. If it prints <code>repo=okamnesiac/field</code>, do not rename.</p>"
+   },
+   {
+    "id": "review",
+    "title": "Review so far",
+    "html": "<ul class=\"tight\"><li>The full review of <code>03a1da2</code> is clean, with no finding threads, and it lists three suggestions about <code>docs/install.md</code>.</li><li>The next commit, <code>91291ec</code>, answers all three and changes only documentation. An incremental review of it is clean.</li><li>No real upgrade of a 0.3.5 install has run, because that needs the release.</li></ul>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "source",
+   "title": "Where a release comes from",
+   "kicker": "The default repository changes, and a recorded old name reads as the new one",
+   "intro": [
+    "Two programs decide which repository a release install follows: <code>install.sh</code>, and <code>field upgrade</code> in <code>src/commands/upgrade.ts</code>. They are written in different languages, so each holds its own copy of the name. Both read the same three sources, in this order:",
+    "<ol><li><code>FIELD_REPO</code>, when it is set in the environment.</li><li>What <code>release.conf</code> recorded, with <code>okamnesiac/field</code> now read as <code>audiofield/field</code>.</li><li>The default, now <code>audiofield/field</code>.</li></ol>",
+    "The new constant in each program, <code>MOVED_REPO</code>, holds the old name. The comparison is exact, so a fork such as <code>someone/field</code> is untouched."
+   ],
+   "checks": [
+    {
+     "kind": "context",
+     "text": "<code>field upgrade</code> and the installer each need the mapping. <code>field upgrade</code> chooses which installer to download, and that installer then reads <code>release.conf</code> again for itself. Because of that split, 0.3.5 can download the new installer through the redirect and still move: the old program needs the old name to resolve, and the new installer does the rest."
+    }
+   ],
+   "files": [
+    {
+     "path": "install.sh",
+     "note": "Changes the default, adds <code>MOVED_REPO</code>, and maps a recorded old name in <code>release_init</code>.",
+     "collapsed": false,
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 718,
+       "text": "The installer at this head ran <code>status</code> in a temporary directory against each record. <code>repo=okamnesiac/field</code> printed <code>release audiofield/field v0 is at 0.3.5</code>. <code>repo=someone/field</code> printed a row naming <code>someone/field</code>. <code>repo=okamnesiac/field</code> with <code>FIELD_REPO=someone/field</code> set also named <code>someone/field</code>."
+      },
+      {
+       "kind": "verify",
+       "text": "The record moves on any full install. Reading <code>install_release</code> shows that <code>write_record</code> runs on both branches, after a new version and after a repair of the current one. A failed install exits before it, so the old record stays, and the mapping handles it again on the next run."
+      }
+     ]
+    },
+    {
+     "path": "src/commands/upgrade.ts",
+     "note": "The same mapping in <code>releaseSource</code>, which chooses the repository <code>field upgrade</code> and <code>field uninstall</code> download the installer from.",
+     "collapsed": false,
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 82,
+       "text": "<code>upgrade</code> is the only caller of <code>releaseSource</code>, by a search of <code>src</code> and <code>scripts</code>. With the mapping removed from this line, the new test fails with <code>could not download the installer from …/okamnesiac/field/v0/install.sh</code>."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "tests",
+   "title": "Tests",
+   "kicker": "Two new tests pin the mapping, and the rest follow the new default",
+   "intro": [
+    "The test suite serves its own stand-in for GitHub, so the default name appears throughout it. Most of this diff replaces that name. The stand-in now serves only <code>audiofield/field</code>, so an installer that still asked for the old name fails its install in any test that uses the default.",
+    "<code>pnpm typecheck</code> is clean, and these four test files pass all 160 tests at <code>03a1da2</code>. The <code>linux</code> and <code>windows</code> CI jobs pass there too. The one commit after it changes only documentation, so no test here reads anything it changed."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "src/install.test.ts",
+     "note": "Adds <code>moves an install that recorded the repository before it moved</code>. The rest replaces the default name.",
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 1274,
+       "text": "With the mapping removed from <code>install.sh</code>, this test fails on its <code>status</code> row, which reads <code>okamnesiac/field v0 (could not read its version…)</code>. So the test catches the regression it is for."
+      }
+     ]
+    },
+    {
+     "path": "src/commands/upgrade.test.ts",
+     "note": "Adds the same case for <code>field upgrade</code>. The rest replaces the default name."
+    },
+    {
+     "path": "src/release.test.ts",
+     "note": "The example URLs change. Behavior does not."
+    },
+    {
+     "path": "src/remote/origin.test.ts",
+     "note": "The example URLs change. Behavior does not."
+    }
+   ]
+  },
+  {
+   "id": "docs",
+   "title": "Documentation",
+   "kicker": "Readers learn what an old install or clone needs, and the plan records the decision",
+   "intro": [
+    "<code>docs/install.md</code> now says what to do in each case the move breaks: an old install's <code>field upgrade</code> and <code>field uninstall</code>, an install made with <code>FIELD_DATA_DIR</code>, and an existing clone. It also replaces the old name in its examples. The install plan gains §11, which records why the record moves and the order of the steps. The other files replace the name."
+   ],
+   "checks": [
+    {
+     "kind": "verify",
+     "text": "A search of the head finds <code>okamnesiac/field</code> in the two <code>MOVED_REPO</code> constants, the two tests that write it into a record, the two paragraphs in <code>docs/install.md</code> that explain the old name, and §1, §10.3, and §11 of the install plan. No workflow or manifest names it."
+    }
+   ],
+   "files": [
+    {
+     "path": "docs/install.md",
+     "note": "New paragraphs under <b>Upgrade a release</b> and in the checkout section say what each old install or clone needs, and <b>Remove a release install</b> names the old versions. The other edits replace the name in examples.",
+     "collapsed": false,
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 212,
+       "text": "The installer at this head ran <code>status</code> offline, piped into <code>bash</code> as this command is, with a <code>~/</code> value for <code>FIELD_DATA_DIR</code>. Its row named that directory and it wrote nothing. Bash and zsh both expand the tilde in this position. Without the variable, <code>release_init</code> uses the default data directory, so the sentence above about a second install holds."
+      },
+      {
+       "kind": "verify",
+       "line": 216,
+       "text": "The link target <code>#remove-a-release-install</code> matches the heading <b>Remove a release install</b> in this file."
+      },
+      {
+       "kind": "verify",
+       "line": 299,
+       "text": "<code>uninstall</code> in <code>src/commands/upgrade.ts</code> calls <code>upgrade</code>, which downloads the installer from the recorded name. So on 0.3.5 and older, <code>field uninstall</code> fails the same way <code>field upgrade</code> does after the rename. Reading the code shows this, and it cannot run until the rename."
+      },
+      {
+       "kind": "context",
+       "line": 358,
+       "text": "<code>install.sh</code> fetches a clone's upstream and compares against it, and it never changes a remote. So this step stays a command the reader runs. The command writes an HTTPS URL, so someone who cloned over SSH substitutes their own form."
+      }
+     ]
+    },
+    {
+     "path": "docs/projects/install/readme.md",
+     "note": "§11 records the move, the order of its steps, and the two things the installer cannot move by itself: <code>field uninstall</code> on old versions, and a clone's <code>origin</code>. §3.2 and §3.3 change to the new name, because they describe the system now.",
+     "collapsed": false,
+     "checks": [
+      {
+       "kind": "context",
+       "text": "§1 and §10.3 keep the old name on purpose, because they record what was true then. The plan stays at <code>in-progress</code>, and §11 adds no open question."
+      }
+     ]
+    },
+    {
+     "path": "docs/cli.md",
+     "note": "The default in the environment variable table."
+    },
+    {
+     "path": "docs/projects/arming/readme.md",
+     "note": "A citation now names <code>audiofield/field#194</code>.",
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 271,
+       "text": "<code>gh issue view 194 --repo audiofield/field</code> returns the issue this citation means, about a punch-out over a file bed ending 3 samples short."
+      }
+     ]
+    },
+    {
+     "path": "README.md",
+     "note": "The clone command."
+    },
+    {
+     "path": "examples/bloom/README.md",
+     "note": "The clone command."
+    }
+   ]
+  }
+ ]
+}
