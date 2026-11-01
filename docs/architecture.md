@@ -205,10 +205,12 @@ OSC over UDP, which TypeScript handles fine. Two modes:
   ([build-graph.md](build-graph.md) "`voice-render`").
 - **Live** — `field keys <instrument>` runs a voice host: `sclang` on
   `sc/voice-host.scd`, which boots its own scsynth on the output device
-  and plays the instrument's voice from every MIDI source
-  ([keys.md](keys.md)). Its sound goes straight to the device, beside
-  the daemon's rather than through the session graph. Bringing it into
-  that graph, so a track's inserts process it, is
+  and plays the instrument's voice from every MIDI source except the
+  `Field Seq` ones ([keys.md](keys.md)). `field sc voice` runs the same
+  host from the sources you name, with no keyboard ([cli.md](cli.md)
+  "Play a voice from MIDI sources"). Its sound goes straight to the
+  device, beside the daemon's rather than through the session graph.
+  Bringing it into that graph, so a track's inserts process it, is
   [live-supercollider](projects/live-supercollider/readme.md)'s work.
   The engine's half has landed: a live session carries an input up
   through every chain above its track ([audio-engine.md](audio-engine.md)
