@@ -10,9 +10,9 @@ import { KeysSession, TICK_MS, type MidiMessage } from '../keys/session.js';
 import { decodeTerminal, ENABLE, isQuit, probeKittyProtocol, RESTORE, type Tty } from '../keys/terminal.js';
 import { resolveKeysTargets, type ArmedInstrument } from '../keys/targets.js';
 import { findProjectRoot } from '../model/project.js';
-import { VoiceHost, type VoiceHostStatus } from '../sc/voice/host.js';
 import { KnobFiles, loadKnobSources, type KnobSource } from '../sc/voice/knob-files.js';
 import { routeVoices, type Routing, type Unrouted } from '../sc/voice/routing.js';
+import { startVoices, type VoiceState } from '../sc/voice/start.js';
 import type { Knob } from '../schema/knobs.js';
 import type { Keymap } from '../schema/keymap.js';
 
@@ -86,17 +86,12 @@ interface PlayOptions {
   root: string | undefined;
 }
 
-export type InstrumentState = {
+export type InstrumentState = VoiceState & {
   name: string; // what is armed, as the line names it
   dry: string[]; // tracks whose effects the voices do not pass through yet
   // Why the voices do not pass through them (live-supercollider.md
   // chunk 3), when routing them was not possible.
   dryReason?: string;
-  // Why nothing is heard at all: routed, but scsynth never ran the route.
-  silent?: string;
-  status: Extract<VoiceHostStatus, { state: 'live' | 'restarting' }> | { state: 'starting' };
-  // What the last save of the program did (keyboard-instrument.md §14).
-  reload?: { loaded: true } | { failed: string };
 };
 
 async function play(tty: Tty, options: PlayOptions, carried: string): Promise<'abandoned' | undefined> {
@@ -224,35 +219,16 @@ async function playRouted(
   const device = routing !== undefined ? routing.device : (options.device ?? helper.defaultOutput);
   const host =
     programs.length > 0
-      ? await VoiceHost.start({
+      ? await startVoices({
           instruments: programs,
           knobs: knobFiles.copies,
           ...(device !== undefined ? { device } : {}),
-          ...(routing !== undefined ? { rings: routing.rings, fieldOut: routing.fieldOut } : {}),
-          onStatus: (status) => {
-            if (status.state === 'voice') return;
-            if (status.state === 'reloaded') instrument!.reload = { loaded: true };
-            else if (status.state === 'reload-failed') instrument!.reload = { failed: status.reason };
-            else instrument!.status = status;
-            draw();
-          },
-          onExit: (reason) => stop(new Error(`the voice host stopped: ${reason}`)),
+          routing,
+          state: instrument!,
+          changed: draw,
+          stop,
         })
       : undefined;
-  host?.ready.catch((err: Error) => stop(new Error(`the voice host did not start: ${err.message}`)));
-  // A route scsynth never ran, because FieldOut did not load in it, leaves
-  // its ring empty: the voice is then nowhere, and the line says so.
-  if (host !== undefined && routing !== undefined) {
-    void host.ready
-      .then(() => routing.flowing())
-      .then((flowing) => {
-        if (flowing || instrument === undefined) return;
-        // The voices play into a bus nothing reads: not dry, silent.
-        instrument.silent = 'FieldOut did not load in scsynth, so nothing reaches the daemon';
-        draw();
-      })
-      .catch(() => {});
-  }
 
   // Saving a program loads it again, as saving a keymap does
   // (keyboard-instrument.md §14).

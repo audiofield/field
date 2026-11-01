@@ -10,8 +10,8 @@ import { KeysHelper } from '../keys/helper.js';
 import { resolveKeysTargets, type ArmedInstrument } from '../keys/targets.js';
 import { findProjectRoot, loadProject } from '../model/project.js';
 import { KnobFiles, loadKnobSources } from '../sc/voice/knob-files.js';
-import { VoiceHost } from '../sc/voice/host.js';
 import { routeVoices, type Routing } from '../sc/voice/routing.js';
+import { startVoices } from '../sc/voice/start.js';
 import { formatNotesFile, type TimedNotes } from '../schema/notes.js';
 import { armedName, instrumentState, instrumentText } from './keys.js';
 
@@ -87,35 +87,19 @@ export async function scVoice(targets: string[], options: ScVoiceOptions, contex
     // A routed voice is heard on the daemon's device, so it is made there.
     const output = routing !== undefined ? routing.device : (options.device ?? (await systemOutput(root)));
     const programs = routing?.programs ?? [...new Set(voices.map((v) => v.program))];
-    const host = await VoiceHost.start({
+    const host = await startVoices({
       instruments: programs,
       knobs: knobFiles.copies,
       ...(options.source.length > 0 ? { sources: programs.map(() => options.source) } : {}),
       ...(output !== undefined ? { device: output } : {}),
-      ...(routing !== undefined ? { rings: routing.rings, fieldOut: routing.fieldOut } : {}),
       env,
-      onStatus: (status) => {
-        if (status.state === 'voice') return;
-        if (status.state === 'reloaded') state.reload = { loaded: true };
-        else if (status.state === 'reload-failed') state.reload = { failed: status.reason };
-        else state.status = status;
-        print(instrumentText(state));
+      routing,
+      state,
+      changed: () => {
+        if (!quitting) print(instrumentText(state));
       },
-      onExit: (reason) => stop(new Error(`the voice host stopped: ${reason}`)),
+      stop,
     });
-    host.ready.catch((err: Error) => stop(new Error(`the voice host did not start: ${err.message}`)));
-    // A route scsynth never ran, because FieldOut did not load in it,
-    // leaves its ring empty, and the voice is then nowhere.
-    if (routed !== undefined && 'programs' in routed) {
-      void host.ready
-        .then(() => routed.flowing())
-        .then((flowing) => {
-          if (flowing || quitting) return;
-          state.silent = 'FieldOut did not load in scsynth, so nothing reaches the daemon';
-          print(instrumentText(state));
-        })
-        .catch(() => {});
-    }
     const stopWatchingPrograms = host.reloadOnSave();
     const stopWatchingKnobs = knobFiles.watch((path, result, reload) => {
       if ('error' in result) print(`knobs not reloaded: ${knobFiles.errors.get(path)}`);
