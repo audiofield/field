@@ -65,9 +65,6 @@ export class KnobFiles {
     return changed.some((s) => s.program !== undefined);
   }
 
-  // Takes each save of every file through `saved`, then tells `onSave`
-  // which file it was, what the save did, and whether a voice must
-  // reload.
   watch(onSave: (path: string, result: KnobsReload, reload: boolean) => void): () => void {
     const stops = this.paths().map((path) => watchKnobs(path, (result) => onSave(path, result, this.saved(path, result))));
     return () => stops.forEach((stop) => stop());
