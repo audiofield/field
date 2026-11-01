@@ -1,17 +1,21 @@
 import type { AudiodClient } from './client.js';
 import { compileSession, type CompiledSession, type SessionInput } from '../graph/live.js';
 
-// The inputs a song's input windows read (live-supercollider.md): a
-// `field keys` voice's ring, `keys:<song>/<track>` (chunk 3), and an armed
-// input a `field record --monitoring host` hears, `capture:<song>/<track>`
-// (§12). Every command that loads a song's session compiles in the ones
-// open for it, so a reload from `field play`, its watch, `field ui`, or
-// `field record` keeps both heard.
-const LIVE_INPUT = /^(?:keys|capture):([^/]+)\/(.+)$/;
+// The inputs a song's input windows read, each named
+// `<kind>:<song>/<track>`: the ring of a voice that `field keys` plays,
+// `keys:` (live-supercollider.md chunk 3), that `field seq` plays, `seq:`,
+// and that `field sc voice` plays, `voice:` (sequencer.md §2.6), and an
+// armed input a `field record --monitoring host` hears, `capture:`
+// (live-supercollider.md §12). Every command that loads a song's session
+// compiles in the ones open for it, so a reload from `field play`, its
+// watch, `field ui`, or `field record` keeps all four heard. A `seq:`
+// input also tells the compile that its track's notes play live
+// (src/graph/live.ts).
+export type LiveInputKind = 'keys' | 'seq' | 'voice' | 'capture';
+const LIVE_INPUT = /^(?:keys|seq|voice|capture):([^/]+)\/(.+)$/;
 
-// The capture input `field record --monitoring host` opens for `track`.
-export function captureInputName(song: string, track: string): string {
-  return `capture:${song}/${track}`;
+export function liveInputName(kind: LiveInputKind, song: string, track: string): string {
+  return `${kind}:${song}/${track}`;
 }
 
 // The open inputs for `song`, as `compileSession` takes them.

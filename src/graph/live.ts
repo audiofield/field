@@ -42,6 +42,7 @@ import { wavFrameCount } from '../audio/wav.js';
 import { SESSION_VERSION, insertGrowth, insertLatency, type Session, type SessionInsert, type SessionTrack } from '../audiod/session.js';
 import { formatLabel } from '../labels.js';
 import { formatDiagnostic, loadProject, projectPath } from '../model/project.js';
+import { leaveOutNotes } from '../model/live-notes.js';
 import { applySolo } from '../model/solo.js';
 import type { SpecInsert } from '../generators/stem.js';
 import { toPluginWire } from '../audio/plugins.js';
@@ -123,7 +124,8 @@ export interface CompiledSession {
 }
 
 // A live input to attach (live-supercollider.md §2): the window named
-// `input` goes on `track`, and the daemon feeds it.
+// `input` goes on `track`, and the daemon feeds it. A `seq:` input also
+// leaves out the track's notes renders (model/live-notes.ts).
 export interface SessionInput {
   track: string;
   input: string;
@@ -152,6 +154,10 @@ export async function compileSession(
   // above on the real project, so a red project refuses identically
   // soloed or not.
   if (options.solo !== undefined) applySolo(song, options.solo);
+  // An input named `seq:<song>/<track>` (audiod/live-inputs.ts) says the
+  // track's notes play live through it.
+  const liveNotes = (options.inputs ?? []).filter(({ input }) => input.startsWith('seq:')).map(({ track }) => track);
+  leaveOutNotes(song, new Set(liveNotes));
   const graph: Graph = buildGraph(project);
 
   // The song's track nodes, keyed by name; their deps aligned to sources.

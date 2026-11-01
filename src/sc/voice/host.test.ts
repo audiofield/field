@@ -2,8 +2,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { resolveInstrument } from './targets.js';
-import { freeUdpPort, instrumentPath, oscMessage, parseHostLine, VoiceHost, type VoiceHostStatus } from './voice-host.js';
+import { resolveInstrument } from '../../keys/targets.js';
+import { freeUdpPort, instrumentPath, oscMessage, parseHostLine, VoiceHost, type VoiceHostStatus } from './host.js';
 
 // A stand-in for sclang running the voice host: it records its
 // environment, listens on the scsynth port it was given, records an OSC
@@ -155,7 +155,7 @@ describe('the voice host protocol', () => {
       device: 'Out',
       sample_rate: 44100,
     });
-    expect(parseHostLine('@field {"voice_on":60}')).toEqual({ voice_on: 60 });
+    expect(parseHostLine('@field {"voice_on":60,"voice":1}')).toEqual({ voice_on: 60, voice: 1 });
     expect(parseHostLine('Booting server on 127.0.0.1')).toBeUndefined();
     expect(parseHostLine('@field {not json')).toBeUndefined();
     expect(parseHostLine('@field {"surprise":1}')).toBeUndefined();
@@ -242,6 +242,20 @@ describe('the voice host process', () => {
     const seen = JSON.parse(readFileSync(`${log}.env`, 'utf8'));
     expect(JSON.parse(seen.instruments)).toEqual([
       { program: '/p/juno.scd', knobs: '/tmp/field-knobs-x/0-juno.knobs.yaml' },
+      { program: '/p/pad.scd' },
+    ]);
+    await host.close();
+  });
+
+  itStartsTheStub('hands each voice the MIDI sources it plays from, and a voice with none no list', async () => {
+    const host = await VoiceHost.start({
+      instruments: ['/p/juno.scd', '/p/pad.scd'],
+      sources: [['Field Keys', 'KeyStep 37'], null],
+      env: env('ready'),
+    });
+    await host.ready;
+    expect(JSON.parse(JSON.parse(readFileSync(`${log}.env`, 'utf8')).instruments)).toEqual([
+      { program: '/p/juno.scd', sources: ['Field Keys', 'KeyStep 37'] },
       { program: '/p/pad.scd' },
     ]);
     await host.close();

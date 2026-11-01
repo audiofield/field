@@ -1,32 +1,18 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename } from 'node:path';
 import { KeysHelper, SOURCE_NAME } from '../keys/helper.js';
 import { keyboardLines } from '../keys/keyboard.js';
 import { loadKeymap, resolveKeymapSource, watchKeymap, type KeymapSource } from '../keys/keymap.js';
-import {
-  formatKnobValue,
-  knobFileFor,
-  knobFileName,
-  knobList,
-  knobsCopy,
-  knobValueWidth,
-  loadKnobs,
-  resolveKnobsPath,
-  watchKnobs,
-  type KnobsReload,
-  type ShownKnob,
-} from '../keys/knobs.js';
+import { formatKnobValue, knobValueWidth } from '../keys/knobs.js';
 import { charactersToPositions, PressedKeys, unplayablePositions, type KeyboardLayout } from '../keys/position.js';
 import { publishControllers, unpublishControllers } from '../keys/published.js';
 import { printKeymap, signed } from '../keys/print.js';
 import { KeysSession, TICK_MS, type MidiMessage } from '../keys/session.js';
 import { decodeTerminal, ENABLE, isQuit, probeKittyProtocol, RESTORE, type Tty } from '../keys/terminal.js';
-import { routeArmed, type Routing, type Unrouted } from '../keys/routing.js';
 import { resolveKeysTargets, type ArmedInstrument } from '../keys/targets.js';
 import { findProjectRoot } from '../model/project.js';
-import { VoiceHost, type VoiceHostStatus } from '../keys/voice-host.js';
-import { watchText } from '../keys/watch.js';
+import { VoiceHost, type VoiceHostStatus } from '../sc/voice/host.js';
+import { KnobFiles, loadKnobSources, type KnobSource } from '../sc/voice/knob-files.js';
+import { routeVoices, type Routing, type Unrouted } from '../sc/voice/routing.js';
 import type { Knob } from '../schema/knobs.js';
 import type { Keymap } from '../schema/keymap.js';
 
@@ -100,83 +86,6 @@ interface PlayOptions {
   root: string | undefined;
 }
 
-// A knob file `field keys` reads (instrument-knobs.md §2.2): an armed
-// instrument's, which its voice also maps through, or one given with
-// --knobs, for whatever else listens to Field Keys.
-export interface KnobSource {
-  name: string; // what the knob line puts before its knobs' names
-  path: string;
-  program?: string; // the instrument whose voice reads it
-  knobs: Knob[];
-}
-
-// A session's knob files, and the copies its voices read: each voice
-// reads the copy of its knob file that passed the schema, never the file
-// itself, so a save that fails cannot reach it (instrument-knobs.md §2.4).
-// The copies live in a directory of their own for the session.
-export class KnobFiles {
-  // Each program with a knob file, and the copy its voice reads.
-  readonly copies = new Map<string, string>();
-  // Why the last save of each file did not load, by path.
-  readonly errors = new Map<string, string>();
-  private dir: string | undefined;
-
-  constructor(private readonly sources: KnobSource[]) {
-    sources.forEach((source) => this.write(source));
-  }
-
-  paths(): string[] {
-    return [...new Set(this.sources.map((s) => s.path))];
-  }
-
-  list(): ShownKnob[] {
-    return knobList(this.sources);
-  }
-
-  // A save that passes takes the file's new knobs and rewrites the copy
-  // of each voice that reads it; one that fails changes nothing but its
-  // error. Answers whether a voice reads the file, and so must reload.
-  saved(path: string, result: KnobsReload): boolean {
-    if ('error' in result) {
-      this.errors.set(path, `${basename(path)}: ${result.error.problems[0]}`);
-      return false;
-    }
-    this.errors.delete(path);
-    const changed = this.sources.filter((s) => s.path === path);
-    for (const source of changed) {
-      source.knobs = result.knobs;
-      this.write(source);
-    }
-    return changed.some((s) => s.program !== undefined);
-  }
-
-  remove(): void {
-    if (this.dir !== undefined) rmSync(this.dir, { recursive: true, force: true });
-  }
-
-  private write({ program, path, knobs }: KnobSource): void {
-    if (program === undefined) return;
-    this.dir ??= mkdtempSync(join(tmpdir(), 'field-knobs-'));
-    const copy = this.copies.get(program) ?? join(this.dir, `${this.copies.size}-${basename(path)}`);
-    writeFileSync(copy, knobsCopy(knobs));
-    this.copies.set(program, copy);
-  }
-}
-
-export function loadKnobSources(armed: ArmedInstrument[], specs: string[], root: string | undefined): KnobSource[] {
-  const sources: KnobSource[] = [];
-  for (const { program, track } of armed) {
-    const path = knobFileFor(program);
-    if (!existsSync(path)) continue;
-    sources.push({ name: track?.split('/').pop() ?? basename(program, '.scd'), path, program, knobs: loadKnobs(path) });
-  }
-  for (const spec of specs) {
-    const path = resolveKnobsPath(spec, root);
-    sources.push({ name: knobFileName(path), path, knobs: loadKnobs(path) });
-  }
-  return sources;
-}
-
 export type InstrumentState = {
   name: string; // what is armed, as the line names it
   dry: string[]; // tracks whose effects the voices do not pass through yet
@@ -210,7 +119,7 @@ async function play(tty: Tty, options: PlayOptions, carried: string): Promise<'a
   });
   const routing0 =
     options.root !== undefined
-      ? routeArmed(options.armed, options.root, options.device !== undefined ? { device: options.device } : {})
+      ? routeVoices(options.armed, options.root, { kind: 'keys', ...(options.device !== undefined ? { device: options.device } : {}) })
       : Promise.resolve(undefined);
   const first = await Promise.race([routing0, quit]);
   tty.stdin.removeListener('data', onQuit!);
@@ -347,19 +256,14 @@ async function playRouted(
 
   // Saving a program loads it again, as saving a keymap does
   // (keyboard-instrument.md §14).
-  // Each program once, however many tracks play it: one save, one reload.
-  const stopWatchingPrograms =
-    host !== undefined ? [...new Set(programs)].map((p) => watchText(p, () => void host.reload())) : [];
+  const stopWatchingPrograms = host?.reloadOnSave();
   // A knob file saved: the knobs change and a voice that maps through it
   // reloads, or, when the save fails, only the status line changes.
-  const stopWatchingKnobs = knobFiles.paths().map((path) =>
-    watchKnobs(path, (result) => {
-      const reload = knobFiles.saved(path, result);
-      if ('knobs' in result) session.setKnobs(knobFiles.list());
-      if (reload) void host?.reload();
-      draw();
-    }),
-  );
+  const stopWatchingKnobs = knobFiles.watch((_path, result, reload) => {
+    if ('knobs' in result) session.setKnobs(knobFiles.list());
+    if (reload) void host?.reload();
+    draw();
+  });
   const stopWatching =
     source.kind === 'file'
       ? watchKeymap(source.path, (result) => {
@@ -404,8 +308,8 @@ async function playRouted(
   tty.stdin.removeListener('data', onData);
   for (const signal of ['SIGTERM', 'SIGHUP', 'SIGINT'] as const) process.removeListener(signal, onSignal);
   stopWatching?.();
-  stopWatchingPrograms.forEach((stopWatchingProgram) => stopWatchingProgram());
-  stopWatchingKnobs.forEach((stopWatchingKnob) => stopWatchingKnob());
+  stopWatchingPrograms?.();
+  stopWatchingKnobs();
   send(session.quit());
   tickWhileMoving();
   // A host still booting closes too: quitting never waits for it. The
@@ -453,7 +357,7 @@ export function instrumentText({ name, dry, dryReason, silent, status, reload }:
 
 // A track names itself and its instrument; an instrument given by program
 // names only itself.
-function armedName(armed: ArmedInstrument): string {
+export function armedName(armed: ArmedInstrument): string {
   const program = basename(armed.program, '.scd');
   return armed.track === undefined ? program : `${armed.track.split('/').pop()} (${program})`;
 }

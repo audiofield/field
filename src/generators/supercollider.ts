@@ -188,14 +188,20 @@ export async function runScProgram(
   // but the schema admits hour-long renders, and the ceiling exists to catch
   // hangs, not to race legitimate work.
   const timeout = params.timeoutMs ?? Math.max(180_000, 60_000 + params.duration * 10_000);
+  await runSclang(programPath, env, timeout);
+}
+
+// Runs sclang on `script`, and throws with what it printed when it fails
+// or outlives `timeoutMs`, naming `program`, the user's program, which
+// may be one that `script` runs.
+export async function runSclang(script: string, env: NodeJS.ProcessEnv, timeoutMs: number, program = script): Promise<void> {
   // scsynth prints a line per score bundle in NRT, about 20 bytes, so a
   // long take's render outgrows Node's 1 MiB default and is killed.
-  const options = { env, timeout, maxBuffer: 64 * 1024 * 1024 };
-  const sclang = sclangCommand();
+  const options = { env, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 };
   try {
-    await execFileAsync(sclang, [programPath], options);
+    await execFileAsync(sclangCommand(), [script], options);
   } catch (err) {
-    throw formatScError(err as ExecError, programPath, timeout);
+    throw formatScError(err as ExecError, program, timeoutMs);
   }
 }
 

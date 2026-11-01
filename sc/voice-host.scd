@@ -1,14 +1,15 @@
-// The voice host behind `field keys <instrument>` (keyboard-instrument.md
-// §2.6). It boots its own scsynth on the output device, loads each armed
-// instrument's voice (arming.md §2.1), and plays them from every MIDI
-// source, each note on all of them. Field reads
+// The voice host behind `field keys` and `field sc voice`
+// (keyboard-instrument.md §2.6, sequencer.md §2.6). It boots its own
+// scsynth on the output device, loads each voice (arming.md §2.1), and
+// plays each from its own MIDI sources (voice-sources.scd). Field reads
 // only the lines that start with "@field ", each one JSON object; the rest
 // of sclang's output is left for diagnosing a failure.
 //
-// Environment: FIELD_INSTRUMENTS (a JSON list of the programs, played in
-// unison: each note sounds a voice from each, and each is an object with
-// "program", its absolute path, and "knobs", the checked copy of its knob
-// file, absent when it has none: instrument-knobs.md §2.4),
+// Environment: FIELD_INSTRUMENTS (a JSON list of the voices, each an
+// object with "program", its absolute path; "knobs", the checked copy of
+// its knob file, absent when it has none: instrument-knobs.md §2.4; and
+// "sources", the names of the MIDI sources it plays from, absent to play
+// from every source but the Field Seq ones),
 // FIELD_SC_PORT (the scsynth port Field chose), FIELD_PARENT_PID,
 // FIELD_DEVICE (optional output device), FIELD_MODE=voice, and
 // FIELD_VOICE_TRACE (optional: report each voice as it starts and ends).
@@ -24,6 +25,8 @@
 (
 var here = PathName(thisProcess.nowExecutingPath).pathOnly;
 var loadVoice = thisProcess.interpreter.executeFile(here +/+ "voice-load.scd");
+var playsFrom = thisProcess.interpreter.executeFile(here +/+ "voice-sources.scd");
+var makeVoicer = thisProcess.interpreter.executeFile(here +/+ "voicer.scd");
 var instruments = "FIELD_INSTRUMENTS".getenv.parseJSON;
 var port = "FIELD_SC_PORT".getenv.asInteger;
 var parentPid = "FIELD_PARENT_PID".getenv;
@@ -35,7 +38,9 @@ var routeDef = "FIELD_ROUTE_DEF".getenv;
 var buses = [], routes = [], startRoutes, stopRoutes;
 // True until the server answers, at the first boot and at each restart:
 // a note then has no server to sound on, so it is ignored.
-var server, voiceDefs, problem, voicer, booting = true;
+var server, voiceDefs, problem, voicers, booting = true;
+// Each source's uid, and the voices that play from it.
+var hearing, sourceProblem, heard;
 var loadAll, addAll;
 var jsonValue, emit, fail, stopServer, deviceProblem, run, boot, restart;
 
@@ -156,7 +161,7 @@ addAll = { voiceDefs.do(_.add) };
 // carries the booted rate and the rate measured from the device clock.
 restart = {
 	booting = true;
-	voicer.forgetVoices;
+	voicers.do(_.forgetVoices);
 	emit.(["restarting", true]);
 	stopRoutes.();
 	server.quit(onComplete: boot);
@@ -177,27 +182,29 @@ run = {
 	};
 	Server.default = server;
 
-	voicer = thisProcess.interpreter.executeFile(here +/+ "voicer.scd").(
-		{ |note, velocity, freq, controls|
-			voiceDefs.collect { |def, i|
+	// A voicer per voice, with its own notes, pedal, and controllers,
+	// because each voice hears only its own sources.
+	voicers = instruments.collect { |each, i|
+		makeVoicer.(
+			{ |note, velocity, freq, controls|
 				var out = buses[i] !? (_.index) ? 0;
-				Synth(def.name, [\freq, freq, \amp, velocity / 127, \gate, 1, \out, out] ++ controls, server)
-			}
-		},
-		{ |synths, control, value| synths.do(_.set(control, value)) },
-		{ |synths| synths.do(_.set(\gate, 0)) },
-		if (trace) { { |note, on| emit.([if (on) { "voice_on" } { "voice_off" }, note]) } }
-	);
+				Synth(voiceDefs[i].name, [\freq, freq, \amp, velocity / 127, \gate, 1, \out, out] ++ controls, server)
+			},
+			{ |synth, control, value| synth.set(control, value) },
+			{ |synth| synth.set(\gate, 0) },
+			if (trace) { { |note, on| emit.([if (on) { "voice_on" } { "voice_off" }, note, "voice", i]) } }
+		)
+	};
+	heard = { |src, action| hearing[src].do { |i| action.(voicers[i]) } };
 
-	MIDIClient.init(verbose: false);
 	MIDIIn.connectAll(verbose: false);
 
-	MIDIdef.noteOn(\fieldNoteOn, { |velocity, note, chan|
-		if (booting.not) { voicer.noteOn(chan, note, velocity) };
+	MIDIdef.noteOn(\fieldNoteOn, { |velocity, note, chan, src|
+		if (booting.not) { heard.(src, _.noteOn(chan, note, velocity)) };
 	});
-	MIDIdef.noteOff(\fieldNoteOff, { |velocity, note, chan| voicer.noteOff(chan, note) });
-	MIDIdef.cc(\fieldControl, { |value, number, chan| voicer.cc(chan, number, value) });
-	MIDIdef.bend(\fieldBend, { |value, chan| voicer.bend(chan, value) });
+	MIDIdef.noteOff(\fieldNoteOff, { |velocity, note, chan, src| heard.(src, _.noteOff(chan, note)) });
+	MIDIdef.cc(\fieldControl, { |value, number, chan, src| heard.(src, _.cc(chan, number, value)) });
+	MIDIdef.bend(\fieldBend, { |value, chan, src| heard.(src, _.bend(chan, value)) });
 
 	// A program's file changed: load them again. Voices that load are what
 	// the next note plays, and the notes sounding finish as they started;
@@ -250,9 +257,14 @@ run = {
 	boot.();
 };
 
+// A voice hears the sources there when the host starts, so a command
+// publishes its own, as `field keys` publishes Field Keys, first.
+MIDIClient.init(verbose: false);
+# hearing, sourceProblem = playsFrom.(instruments, MIDIClient.sources);
 # voiceDefs, problem = loadAll.();
 case
 	{ problem.notNil } { fail.(problem) }
+	{ sourceProblem.notNil } { fail.(sourceProblem) }
 	{ device.notNil and: { deviceProblem.(device).notNil } } { fail.(deviceProblem.(device)) }
 	{ run.() };
 )

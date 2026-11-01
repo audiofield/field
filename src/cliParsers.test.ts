@@ -3,6 +3,7 @@ import {
   drawSeed,
   formatSeeds,
   parseBars,
+  parseBeats,
   parseGenTarget,
   parseBpm,
   parseChannels,
@@ -20,6 +21,8 @@ describe('cli parsers', () => {
     expect(parseSeed('0')).toBe(0);
     expect(parseDurationSeconds('10')).toBe(10);
     expect(parseDurationSeconds('0.25')).toBe(0.25);
+    expect(parseBeats('16')).toBe(16);
+    expect(parseBeats('3.5')).toBe(3.5);
     expect(parseChannels('1')).toBe(1);
     expect(parseChannels('2')).toBe(2);
   });
@@ -31,6 +34,8 @@ describe('cli parsers', () => {
     expect(() => parseDurationSeconds('abc')).toThrow('(0, 3600]');
     expect(() => parseDurationSeconds('0')).toThrow('(0, 3600]');
     expect(() => parseDurationSeconds('3601')).toThrow('(0, 3600]');
+    expect(() => parseBeats('0')).toThrow('positive number of quarter notes');
+    expect(() => parseBeats('four')).toThrow('positive number of quarter notes');
     expect(() => parseChannels('5')).toThrow('1 or 2');
   });
 

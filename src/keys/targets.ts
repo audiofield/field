@@ -2,23 +2,23 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import { resolveRecordTarget } from '../commands/record.js';
 import { findProjectRoot, loadProject, type LoadedSong } from '../model/project.js';
-import { instrumentPath } from './voice-host.js';
+import { instrumentPath } from '../sc/voice/host.js';
 
 // A bare instrument name resolves on the project's instruments shelf, as a
 // supercollider: entry's source does; a path resolves from the project
 // root, or from here outside a project (keyboard-instrument.md §2.1).
-export function resolveInstrument(spec: string, cwd = process.cwd()): string {
+export function resolveInstrument(spec: string, cwd = process.cwd(), command = 'field keys'): string {
   const root = findProjectRoot(cwd);
   if (root === undefined && !spec.includes('/')) {
     throw new Error(
-      `field keys ${spec}: a bare instrument name resolves in a project's shared/instruments/, ` +
+      `${command} ${spec}: a bare instrument name resolves in a project's shared/instruments/, ` +
         'and this is not inside a Field project; give the program by path instead',
     );
   }
   const path = instrumentPath(spec, root ?? cwd);
   if (!existsSync(path)) {
     const shelf = root !== undefined ? `\n${describeShelf(root)}` : '';
-    throw new Error(`field keys ${spec}: no instrument program at ${path}${shelf}`);
+    throw new Error(`${command} ${spec}: no instrument program at ${path}${shelf}`);
   }
   return path;
 }
@@ -56,9 +56,9 @@ function describeShelf(root: string): string {
   return lines.join('\n');
 }
 
-// What `field keys` plays (arming.md §2.1): each instrument it was given
-// by program, and each track with an instrument it was given or found
-// under a track it was given, all at once.
+// What `field keys` and `field sc voice` play (arming.md §2.1): each
+// instrument given by program, and each track with an instrument given
+// or found under a track given, all at once.
 export interface ArmedInstrument {
   program: string; // absolute path to the instrument's program
   track?: string; // the track it plays for, `song/track`
@@ -74,8 +74,9 @@ export function isTrackTarget(target: string): boolean {
 
 // A target with `track:` in it is a track; anything else is an
 // instrument, by name or path, as keyboard-instrument.md §2.1 resolves
-// one. Tracks need a project; instruments by path do not.
-export function resolveKeysTargets(targets: string[], cwd = process.cwd()): ArmedInstrument[] {
+// one. Tracks need a project; instruments by path do not. Each error
+// starts with `command` and the target it is about.
+export function resolveKeysTargets(targets: string[], cwd = process.cwd(), command = 'field keys'): ArmedInstrument[] {
   // One entry per track, or per program given as an instrument; a track
   // reached through several targets keeps the effects of every one.
   const armed = new Map<string, ArmedInstrument>();
@@ -87,24 +88,24 @@ export function resolveKeysTargets(targets: string[], cwd = process.cwd()): Arme
   };
   for (const target of targets) {
     if (!isTrackTarget(target)) {
-      add({ program: resolveInstrument(target, cwd), unheardEffects: [] });
+      add({ program: resolveInstrument(target, cwd, command), unheardEffects: [] });
       continue;
     }
     const root = findProjectRoot(cwd);
-    if (root === undefined) throw new Error(`field keys ${target}: a track resolves inside a Field project`);
+    if (root === undefined) throw new Error(`${command} ${target}: a track resolves inside a Field project`);
     const { song: songName, track } = resolveRecordTarget(root, target);
     const project = loadProject(root);
     const song = project.songs.find((s) => s.name === songName)!;
     const found = instrumentTracksUnder(song, track);
     if (found.length === 0) {
       throw new Error(
-        `field keys ${target}: no instrument there — give the track one with \`instrument: <name>\`, ` +
+        `${command} ${target}: no instrument there — give the track one with \`instrument: <name>\`, ` +
           'or name a track under it that has one',
       );
     }
     if (found.length > 1) {
       throw new Error(
-        `field keys ${target}: ${found.length} tracks with instruments are under ${track}, and field keys ` +
+        `${command} ${target}: ${found.length} tracks with instruments are under ${track}, and ${command} ` +
           `plays the ones you name: ${found.map((f) => `${songName}/track:${f.track}`).join(', ')}`,
       );
     }

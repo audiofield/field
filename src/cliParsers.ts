@@ -21,6 +21,14 @@ export function parseDurationSeconds(value: string): number {
   return n;
 }
 
+export function parseBeats(value: string): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new InvalidArgumentError('beats must be a positive number of quarter notes');
+  }
+  return n;
+}
+
 export function parseBars(value: string): number {
   const n = Number(value);
   if (!Number.isInteger(n) || n <= 0) {
