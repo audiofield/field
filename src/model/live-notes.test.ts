@@ -118,7 +118,9 @@ async function keysInputs(input: string) {
   return session.tracks.find((t) => t.name === 'keys')!.inputs;
 }
 
-describe('a seq: input at session compile', () => {
+// The stand-in is an extensionless script with a #! line, which Windows
+// cannot start, so sclangCommand refuses it there.
+describe.skipIf(process.platform === 'win32')('a seq: input at session compile', () => {
   it("leaves out the track's notes renders and keeps its audio, where a keys: input keeps them all", async () => {
     const live = await keysInputs('seq:creek/keys');
     expect(renders()).toBe(0);
