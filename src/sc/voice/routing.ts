@@ -1,5 +1,5 @@
 import { AudiodClient } from '../../audiod/client.js';
-import { liveInputName, reloadIfPlaying, reloadWithInputs } from '../../audiod/live-inputs.js';
+import { liveInputName, reloadIfPlaying, reloadWithInputs, type LiveInputKind } from '../../audiod/live-inputs.js';
 import { BUILD_DAEMON } from '../../remedies.js';
 import { fieldOutPluginDir } from './host.js';
 
@@ -12,7 +12,7 @@ export interface Voice {
 
 // The commands that host voices, by the kind of input each opens for a
 // track's voice (sequencer.md §2.6).
-export type VoiceInputKind = 'keys' | 'seq' | 'voice';
+export type VoiceInputKind = Exclude<LiveInputKind, 'capture'>;
 const COMMAND: Record<VoiceInputKind, string> = { keys: 'field keys', seq: 'field seq', voice: 'field sc voice' };
 
 // Playing through the effects (live-supercollider.md chunk 3): each
