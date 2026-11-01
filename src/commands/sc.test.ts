@@ -226,6 +226,12 @@ describe('field sc notes', () => {
       expect(await pitches('chord.scd', 'Pbind(\\freq, [440, 880], \\dur, 2)')).toEqual([69, 81]);
     });
 
+    it('says what went wrong in a pattern that fails while it plays, without waiting for the timeout', { timeout: 30_000 }, async () => {
+      await expect(
+        scNotes(program('fails.scd', 'Pbind(\\midinote, Pseq([60, Pfunc { nil.frobnicate }], 1), \\dur, 1)'), { seed: 1, beats: 4 }),
+      ).rejects.toThrow(/fails\.scd's pattern failed at beat 1\.0: ERROR: Message 'frobnicate' not understood/);
+    });
+
     it('says why a program that answers no pattern cannot write a part', { timeout: 60_000 }, async () => {
       await expect(scNotes(program('flat.scd', '42'), { seed: 1, beats: 4 })).rejects.toThrow(
         'flat.scd does not answer FIELD_MODE=notes: in notes mode its value must be a Pattern',

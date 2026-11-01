@@ -40,30 +40,34 @@ if (compiled.isNil) { problem = name ++ " does not compile" } {
 	{ pattern.isKindOf(Pattern).not } { problem = name ++ " does not answer FIELD_MODE=notes: in notes mode its value must be a Pattern" };
 };
 
-// A seed given as a number would repeat the pattern forever; one seed
-// plays it once.
-problem ?? { stream = Pseed(Pn(seed, 1), pattern).asStream };
-while { problem.isNil and: { now < beats } and: { (event = stream.next(Event.default)).notNil } } {
-	count = count + 1;
-	case
-	{ event.isKindOf(Event).not } { problem = name ++ "'s pattern makes " ++ event.class.name ++ ", not events" }
-	{ count > most } { problem = name ++ "'s pattern made " ++ most ++ " events without reaching beat " ++ beats }
-	{ finite.(event.delta).not } { problem = name ++ "'s pattern has an event at beat " ++ now ++ " whose dur is " ++ event.delta }
-	{
-		if (event.isRest.not) {
-			event.use {
-				var sustains = ~sustain.value.asArray, amps = ~amp.value.asArray;
-				~freq.value.cpsmidi.asArray.do { |note, i|
-					var row = [now, sustains.wrapAt(i), note, amps.wrapAt(i), ~chan ? 0];
-					if (row.every(finite)) { notes = notes.add(row) } {
-						problem = name ++ "'s pattern has a note at beat " ++ now ++ " that is not a number: " ++ row;
+// sclang stays running after an uncaught error, so a pattern that fails
+// as it plays would wait out Field's timeout and lose what it printed.
+try {
+	// A seed given as a number would repeat the pattern forever; one seed
+	// plays it once.
+	problem ?? { stream = Pseed(Pn(seed, 1), pattern).asStream };
+	while { problem.isNil and: { now < beats } and: { (event = stream.next(Event.default)).notNil } } {
+		count = count + 1;
+		case
+		{ event.isKindOf(Event).not } { problem = name ++ "'s pattern makes " ++ event.class.name ++ ", not events" }
+		{ count > most } { problem = name ++ "'s pattern made " ++ most ++ " events without reaching beat " ++ beats }
+		{ finite.(event.delta).not } { problem = name ++ "'s pattern has an event at beat " ++ now ++ " whose dur is " ++ event.delta }
+		{
+			if (event.isRest.not) {
+				event.use {
+					var sustains = ~sustain.value.asArray, amps = ~amp.value.asArray;
+					~freq.value.cpsmidi.asArray.do { |note, i|
+						var row = [now, sustains.wrapAt(i), note, amps.wrapAt(i), ~chan ? 0];
+						if (row.every(finite)) { notes = notes.add(row) } {
+							problem = name ++ "'s pattern has a note at beat " ++ now ++ " that is not a number: " ++ row;
+						};
 					};
 				};
 			};
+			now = now + event.delta;
 		};
-		now = now + event.delta;
 	};
-};
+} { |e| problem = name ++ "'s pattern failed at beat " ++ now ++ ": " ++ e.errorString };
 
 if (problem.notNil) {
 	("ERROR: " ++ problem).postln;
