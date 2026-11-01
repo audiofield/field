@@ -193,9 +193,9 @@ describe('tagging a release', GIT_HEAVY, () => {
   });
 
   it('reads GitHub slugs from every URL form git accepts', () => {
-    expect(repoSlug('git@github.com:okamnesiac/field.git')).toBe('okamnesiac/field');
-    expect(repoSlug('ssh://git@github.com/okamnesiac/field.git')).toBe('okamnesiac/field');
-    expect(repoSlug('https://github.com/okamnesiac/field')).toBe('okamnesiac/field');
+    expect(repoSlug('git@github.com:audiofield/field.git')).toBe('audiofield/field');
+    expect(repoSlug('ssh://git@github.com/audiofield/field.git')).toBe('audiofield/field');
+    expect(repoSlug('https://github.com/audiofield/field')).toBe('audiofield/field');
     expect(repoSlug('/tmp/origin.git')).toBeUndefined();
   });
 

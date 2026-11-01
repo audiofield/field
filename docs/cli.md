@@ -634,7 +634,7 @@ somewhere other than `<program>.wav` in the current directory.
 | `FIELD_REMOTE` | the remote's API base in place of the one `origin` implies, or `off` to stop reading from any remote |
 | `FIELD_TOKEN` | the token to send, ahead of the stored one, for CI and agents |
 | `FIELD_OFFLINE` | `install.sh` and `field upgrade` download nothing: a checkout compares against the last fetch of its upstream, and a release install's `status` compares nothing |
-| `FIELD_REPO`, `FIELD_REF` | the repository and ref a release install follows, `okamnesiac/field` and `v0` unless set |
+| `FIELD_REPO`, `FIELD_REF` | the repository and ref a release install follows, `audiofield/field` and `v0` unless set |
 | `FIELD_DATA_DIR`, `FIELD_BIN_DIR` | where a release install keeps its versions and its `field` shim; see [install.md](install.md#environment-variables) |
 
 `FIELD_SCLANG` and `FIELD_AUDIOD` point at a binary the default search

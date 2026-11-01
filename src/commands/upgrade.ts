@@ -18,8 +18,12 @@ import { fileURLToPath } from 'node:url';
 //   inside the installed version is as old as the version, so it runs only
 //   under FIELD_OFFLINE, when nothing newer can download.
 
-export const DEFAULT_REPO = 'okamnesiac/field';
+export const DEFAULT_REPO = 'audiofield/field';
 export const DEFAULT_REF = 'v0';
+// Field's repository before it moved to DEFAULT_REPO. GitHub's redirect from
+// the old name ends when another repository takes it, so an install that
+// recorded it follows DEFAULT_REPO, as install.sh's does (install.md §11).
+const MOVED_REPO = 'okamnesiac/field';
 // install.sh's VERSION_PATTERN.
 const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+$/;
 const RAW_URL = 'https://raw.githubusercontent.com';
@@ -73,8 +77,9 @@ export function releaseSource(root: string, env: NodeJS.ProcessEnv): ReleaseSour
   const parent = dirname(root);
   const dataDir = VERSION.test(basename(root)) && isSymlink(join(parent, 'current')) ? parent : undefined;
   const record = dataDir === undefined ? new Map<string, string>() : readRecord(join(dataDir, 'release.conf'));
+  const recorded = record.get('repo');
   return {
-    repo: env['FIELD_REPO'] || record.get('repo') || DEFAULT_REPO,
+    repo: env['FIELD_REPO'] || (recorded === MOVED_REPO ? DEFAULT_REPO : recorded) || DEFAULT_REPO,
     ref: env['FIELD_REF'] || record.get('ref') || DEFAULT_REF,
     dataDir,
   };

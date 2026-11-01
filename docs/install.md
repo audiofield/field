@@ -16,13 +16,13 @@ curl -fsSL https://field.one/install.sh | bash
 
 field.one serves `install.sh` from the `v0` tag, so this is the same
 installer as
-`https://raw.githubusercontent.com/okamnesiac/field/v0/install.sh`, which
+`https://raw.githubusercontent.com/audiofield/field/v0/install.sh`, which
 `field upgrade` downloads.
 
 To install a checkout, clone it and run the installer in it:
 
 ```sh
-git clone https://github.com/okamnesiac/field
+git clone https://github.com/audiofield/field
 cd field
 ./install.sh
 ```
@@ -51,7 +51,7 @@ target needs. When any is missing or too old, it lists them all, prints
 the commands that install them, and stops with exit status 69:
 
 ```console
-$ curl -fsSL https://raw.githubusercontent.com/okamnesiac/field/v0/install.sh | bash
+$ curl -fsSL https://raw.githubusercontent.com/audiofield/field/v0/install.sh | bash
 install.sh: this machine is missing what Field needs to build:
 
   node-missing       Field needs Node 24 or newer
@@ -63,7 +63,7 @@ Install what is missing:
   # Homebrew first, from https://brew.sh
   brew install node pnpm cmake
 
-Then open a new shell and run curl -fsSL https://raw.githubusercontent.com/okamnesiac/field/v0/install.sh | bash again.
+Then open a new shell and run curl -fsSL https://raw.githubusercontent.com/audiofield/field/v0/install.sh | bash again.
 ```
 
 On macOS the commands use Homebrew. On Linux they use `apt-get` and the
@@ -194,11 +194,34 @@ installs it as above. When it names the version you have, nothing
 downloads or builds: the installer builds any piece that is missing,
 re-syncs your workers, and rewrites the shim.
 
+An install from before Field moved to `audiofield/field` recorded
+`okamnesiac/field`. The installer follows `audiofield/field` instead and
+records that name. `field` 0.3.5 and older download the installer from the
+recorded name themselves, so once GitHub stops redirecting it, their
+`field upgrade` and `field uninstall` fail. To upgrade one of those
+installs, run the install command again:
+
+```sh
+curl -fsSL https://field.one/install.sh | bash
+```
+
+If you installed with `FIELD_DATA_DIR`, set it again, because without it
+the installer builds a second install in the default data directory:
+
+```sh
+curl -fsSL https://field.one/install.sh | FIELD_DATA_DIR=~/custom bash
+```
+
+To remove one of those installs, use the curl uninstall that
+[Remove a release install](#remove-a-release-install) describes.
+
+Here is what a normal upgrade prints:
+
 ```console
 $ field upgrade
-+ curl -fsSL https://raw.githubusercontent.com/okamnesiac/field/6f28530dc4b06a162b38e66c14428754e070a25f/install.sh | bash
-release        okamnesiac/field v0 is at 0.3.0
-downloading    https://github.com/okamnesiac/field/archive/refs/tags/v0.3.0.tar.gz
++ curl -fsSL https://raw.githubusercontent.com/audiofield/field/6f28530dc4b06a162b38e66c14428754e070a25f/install.sh | bash
+release        audiofield/field v0 is at 0.3.0
+downloading    https://github.com/audiofield/field/archive/refs/tags/v0.3.0.tar.gz
 ...
 setting-up     field-aced in 0.3.0, as it was in 0.2.0
 switched       ~/.local/share/field/current -> 0.3.0
@@ -273,8 +296,9 @@ repository and check out its tag.
 field uninstall
 ```
 
-If `field` itself no longer runs, use the uninstaller field.one serves,
-which runs the newest installer's `uninstall` target:
+If `field` itself no longer runs, or is 0.3.5 or older and `field
+uninstall` cannot download the installer, use the uninstaller field.one
+serves, which runs the newest installer's `uninstall` target:
 
 ```sh
 curl -fsSL https://field.one/uninstall.sh | bash
@@ -329,6 +353,15 @@ To pick up new commits, pull first:
 ```sh
 git pull                 # in the checkout
 field upgrade
+```
+
+A clone from before Field moved to `audiofield/field` has an `origin`
+that names `okamnesiac/field`. Once GitHub stops redirecting that name,
+it belongs to another repository, and `git pull` no longer reads Field.
+Point the clone at the new name:
+
+```sh
+git remote set-url origin https://github.com/audiofield/field
 ```
 
 ### The link
@@ -447,9 +480,9 @@ each piece of the installed version is built:
 
 ```console
 $ field upgrade status
-+ curl -fsSL https://raw.githubusercontent.com/okamnesiac/field/6f28530dc4b06a162b38e66c14428754e070a25f/install.sh | bash -s -- status
++ curl -fsSL https://raw.githubusercontent.com/audiofield/field/6f28530dc4b06a162b38e66c14428754e070a25f/install.sh | bash -s -- status
 installed      0.3.0 in ~/.local/share/field/0.3.0
-release        okamnesiac/field v0 is at 0.3.0
+release        audiofield/field v0 is at 0.3.0
 release-latest 0.3.0 is installed
 previous       0.2.0 in ~/.local/share/field/0.2.0, kept to switch back to by hand
 node           24.19.0
@@ -479,7 +512,7 @@ worker-absent  field-aced is not set up — field setup aced sets it up
 | Variable | Effect |
 | --- | --- |
 | `FIELD_OFFLINE=1` | In a checkout, skips the fetch and compares the checkout against the last fetch of its upstream. In a release install, `field upgrade` runs the installed version's own `install.sh` instead of downloading the newest one, `status` compares nothing, and `all` refuses, because it has nothing to download from. |
-| `FIELD_REPO`, `FIELD_REF` | The repository and ref a release install follows: `okamnesiac/field` and `v0` unless set. The installer records both in `release.conf`. |
+| `FIELD_REPO`, `FIELD_REF` | The repository and ref a release install follows: `audiofield/field` and `v0` unless set. The installer records both in `release.conf`. |
 | `FIELD_VERBOSE=1` | Prints every line the installer's commands print, as it arrives, instead of the dimmed five-line window, and keeps no log. |
 | `FIELD_DATA_DIR` | Where release installs live. The default is `$XDG_DATA_HOME/field` when `XDG_DATA_HOME` is an absolute path, and `~/.local/share/field` otherwise. |
 | `FIELD_BIN_DIR` | Where the release install's shim goes: `~/.local/bin` unless set. The installer records it in `release.conf`. |

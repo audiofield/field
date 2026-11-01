@@ -68,7 +68,7 @@ the CLI displays them. The comments in the YAML files survive
 ## Playing with it
 
 ```bash
-git clone https://github.com/okamnesiac/field
+git clone https://github.com/audiofield/field
 cd field && nvm use && ./install.sh   # the field command and its daemon (needs CMake + Xcode CLT)
 
 cd examples/bloom
