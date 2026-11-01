@@ -6,10 +6,11 @@ import { AudiodClient } from '../audiod/client.js';
 import { liveInputName } from '../audiod/live-inputs.js';
 import { PPQ } from '../constants.js';
 import { runScProgram, runSclang, scScript } from '../generators/supercollider.js';
+import { KeysHelper } from '../keys/helper.js';
 import { resolveKeysTargets, type ArmedInstrument } from '../keys/targets.js';
 import { findProjectRoot, loadProject } from '../model/project.js';
-import { VoiceHost } from '../sc/voice/host.js';
 import { KnobFiles, loadKnobSources } from '../sc/voice/knob-files.js';
+import { VoiceHost } from '../sc/voice/host.js';
 import { routeVoices, type Routing } from '../sc/voice/routing.js';
 import { formatNotesFile, type TimedNotes } from '../schema/notes.js';
 import { armedName, instrumentState, instrumentText } from './keys.js';
@@ -143,13 +144,16 @@ function voiceLine(voice: ArmedInstrument, routed: boolean, sources: string[]): 
   return `voice  ${armedName(voice)} · from ${from} → ${to}`;
 }
 
-// The system output, as the daemon lists it. scsynth given no device
-// opens the default input as well, and waits on the microphone
-// permission (keyboard-instrument.md §10.1), so a voice that plays
-// straight to the device names its output, as `field keys` names the
-// one its helper reports.
+// The system output, as the daemon lists it or, with no daemon to answer,
+// as `field-audiod --keys` reports it. scsynth given no device opens the
+// default input as well, and waits on the microphone permission
+// (keyboard-instrument.md §10.1), so a voice that plays straight to the
+// device names its output.
 async function systemOutput(root: string | undefined): Promise<string | undefined> {
-  if (root === undefined) return undefined;
+  return (root !== undefined ? await daemonOutput(root) : undefined) ?? (await helperOutput());
+}
+
+async function daemonOutput(root: string): Promise<string | undefined> {
   try {
     const client = await AudiodClient.connect(root);
     try {
@@ -157,6 +161,19 @@ async function systemOutput(root: string | undefined): Promise<string | undefine
     } finally {
       client.close();
     }
+  } catch {
+    return undefined;
+  }
+}
+
+// The helper publishes a MIDI source while it runs, so it closes before
+// the host lists the sources. Where it cannot run, as on Windows, the host
+// starts with no device.
+async function helperOutput(): Promise<string | undefined> {
+  try {
+    const helper = await KeysHelper.start('Field Voice');
+    await helper.close();
+    return helper.defaultOutput;
   } catch {
     return undefined;
   }

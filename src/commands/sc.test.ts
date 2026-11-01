@@ -39,6 +39,7 @@ writeFileSync(process.env.STUB_LOG, JSON.stringify({
   instruments: JSON.parse(process.env.FIELD_INSTRUMENTS),
   device: process.env.FIELD_DEVICE ?? null,
   rings: process.env.FIELD_RINGS ? JSON.parse(process.env.FIELD_RINGS) : null,
+  helperClosed: process.env.STUB_HELPER_CLOSED ? require('node:fs').existsSync(process.env.STUB_HELPER_CLOSED) : null,
 }));
 if (process.env.STUB_FAIL) {
   console.log('@field {"error":"no MIDI source named Nowhere; the sources are Field Keys"}');
@@ -156,6 +157,71 @@ describe.skipIf(!binary || process.platform === 'win32')('field sc voice', () =>
     await expect(scVoice(['creek/track:drums'], { source: [] }, { cwd: root, env, print: () => {} })).rejects.toThrow(
       /^field sc voice creek\/track:drums: no instrument there/,
     );
+  });
+});
+
+// With no project there is no daemon to ask for the system output, and
+// scsynth given no device opens the microphone (keyboard-instrument.md
+// §10.1), so the voice names what `field-audiod --keys` reports.
+const HELPER_STUB = `#!/usr/bin/env node
+const { writeFileSync } = require('node:fs');
+console.log(JSON.stringify({ ready: true, name: process.argv[3], output: 'Stub Out' }));
+process.stdin.resume();
+process.stdin.on('end', () => {
+  writeFileSync(process.env.STUB_HELPER_CLOSED, '');
+  process.exit(0);
+});
+`;
+
+describe.skipIf(process.platform === 'win32')('field sc voice outside a project', () => {
+  let dir: string;
+  const saved = { audiod: process.env['FIELD_AUDIOD'], closed: process.env['STUB_HELPER_CLOSED'] };
+  const restore = (name: string, value: string | undefined): void => {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'field-sc-voice-bare-'));
+    for (const [name, text] of [['sclang', STUB], ['field-audiod', HELPER_STUB]] as const) {
+      writeFileSync(join(dir, name), text);
+      chmodSync(join(dir, name), 0o755);
+    }
+    writeFileSync(join(dir, 'pad.scd'), '// a voice\n');
+    process.env['FIELD_AUDIOD'] = join(dir, 'field-audiod');
+    process.env['STUB_HELPER_CLOSED'] = join(dir, 'helper-closed');
+  });
+  afterEach(() => {
+    restore('FIELD_AUDIOD', saved.audiod);
+    restore('STUB_HELPER_CLOSED', saved.closed);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function hostHandedFor(): Promise<{ device: string | null; helperClosed: boolean | null }> {
+    const log = join(dir, 'host.json');
+    let quit!: () => void;
+    const until = new Promise<void>((resolve) => {
+      quit = resolve;
+    });
+    const lines: string[] = [];
+    const running = scVoice(
+      ['./pad.scd'],
+      { source: [] },
+      { cwd: dir, env: { ...process.env, FIELD_SCLANG: join(dir, 'sclang'), STUB_LOG: log }, until, print: (line) => lines.push(line) },
+    );
+    for (let i = 0; i < 100 && !lines.some((l) => l.includes(' live at ')); i++) await sleep(50);
+    quit();
+    await running;
+    return JSON.parse(readFileSync(log, 'utf8'));
+  }
+
+  it('names the output the helper reports, and closes the helper before the host starts', { timeout: 30_000 }, async () => {
+    expect(await hostHandedFor()).toMatchObject({ device: 'Stub Out', helperClosed: true });
+  });
+
+  it('starts the host with no device when the helper cannot start', { timeout: 30_000 }, async () => {
+    writeFileSync(join(dir, 'field-audiod'), '#!/usr/bin/env node\nprocess.exit(1);\n');
+    expect(await hostHandedFor()).toMatchObject({ device: null });
   });
 });
 
