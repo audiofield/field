@@ -198,12 +198,22 @@ An install from before Field moved to `audiofield/field` recorded
 `okamnesiac/field`. The installer follows `audiofield/field` instead and
 records that name. `field` 0.3.5 and older download the installer from the
 recorded name themselves, so once GitHub stops redirecting it, their
-`field upgrade` fails. To upgrade one of those installs, run the install
-command again:
+`field upgrade` and `field uninstall` fail. To upgrade one of those
+installs, run the install command again:
 
 ```sh
 curl -fsSL https://field.one/install.sh | bash
 ```
+
+If you installed with `FIELD_DATA_DIR`, set it again, because without it
+the installer builds a second install in the default data directory:
+
+```sh
+curl -fsSL https://field.one/install.sh | FIELD_DATA_DIR=~/custom bash
+```
+
+To remove one of those installs, use the curl uninstall that
+[Remove a release install](#remove-a-release-install) describes.
 
 Here is what a normal upgrade prints:
 
@@ -286,8 +296,9 @@ repository and check out its tag.
 field uninstall
 ```
 
-If `field` itself no longer runs, use the uninstaller field.one serves,
-which runs the newest installer's `uninstall` target:
+If `field` itself no longer runs, or is 0.3.5 or older and `field
+uninstall` cannot download the installer, use the uninstaller field.one
+serves, which runs the newest installer's `uninstall` target:
 
 ```sh
 curl -fsSL https://field.one/uninstall.sh | bash
@@ -342,6 +353,15 @@ To pick up new commits, pull first:
 ```sh
 git pull                 # in the checkout
 field upgrade
+```
+
+A clone from before Field moved to `audiofield/field` has an `origin`
+that names `okamnesiac/field`. Once GitHub stops redirecting that name,
+it belongs to another repository, and `git pull` no longer reads Field.
+Point the clone at the new name:
+
+```sh
+git remote set-url origin https://github.com/audiofield/field
 ```
 
 ### The link

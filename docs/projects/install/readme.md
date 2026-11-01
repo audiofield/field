@@ -1046,6 +1046,11 @@ GitHub's redirect from it.
   redirect gives them the new installer, and it moves them. After the
   rename, the download fails, and running
   `curl -fsSL https://field.one/install.sh | bash` moves them instead.
+  `field uninstall` downloads the same installer, so it fails the same
+  way, and `curl -fsSL https://field.one/uninstall.sh | bash` removes them.
+- **An existing clone's `origin` moves by hand.** It names the old
+  repository and nothing the installer does changes it, so
+  `docs/install.md` gives the `git remote set-url` command.
 - **The order is website, release, rename.** okamnesiac/audiofield#46
   pointed field.one at the new name. This change reaches installs in the
   release after it, and the rename waits for that release.
