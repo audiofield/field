@@ -232,6 +232,12 @@ describe('field sc notes', () => {
       ).rejects.toThrow(/fails\.scd's pattern failed at beat 1\.0: ERROR: Message 'frobnicate' not understood/);
     });
 
+    it('refuses a negative dur, which would write a note before the part starts', { timeout: 60_000 }, async () => {
+      await expect(
+        scNotes(program('backward.scd', 'Pbind(\\midinote, 60, \\dur, Pseq([-1, 1, 1], 1))'), { seed: 1, beats: 4 }),
+      ).rejects.toThrow("backward.scd's pattern has an event at beat 0 whose dur is -1");
+    });
+
     it('says why a program that answers no pattern cannot write a part', { timeout: 60_000 }, async () => {
       await expect(scNotes(program('flat.scd', '42'), { seed: 1, beats: 4 })).rejects.toThrow(
         'flat.scd does not answer FIELD_MODE=notes: in notes mode its value must be a Pattern',

@@ -51,7 +51,7 @@ try {
 		case
 		{ event.isKindOf(Event).not } { problem = name ++ "'s pattern makes " ++ event.class.name ++ ", not events" }
 		{ count > most } { problem = name ++ "'s pattern made " ++ most ++ " events without reaching beat " ++ beats }
-		{ finite.(event.delta).not } { problem = name ++ "'s pattern has an event at beat " ++ now ++ " whose dur is " ++ event.delta }
+		{ finite.(event.delta).not or: { event.delta < 0 } } { problem = name ++ "'s pattern has an event at beat " ++ now ++ " whose dur is " ++ event.delta }
 		{
 			if (event.isRest.not) {
 				event.use {
