@@ -12,7 +12,7 @@
 # `status` says how far the checkout is behind its upstream instead.
 # Without one -- piped from curl, or downloaded by `field upgrade` -- it
 # installs a release: the version package.json names at the commit
-# FIELD_REF (default v0) names in FIELD_REPO (default okamnesiac/field),
+# FIELD_REF (default v0) names in FIELD_REPO (default audiofield/field),
 # from the source archive of that version's tag, built in a directory of
 # its own under ~/.local/share/field and run through a shim in
 # ~/.local/bin (install.md §3.2).
@@ -662,8 +662,12 @@ show_status() {
 #   release.conf               the repository, ref, and bin directory followed
 # ~/.local/bin/field           BIN_DIR: the shim, which runs current
 
-DEFAULT_REPO=okamnesiac/field
+DEFAULT_REPO=audiofield/field
 DEFAULT_REF=v0
+# Field's repository before it moved to DEFAULT_REPO. GitHub's redirect from
+# the old name ends when another repository takes it, so an install that
+# recorded it follows DEFAULT_REPO (install.md §11).
+MOVED_REPO=okamnesiac/field
 RAW_URL="${FIELD_RAW_URL:-https://raw.githubusercontent.com}"
 ARCHIVE_URL="${FIELD_ARCHIVE_URL:-https://github.com}"
 SHIM_MARKER="# Field's release shim, written by install.sh."
@@ -710,8 +714,9 @@ release_init() {
   DATA_DIR="${DATA_DIR%/}"
   RECORD="$DATA_DIR/release.conf"
   FETCH_CACHE="$DATA_DIR/cache/fetchcontent"
-  RELEASE_REPO="${FIELD_REPO:-$(recorded repo)}"
-  RELEASE_REPO="${RELEASE_REPO:-$DEFAULT_REPO}"
+  RELEASE_REPO="$(recorded repo)"
+  [ "$RELEASE_REPO" != "$MOVED_REPO" ] || RELEASE_REPO="$DEFAULT_REPO"
+  RELEASE_REPO="${FIELD_REPO:-${RELEASE_REPO:-$DEFAULT_REPO}}"
   RELEASE_REF="${FIELD_REF:-$(recorded ref)}"
   RELEASE_REF="${RELEASE_REF:-$DEFAULT_REF}"
   BIN_DIR="${FIELD_BIN_DIR:-$(recorded bin)}"

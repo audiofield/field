@@ -268,5 +268,5 @@ Found along the way, and not this chunk's: an audio punch-out against a
 with one track as with several. A live session's position is exact, so
 the punch-out tests, which use one, never saw it. A file bed's position
 comes from JUCE's transport, which reports a few samples ahead of what it
-has delivered. okamnesiac/field#194 tracks it. Still owed: criteria 6
+has delivered. audiofield/field#194 tracks it. Still owed: criteria 6
 to 8 by hand, on a real interface with two inputs and a controller.

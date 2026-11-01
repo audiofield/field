@@ -194,10 +194,18 @@ describe.skipIf(process.platform === 'win32')('field upgrade in a release instal
     expect(readFileSync(argsFile, 'utf8')).toBe(`1:all\n${realpathSync(data)}\n`);
   });
 
-  it('follows okamnesiac/field at v0 when nothing is recorded', () => {
+  it('follows audiofield/field when the record names the repository before it moved', () => {
+    writeFileSync(join(data, 'release.conf'), 'repo=okamnesiac/field\nref=v0\n');
+    serveInstaller('audiofield/field', 'v0', 0);
+    const lines: string[] = [];
+    expect(upgrade(undefined, { root: join(data, '0.2.0'), env: env(), err: (line) => lines.push(line) })).toBe(0);
+    expect(lines).toEqual([`+ curl -fsSL file://${raw}/audiofield/field/v0/install.sh | bash`]);
+  });
+
+  it('follows audiofield/field at v0 when nothing is recorded', () => {
     const loose = join(scratch, 'loose', '0.1.0');
     mkdirSync(loose, { recursive: true });
-    serveInstaller('okamnesiac/field', 'v0', 0);
+    serveInstaller('audiofield/field', 'v0', 0);
     expect(upgrade('status', { root: loose, env: env(), err: () => {} })).toBe(0);
     // Not a data directory, so the installer chooses its own.
     expect(readFileSync(argsFile, 'utf8')).toBe('1:status\n\n');
@@ -220,11 +228,11 @@ describe.skipIf(process.platform === 'win32')('field upgrade in a release instal
     mkdirSync(unpacked);
     symlinkSync('2.0.1', join(opt, 'current'));
     writeFileSync(join(opt, 'release.conf'), 'repo=someone/field\nref=v9\n');
-    serveInstaller('okamnesiac/field', 'v0', 0);
+    serveInstaller('audiofield/field', 'v0', 0);
     const lines: string[] = [];
     expect(upgrade('status', { root: unpacked, env: env(), err: (line) => lines.push(line) })).toBe(0);
     expect(readFileSync(argsFile, 'utf8')).toBe('1:status\n\n');
-    expect(lines).toEqual([`+ curl -fsSL file://${raw}/okamnesiac/field/v0/install.sh | bash -s -- status`]);
+    expect(lines).toEqual([`+ curl -fsSL file://${raw}/audiofield/field/v0/install.sh | bash -s -- status`]);
   });
 
   it('refuses with the URL when the installer does not download', () => {
@@ -249,7 +257,7 @@ describe.skipIf(process.platform === 'win32')('field upgrade in a release instal
 
 describe('the installer download', () => {
   it("sends GITHUB_TOKEN to GitHub in curl's config, never on its command line", () => {
-    const url = 'https://raw.githubusercontent.com/okamnesiac/field/v0/install.sh';
+    const url = 'https://raw.githubusercontent.com/audiofield/field/v0/install.sh';
     const request = curlRequest(url, '/tmp/install.sh', { GITHUB_TOKEN: 'secret-token' });
     expect(request.args).toEqual(['-fsSL', '--retry', '2', '-o', '/tmp/install.sh', '--config', '-', url]);
     expect(request.input).toBe('header = "Authorization: Bearer secret-token"\n');

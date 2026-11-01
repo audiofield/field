@@ -112,7 +112,7 @@ To work on Field itself, install a checkout instead. Run `pnpm setup`
 once, then:
 
 ```sh
-git clone https://github.com/okamnesiac/field
+git clone https://github.com/audiofield/field
 cd field
 ./install.sh             # links this checkout onto your PATH as field
 ```

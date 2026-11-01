@@ -251,7 +251,7 @@ Without a checkout, `install.sh` installs a release by building it.
 
 1. It asks GitHub's git server, with `git ls-remote`, which commit
    `FIELD_REF` (default `v0`) names in `FIELD_REPO` (default
-   `okamnesiac/field`), and reads the version from `package.json` at
+   `audiofield/field`), and reads the version from `package.json` at
    that commit, which is how Projector's installer learns the version
    it is installing. It accepts only `X.Y.Z`. When git cannot answer, it
    reads `package.json` at the ref instead (§10.1).
@@ -350,7 +350,7 @@ curl -fsSL https://field.one/install.sh | bash
 ```
 
 `apps/field-one` in `okamnesiac/audiofield` rewrites `/install.sh` to
-`https://raw.githubusercontent.com/okamnesiac/field/v0/install.sh`, as
+`https://raw.githubusercontent.com/audiofield/field/v0/install.sh`, as
 `projector.bot` does for Projector, so the URL always serves the newest
 release's installer rather than `main`'s. The rewrite proxies rather
 than redirects, so the command is one request to `field.one`. It needs
@@ -1027,3 +1027,27 @@ building it found.
   and `field upgrade status` reported `release-latest 0.3.0 is
   installed`. Chunk 4 shipped in okamnesiac/audiofield#40, and
   `field.one/install.sh` serves the same installer.
+
+## 11 The move to `audiofield/field` (2026-11-01)
+
+Field's repository moved from `okamnesiac/field` to `audiofield/field`,
+which holds the open source code from now on. `okamnesiac/fyra` then
+takes the old name, as the home of the private code, and that ends
+GitHub's redirect from it.
+
+- **The record moves, not only the default.** `release.conf` comes ahead
+  of the default, so changing the default alone would leave every
+  existing install asking for the old name. `install.sh` and `field
+  upgrade` each read a recorded `okamnesiac/field` as `audiofield/field`,
+  and the installer writes the new name when it next installs. Only that
+  exact name changes: a fork's record stays, and `FIELD_REPO` still wins.
+- **`field` 0.3.5 and older can't move themselves after the rename.** They
+  download the installer from the recorded name. Before the rename, the
+  redirect gives them the new installer, and it moves them. After the
+  rename, the download fails, and running
+  `curl -fsSL https://field.one/install.sh | bash` moves them instead.
+- **The order is website, release, rename.** okamnesiac/audiofield#46
+  pointed field.one at the new name. This change reaches installs in the
+  release after it, and the rename waits for that release.
+
+§1 and §10.3 keep the old name, because they record what was true then.

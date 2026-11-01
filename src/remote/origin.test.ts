@@ -41,11 +41,11 @@ describe('parseCloneUrl', () => {
   });
 
   it('gives a slug but no API for hosts Field does not recognize', () => {
-    expect(parseCloneUrl('https://github.com/okamnesiac/field.git')).toEqual({
-      slug: { owner: 'okamnesiac', project: 'field' },
+    expect(parseCloneUrl('https://github.com/audiofield/field.git')).toEqual({
+      slug: { owner: 'audiofield', project: 'field' },
     });
-    expect(parseCloneUrl('git@github.com:okamnesiac/field.git')).toEqual({
-      slug: { owner: 'okamnesiac', project: 'field' },
+    expect(parseCloneUrl('git@github.com:audiofield/field.git')).toEqual({
+      slug: { owner: 'audiofield', project: 'field' },
     });
     expect(parseCloneUrl('file:///tmp/remotes/howlo/chemicals.git')).toEqual({
       slug: { owner: 'howlo', project: 'chemicals' },
@@ -81,7 +81,7 @@ describe('resolveProjectRemote', () => {
 
   it('has no remote without an origin, or with one Field has no API for', () => {
     expect(resolveProjectRemote(root, {})).toMatchObject({ kind: 'none' });
-    git(['remote', 'add', 'origin', 'https://github.com/okamnesiac/field.git'], { cwd: root });
+    git(['remote', 'add', 'origin', 'https://github.com/audiofield/field.git'], { cwd: root });
     expect(resolveProjectRemote(root, {})).toMatchObject({ kind: 'none', reason: expect.stringContaining('git.<site>') });
     // A cleartext audiofield-shaped origin is the same answer, and the
     // reason says why, so the silence can be explained.
