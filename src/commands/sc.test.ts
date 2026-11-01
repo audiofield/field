@@ -215,6 +215,17 @@ describe('field sc notes', () => {
       );
     });
 
+    it('reads the pitch a pattern sounds, however it spells it', { timeout: 60_000 }, async () => {
+      const pitches = async (name: string, notes: string): Promise<number[]> => {
+        const part = notesFileSchema.parse(parse(await scNotes(program(name, notes), { seed: 1, beats: 2 })));
+        return part.notes.map((n) => n.note as number);
+      };
+      expect(await pitches('freq.scd', 'Pbind(\\freq, Pseq([440, 880], 1), \\dur, 0.5)')).toEqual([69, 81]);
+      expect(await pitches('ctranspose.scd', 'Pbind(\\note, 0, \\ctranspose, 12, \\dur, 2)')).toEqual([72]);
+      expect(await pitches('harmonic.scd', 'Pbind(\\midinote, 60, \\harmonic, 2, \\dur, 2)')).toEqual([72]);
+      expect(await pitches('chord.scd', 'Pbind(\\freq, [440, 880], \\dur, 2)')).toEqual([69, 81]);
+    });
+
     it('says why a program that answers no pattern cannot write a part', { timeout: 60_000 }, async () => {
       await expect(scNotes(program('flat.scd', '42'), { seed: 1, beats: 4 })).rejects.toThrow(
         'flat.scd does not answer FIELD_MODE=notes: in notes mode its value must be a Pattern',

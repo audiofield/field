@@ -207,7 +207,7 @@ function partFrom(rows: z.infer<typeof patternNotes>['notes'], beats: number, pr
   const notes = rows.map(([beat, sustain, midinote, amp, chan]) => {
     const note = Math.round(midinote);
     const channel = Math.round(chan) + 1;
-    if (note < 0 || note > 127) throw new Error(`${program}: the pattern plays note ${midinote} at beat ${beat}, outside MIDI's 0 to 127`);
+    if (note < 0 || note > 127) throw new Error(`${program}: the pattern plays note ${note} at beat ${beat}, outside MIDI's 0 to 127`);
     if (channel < 1 || channel > 16) throw new Error(`${program}: the pattern plays on chan ${chan} at beat ${beat}, outside MIDI's 0 to 15`);
     const at = ticks(beat);
     const velocity = Math.min(127, Math.max(1, Math.round(amp * 127)));

@@ -5,7 +5,9 @@
 // writes each note that starts before then to FIELD_OUTPUT as JSON,
 // {"notes": [[beat, sustain, midinote, amp, chan], ...]}, with times in
 // quarter notes from the start and chan 0-based, as a pattern spells
-// them. Field writes the part from that.
+// them. A note is its MIDI number from ~freq, which every spelling of
+// pitch reaches: ~midinote misses \freq, \ctranspose, and \harmonic. Field
+// writes the part from that.
 //
 // FIELD_PROGRAM  the program, by absolute path
 // FIELD_SEED     the seed, for the program as it runs and for its pattern
@@ -51,7 +53,7 @@ while { problem.isNil and: { now < beats } and: { (event = stream.next(Event.def
 		if (event.isRest.not) {
 			event.use {
 				var sustains = ~sustain.value.asArray, amps = ~amp.value.asArray;
-				~midinote.value.asArray.do { |note, i|
+				~freq.value.cpsmidi.asArray.do { |note, i|
 					var row = [now, sustains.wrapAt(i), note, amps.wrapAt(i), ~chan ? 0];
 					if (row.every(finite)) { notes = notes.add(row) } {
 						problem = name ++ "'s pattern has a note at beat " ++ now ++ " that is not a number: " ++ row;
