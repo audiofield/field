@@ -1,0 +1,313 @@
+{
+ "version": 1,
+ "name": "Live notes and MIDI sequencing",
+ "project": "sequencer",
+ "pr": {
+  "repo": "audiofield/field",
+  "number": 241,
+  "title": "Add field sc voice and field sc notes, and move the voice host to src/sc/voice (sequencer.md chunks 3 and 6)",
+  "head": "ae2a1752bce6883e6b1aac1fb4d4a8839fce6c4f",
+  "headRef": "seq-voices",
+  "base": "364ebdac7377422daf42ac95466ce4a706306b91",
+  "baseRef": "seq-midi-out",
+  "basePr": 234
+ },
+ "overview": {
+  "summary": [
+   "Field plays instruments live through a <b>voice host</b>: a <code>sclang</code> process that boots its own <code>scsynth</code>, loads each instrument's voice, and starts a synth for each MIDI note it receives. Until now only <code>field keys</code> used it, its code lived under <code>src/keys/</code>, and every voice heard every MIDI source on the machine.",
+   "The sequencer plan needs other commands to drive voices, and <code>field seq</code> needs a voice that hears only its own track's notes. So this pull request moves the host's TypeScript to <code>src/sc/voice/</code>, gives each voice its own list of MIDI sources, and adds two commands:",
+   "<ul><li><b><code>field sc voice</code></b> plays a track's voice, or an instrument by name or path, from MIDI sources with no keyboard. Each track's voice reaches the song through a daemon input named <code>voice:&lt;song&gt;/&lt;track&gt;</code>.</li><li><b><code>field sc notes</code></b> runs a SuperCollider program under <code>FIELD_MODE=notes</code>, plays the pattern it answers under a seed, and prints a part to stdout.</li></ul>",
+   "It also adds the <code>seq:</code> claim that <code>field seq</code> will use. A session compiled with an input named <code>seq:&lt;song&gt;/&lt;track&gt;</code> leaves out that track's rendered notes, so a part plays once, live. No command opens a <code>seq:</code> input yet.",
+   "The pull request's body says it is not finished: the living documentation is unchanged, the plan does not record what was settled here, and nobody has run <code>field sc voice</code> by hand with a real MIDI source."
+  ],
+  "cards": [
+   {
+    "id": "commands",
+    "title": "Which command's voices hear what",
+    "html": "<div class=\"tblwrap\"><table class=\"tbl\"><thead><tr><th>Command</th><th>Input for a track's voice</th><th>Plays from</th></tr></thead><tbody><tr><td><code>field keys</code></td><td><code>keys:&lt;song&gt;/&lt;track&gt;</code></td><td>every source but the <code>Field Seq</code> ones</td></tr><tr><td><code>field seq</code> (later)</td><td><code>seq:&lt;song&gt;/&lt;track&gt;</code></td><td>only <code>Field Seq &lt;song&gt;/&lt;track&gt;</code></td></tr><tr><td><code>field sc voice</code></td><td><code>voice:&lt;song&gt;/&lt;track&gt;</code></td><td>the <code>--source</code> names, or every source but the <code>Field Seq</code> ones</td></tr></tbody></table></div>"
+   },
+   {
+    "id": "terms",
+    "title": "Terms on this page",
+    "html": "<ul class=\"tight\"><li><b>Voice:</b> one instrument's <code>SynthDef</code>, played live, one synth per sounding note.</li><li><b>MIDI source:</b> a named sender of MIDI on the machine, such as a USB controller or the virtual <code>Field Keys</code>.</li><li><b>Live input:</b> a named source outside the session that <code>field-audiod</code>, the audio engine, reads every block and carries through a track's effects.</li><li><b>FieldOut:</b> the <code>scsynth</code> plugin that writes a voice into a live input's shared-memory ring.</li><li><b>Part:</b> a notes file under <code>songs/&lt;song&gt;/notes/</code>, in ticks or bars and beats.</li><li><b>Pattern:</b> SuperCollider's description of a sequence of events, such as a <code>Pbind</code>.</li></ul>"
+   },
+   {
+    "id": "review",
+    "title": "Where review stands",
+    "html": "<p>Five findings are open from the review of this head, each flagged under its code below:</p><ul class=\"tight\"><li>Patterns that set <code>\\freq</code> write the wrong pitch.</li><li>A pattern that fails while it plays waits two minutes and hides its error.</li><li>Outside a project, <code>field sc voice</code> leaves <code>scsynth</code> to open the microphone.</li><li>Both new session-compile tests fail on Windows once #234's compile error is fixed.</li><li><code>docs/</code> describes neither command.</li></ul>"
+   },
+   {
+    "id": "later",
+    "title": "What this leaves for later",
+    "html": "<ul class=\"tight\"><li><b><code>field seq</code>,</b> which publishes the <code>Field Seq</code> sources and opens <code>seq:</code> inputs, is chunk 5 of the plan.</li><li><b>Moving this layer lower in the stack</b> is open. The plan says chunks 3 and 4 do not depend on each other, and the pull request body offers the move.</li><li><b>Splitting the two commands</b> is a suggestion in the review, because the plan gives each chunk its own pull request and this one carries chunks 3 and 6.</li></ul>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "input-names",
+   "title": "Input names, and the seq: claim",
+   "kicker": "Two new kinds of live input, and what a seq: input does to a session",
+   "intro": [
+    "A live input is how a voice reaches a song: the voice host writes into a ring that <code>field-audiod</code> reads and carries through the track's effects. Each input's name says which command opened it and which track it belongs to. Any command that reloads a song lists the open inputs by that name, so a reload from <code>field play</code> keeps a voice heard.",
+    "The list of names now admits <code>seq:</code> and <code>voice:</code> beside <code>keys:</code> and <code>capture:</code>. Only <code>seq:</code> changes the session. When <code>field seq</code> plays a track's notes live, the track's rendered copy of those notes would play too, so the compile leaves the renders out. The input's name carries this claim, so it needs no new daemon state and it ends when the connection closes."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "src/audiod/live-inputs.ts",
+     "note": "Holds the four input kinds. <code>liveInputName</code> replaces <code>captureInputName</code> so every command spells a name the same way."
+    },
+    {
+     "path": "src/model/live-notes.ts",
+     "note": "<code>leaveOutNotes</code> drops each entry that renders notes from a loaded copy of the song, as solo does. The files on disk never change.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "I compiled a session with <code>seq:creek/keys</code> open on a track whose only entry places notes. The track stays in the session and carries only the input. With <code>keys:</code> or <code>voice:</code> open, it keeps the render beside the input."
+      }
+     ]
+    },
+    {
+     "path": "src/graph/live.ts",
+     "note": "Reads the claim from the input's name and applies it before the graph is built.",
+     "checks": [
+      {
+       "kind": "context",
+       "text": "The order matters. Solo filters entries by index, so <code>applySolo</code> has to run before <code>leaveOutNotes</code> shifts them, and it does.",
+       "line": 160
+      }
+     ]
+    },
+    {
+     "path": "src/model/live-notes.test.ts",
+     "checks": [
+      {
+       "kind": "flag",
+       "text": "Both tests fail on the <code>windows</code> CI job. <code>beforeEach</code> sets <code>FIELD_SCLANG</code> to an extensionless stub, which <code>sclangCommand</code> refuses on Windows, and both tests render through it. The job does not reach <code>pnpm test</code> today, because of the compile error on #234, so this appears once that is fixed. The fix is <code>describe.skipIf(process.platform === 'win32')</code>, as <code>src/sc/voice/host.test.ts</code> does for its stubs.",
+       "line": 121
+      }
+     ]
+    },
+    {
+     "path": "src/commands/record.ts",
+     "note": "Uses <code>liveInputName</code>. Behavior does not change."
+    },
+    {
+     "path": "src/audiod/live-ring.test.ts",
+     "note": "Only an import path changes."
+    }
+   ]
+  },
+  {
+   "id": "voice-sources",
+   "title": "Each voice plays from its own MIDI sources",
+   "kicker": "The voice host stops playing every note on every voice",
+   "intro": [
+    "Before this change, one voicer played every voice from every MIDI source on the machine. A <b>voicer</b> is the object in <code>sc/voicer.scd</code> that turns MIDI into synths and tracks held notes, the pedal, and controllers. Now each voice gets its own voicer and its own list of sources. That list is what lets a <code>field seq</code> voice hear only its track's <code>Field Seq</code> source, and a <code>field keys</code> voice ignore those sources.",
+    "The host decides who hears what once, when it starts, from the sources that exist then. A command that publishes a source has to do so before it starts the host, as <code>field keys</code> already does with <code>Field Keys</code>."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "sc/voice-sources.scd",
+     "note": "A function from the voices and the machine's sources to two answers: which voices hear each source, and which named source is missing. A name matches a source's name or its device."
+    },
+    {
+     "path": "sc/voice-host.scd",
+     "note": "Makes one voicer per voice, and sends each MIDI message only to the voicers that hear its source. <code>MIDIClient.init</code> moves up so a missing source fails before <code>scsynth</code> boots.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "I ran this host on real <code>sclang</code> and <code>scsynth</code> with three virtual MIDI sources and silent voices. A note from a named source started only the voice that names it and the voice with no list, and a note from a <code>Field Seq</code> source started no voice. So the source id a MIDI message carries matches the one <code>MIDIClient.sources</code> lists.",
+       "line": 198
+      }
+     ]
+    },
+    {
+     "path": "src/sc/voice/host.ts",
+     "note": "Moved from <code>src/keys/voice-host.ts</code>. It passes each voice's sources in <code>FIELD_INSTRUMENTS</code>, says which voice each trace line is about, and gains <code>reloadOnSave</code>, which both commands use.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "I traced the extra <code>..</code>: from <code>src/sc/voice/</code>, or <code>dist/sc/voice/</code> after a build, three levels up is the package root, so the path still reaches the built plugin under <code>native/</code>.",
+       "line": 25
+      }
+     ]
+    },
+    {
+     "path": "src/sc/voice/host.test.ts"
+    },
+    {
+     "path": "src/sc/voice/sources.test.ts",
+     "note": "Runs <code>sc/voice-sources.scd</code> through real <code>sclang</code> with made-up endpoints, so it publishes no MIDI."
+    }
+   ]
+  },
+  {
+   "id": "voice-library",
+   "title": "The voice library moves to src/sc/voice",
+   "kicker": "Code that field keys owned becomes code several commands share",
+   "intro": [
+    "This group is mostly a move. Routing, which opens a track's input in <code>field-audiod</code> and reloads the song with it, leaves <code>src/keys/</code>. So do the knob files a voice reads and the SynthDef Field writes for FieldOut.",
+    "The real change is in routing: <code>routeVoices</code> takes a required <code>kind</code>, which names the input and the command in its messages. It also asks only for a program and a track, through a small <code>Voice</code> type, so it no longer depends on what <code>field keys</code> resolves."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "src/sc/voice/routing.ts",
+     "note": "Moved from <code>src/keys/routing.ts</code>, and renamed from <code>routeArmed</code>. The input's name now comes from <code>kind</code>."
+    },
+    {
+     "path": "src/sc/voice/routing.test.ts",
+     "note": "Adds a test that <code>seq:</code> and <code>voice:</code> inputs open and survive a reload.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "All 8 tests passed here against a locally built <code>field-audiod</code>, and the Linux CI job passes. Without a daemon they skip."
+      }
+     ]
+    },
+    {
+     "path": "src/sc/voice/routing-voice.test.ts",
+     "note": "Replaces <code>src/keys/routing-voice.test.ts</code>, and adds a test that two sources each play one track's voice.",
+     "checks": [
+      {
+       "kind": "context",
+       "text": "This test needs SuperCollider, the built plugin, and an output device, and did not run in this review. It is the only test that takes a note through FieldOut on real programs."
+      }
+     ]
+    },
+    {
+     "path": "src/keys/routing-voice.test.ts"
+    },
+    {
+     "path": "src/sc/voice/knob-files.ts",
+     "note": "<code>KnobFiles</code> and <code>loadKnobSources</code>, moved from <code>src/commands/keys.ts</code>. <code>watch</code> is new, so both commands reload knobs the same way."
+    },
+    {
+     "path": "src/sc/voice/knob-files.test.ts"
+    },
+    {
+     "path": "src/sc/voice/synthdef.ts",
+     "note": "Moved with no change to its contents."
+    },
+    {
+     "path": "src/keys/targets.ts",
+     "note": "Stays in <code>src/keys/</code>. A <code>command</code> argument makes its errors name <code>field sc voice</code> when that command calls it."
+    }
+   ]
+  },
+  {
+   "id": "commands",
+   "title": "The commands",
+   "kicker": "field sc voice and field sc notes, and field keys on the shared library",
+   "intro": [
+    "<code>src/commands/sc.ts</code> holds all of <code>field sc</code>: <code>render</code>, moved from <code>src/cli.ts</code> with no change in behavior, and the two new commands. <code>scVoice</code> follows the same steps as <code>field keys</code> without a keyboard or a terminal in raw mode. It resolves the targets, checks the knob files, routes the tracks, starts the host, and watches the files until a signal stops it. Then it closes the host and the inputs.",
+    "<code>scNotes</code> runs the pattern harness, described in the next group, and turns what it writes into a part: quarter notes become ticks, a 0-based <code>chan</code> becomes a 1-based channel, and <code>amp</code> times 127 becomes velocity."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "src/commands/sc.ts",
+     "note": "The three <code>field sc</code> commands.",
+     "checks": [
+      {
+       "kind": "flag",
+       "text": "Outside a project, <code>field sc voice ./pad.scd</code> starts the host with no output device, because <code>systemOutput</code> answers <code>undefined</code>. On macOS, <code>scsynth</code> with no device opens the default input and waits on the microphone permission, as the comment above this function says. <code>field keys</code> names the output from <code>KeysHelper.defaultOutput</code> in the same case. A stand-in <code>sclang</code> received no device on this path, and I did not boot a real <code>scsynth</code> this way, because that could prompt for the microphone.",
+       "line": 152
+      },
+      {
+       "kind": "verify",
+       "text": "With a stand-in <code>sclang</code>, <code>field sc voice</code> went live, took SIGINT sent to the process alone, and exited 0 within a second. Ctrl-C in a real terminal, which also signals <code>sclang</code> and <code>scsynth</code>, did not run."
+      }
+     ]
+    },
+    {
+     "path": "src/commands/sc.test.ts",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "All 8 tests passed here against a locally built <code>field-audiod</code> and real <code>sclang</code>. Without a daemon, the 4 <code>field sc voice</code> tests skip."
+      }
+     ]
+    },
+    {
+     "path": "src/cli.ts",
+     "note": "Registers <code>voice</code> and <code>notes</code>, and moves <code>render</code>'s body out.",
+     "checks": [
+      {
+       "kind": "flag",
+       "text": "<code>docs/</code> describes neither new command. <code>docs/cli.md</code> covers only <code>field sc render</code>, nothing describes what a program answers under <code>FIELD_MODE=notes</code>, and <code>docs/keys.md</code> and <code>docs/architecture.md</code> still say the host plays from every MIDI source. <code>AGENTS.md</code> calls a change that leaves the docs behind unfinished.",
+       "line": 236
+      }
+     ]
+    },
+    {
+     "path": "src/cliParsers.ts",
+     "note": "<code>parseBeats</code> takes any positive number of quarter notes."
+    },
+    {
+     "path": "src/cliParsers.test.ts"
+    },
+    {
+     "path": "src/commands/keys.ts",
+     "note": "Uses the library. The code it gave up moved rather than changed, and <code>armedName</code> is now exported for <code>src/commands/sc.ts</code>.",
+     "checks": [
+      {
+       "kind": "context",
+       "text": "<code>scVoice</code> copies the host start and the check that FieldOut is writing from <code>playRouted</code> here. The review suggests moving them into <code>src/sc/voice/</code> before <code>field seq</code> makes a third copy."
+      }
+     ]
+    },
+    {
+     "path": "src/commands/keys.test.ts",
+     "note": "Loses the knob-file tests, which moved to <code>src/sc/voice/knob-files.test.ts</code>."
+    }
+   ]
+  },
+  {
+   "id": "pattern-harness",
+   "title": "The pattern harness behind field sc notes",
+   "kicker": "Plays a program's pattern with no server and writes each note it would sound",
+   "intro": [
+    "A SuperCollider pattern yields a stream of events, each with a pitch, a length, a level, and a time until the next event. <code>sc/notes-render.scd</code> runs the program, seeds the pattern, and pulls events until it reaches the beat <code>--beats</code> gives. It never boots a server, so nothing sounds. It writes each note as JSON, and <code>scNotes</code> in <code>src/commands/sc.ts</code> turns that JSON into a part.",
+    "The same seed gives the same bytes, and a part's first line is a comment naming the command that wrote it. So you can edit the part as ordinary text, and the build renders it like any other."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "sc/notes-render.scd",
+     "note": "The harness itself. It runs under <code>FIELD_MODE=notes</code>, and the program's value must be a <code>Pattern</code>.",
+     "checks": [
+      {
+       "kind": "flag",
+       "text": "A pattern that fails while it plays waits two minutes and hides its error. Only <code>compiled.value</code> runs inside <code>try</code>, so <code>sclang</code> prints an error from <code>stream.next</code> and stays running until <code>runSclang</code> kills it. I ran <code>Pbind(\\midinote, Pfunc { nil.frobnicate })</code>: after 120 seconds it reports only <code>did the program call 0.exit?</code>. A <code>try</code> around the loop does catch the error, which I tested separately.",
+       "line": 44
+      },
+      {
+       "kind": "flag",
+       "text": "Patterns that set <code>\\freq</code> write the wrong pitch, with no error. SuperCollider derives <code>~freq</code> from <code>~midinote</code> and never the reverse, so <code>Pbind(\\freq, Pseq([440, 880], inf), \\dur, 0.5)</code> wrote note 60 on every row when I ran it, instead of 69 and 81. <code>\\ctranspose</code> and <code>\\harmonic</code> are lost the same way. Reading <code>~freq.value.cpsmidi.asArray</code> gives the right note for each of these spellings.",
+       "line": 54
+      },
+      {
+       "kind": "verify",
+       "text": "I ran patterns with a <code>Rest</code> in <code>\\dur</code>, <code>\\rest</code> in <code>\\degree</code>, and chords, and each wrote the expected rows. A part whose last note rings past its <code>length</code> passes project validation."
+      }
+     ]
+    },
+    {
+     "path": "src/generators/supercollider.ts",
+     "note": "<code>runSclang</code> splits out of <code>runScProgram</code> so <code>field sc notes</code> can run the harness and name the user's program in its errors.",
+     "checks": [
+      {
+       "kind": "context",
+       "text": "<code>sclangCommand()</code> now runs inside the <code>try</code>. So a missing <code>sclang</code> reads <code>sclang failed for &lt;program&gt;: sclang not found on PATH …</code>, where it read only the second half before. The advice survives.",
+       "line": 202
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
