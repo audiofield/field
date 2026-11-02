@@ -316,6 +316,22 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
     expect(status.outputs![0]!.sent).toBeGreaterThanOrEqual(due - 2);
   });
 
+  it('ends the notes on a locate within a converted session\'s slack', { timeout: 30_000 }, async (ctx) => {
+    const rate = 44100;
+    const songYaml = join(root, 'songs/bed/song.yaml');
+    writeFileSync(songYaml, `${readFileSync(songYaml, 'utf8')}rate: ${rate}\n`);
+    await client.session((await compileSession(root, 'bed')).session);
+    const source = name('near');
+    await open(ctx, { name: 'seq:near', source, rate, lead: 0, events: [{ sample: 0, midi: [ON, PITCH, 100] }, { sample: 8 * rate, midi: [OFF, PITCH, 0] }] });
+    const watching = await monitor(source);
+    await client.locate(0);
+    await client.play();
+    await waitFor(() => watching.lines.length > 0, 3000, 'the note to start');
+    await client.locate((await client.status()).sample + 600);
+    await waitFor(() => watching.lines.some((l) => l.midi[0] === OFF), 2000, 'the locate to end the note');
+    await client.stop();
+  });
+
   it('plays through the first blocks of a file bed at the device rate, and of a play after a locate', { timeout: 30_000 }, async (ctx) => {
     const wav = join(root, 'bed.wav');
     writeWavFloat32(wav, RATE, [new Float32Array(10 * RATE), new Float32Array(10 * RATE)]);

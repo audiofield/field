@@ -134,6 +134,7 @@ struct MidiOutputs::Output
     bool pushed = false;
     juce::int64 lastPosition = 0;
     juce::int64 lastAdvance = 0;
+    juce::uint64 lastLocates = 0;
     juce::int64 takenAhead = 0;
     // A new schedule's pulses count the song differently from the ones the
     // gear followed, so the next block moves the gear as a locate does.
@@ -442,6 +443,8 @@ void MidiOutputs::play (Output& output, const MidiBlock& block) noexcept
         }
     if (block.missed)
         return;
+    const bool located = block.locates != output.lastLocates;
+    output.lastLocates = block.locates;
     const auto& schedule = *output.current;
     if (! block.rolling)
     {
@@ -466,7 +469,7 @@ void MidiOutputs::play (Output& output, const MidiBlock& block) noexcept
             resumeClock (output, block.position, block.startMs, false);
     }
     else if (const auto moved = distance (output.lastPosition, block.position, block);
-             ! output.pulsesMoved && moved >= 0 && std::abs (moved - output.lastAdvance) <= block.slack)
+             ! output.pulsesMoved && ! located && moved >= 0 && std::abs (moved - output.lastAdvance) <= block.slack)
     {
         // Negative when the position landed past the last window's end.
         from = output.takenAhead - moved;
@@ -1000,6 +1003,7 @@ struct Harness
         b.position = position;
         b.advance = advance;
         b.slack = slack;
+        b.locates = locates;
         b.wrapFrom = wrapFrom;
         b.wrapTo = wrapTo;
         outputs.play (b);
@@ -1020,6 +1024,7 @@ struct Harness
     const bool scheduling;
     juce::int64 advance = testBlock;
     juce::int64 slack = 0;
+    juce::uint64 locates = 0;
     double clock = 0.0;
     std::vector<Logged> log;
     int flushes = 0;
@@ -1414,6 +1419,51 @@ std::string checkClock()
     return {};
 }
 
+std::string checkShortLocate()
+{
+    // A locate inside a converted bed's slack is still a locate, and the
+    // same step with no locate is still the bed's own.
+    juce::String pulses;
+    for (int i = 0; i < 100; ++i)
+        pulses << (i > 0 ? "," : "") << juce::String (i * 1000);
+    const auto schedule = R"({"name":"held","source":"Held","rate":48000,"lead":0,"events":[
+        {"sample":0,"midi":[159,60,100]},{"sample":90000,"midi":[143,60,0]}],"clock":{"pulses":[)" + pulses + "]}}";
+    const auto transport = [] (const Harness& h)
+    {
+        Bytes messages;
+        for (const auto& line : h.log)
+            if (line.bytes != std::vector<juce::uint8> { clockPulse })
+                messages.push_back (line.bytes);
+        return messages;
+    };
+    {
+        Harness h;
+        h.slack = 1536;
+        h.open (schedule);
+        h.block (0, 0.0);
+        h.block (512, msOf (512));
+        h.serve (1.0e9);
+        h.block (2024, msOf (1024));
+        h.serve (1.0e9);
+        if (transport (h) != Bytes { { clockStart }, { 0x9f, 60, 100 } })
+            return "short locate: the bed's own step within the slack ended the note or moved the clock";
+    }
+    {
+        Harness h;
+        h.slack = 1536;
+        h.open (schedule);
+        h.block (0, 0.0);
+        h.block (512, msOf (512));
+        h.serve (1.0e9);
+        ++h.locates;
+        h.block (2024, msOf (1024));
+        h.serve (1.0e9);
+        if (transport (h) != Bytes { { clockStart }, { 0x9f, 60, 100 }, { 0x8f, 60, 0 }, { clockStop }, { songPosition, 1, 0 }, { clockContinue } })
+            return "short locate: a locate within the slack did not end the note and move the clock";
+    }
+    return {};
+}
+
 std::string checkReplacedClock()
 {
     const auto schedule = [] (int every)
@@ -1568,7 +1618,7 @@ std::string checkRequests()
 
 std::string runMidiOutSelfTest()
 {
-    for (auto* check : { checkLead, checkFlush, checkHeld, checkClock, checkReplacedClock, checkSteps, checkRequests })
+    for (auto* check : { checkLead, checkFlush, checkHeld, checkClock, checkShortLocate, checkReplacedClock, checkSteps, checkRequests })
         if (auto error = check(); ! error.empty())
             return error;
     return {};

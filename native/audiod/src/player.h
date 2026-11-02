@@ -468,8 +468,12 @@ private:
         juce::int64 slack = 0;
         juce::int64 wrapFrom = 0;
         juce::int64 wrapTo = 0;
+        juce::uint64 locates = 0;
     };
     BedFacts blockBed;
+    // Each locate of the bed, written and read under liveLock, so a block
+    // sees the count that goes with its position.
+    juce::uint64 bedLocates = 0;
     std::atomic<bool> captureStarted { false };
     // The position the requested take waits for (record's `at` when a
     // `start` was given); -1 means the next block, whatever its position.

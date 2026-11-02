@@ -76,6 +76,9 @@ struct MidiBlock
     juce::int64 wrapFrom = 0;
     juce::int64 wrapTo = 0;
     double bedPerFrame = 1.0; // bed samples per device frame, for an input's margin
+    // How many locates the bed has taken. A new count is a jump, however
+    // near the new position is, which the slack cannot tell apart.
+    juce::uint64 locates = 0;
 };
 
 class MidiOutputs

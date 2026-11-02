@@ -902,7 +902,8 @@ points, each measured on macOS 27 with JUCE 8.0.4:
   samples from the expected one still continues. Converted delivery
   renders in steps of its own and a resampled file reads through a
   buffer, so for them a position within a block and 1024 samples of the
-  expected one still continues. A block in which the pull missed the live lock is
+  expected one still continues. A locate is a jump however near it lands,
+  because the player counts locates and each block carries the count. A block in which the pull missed the live lock is
   skipped, because the bed did not move in it. A window holds a wrap at
   its end and not one at its start, so a wrap exactly where one block's
   window meets the next, as in a loop a whole number of blocks long with

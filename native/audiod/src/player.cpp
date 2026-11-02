@@ -699,13 +699,16 @@ juce::String Player::seek (juce::int64 sample)
             return juce::String (e.what());
         }
         rebuildLiveConverter();
+        ++bedLocates;
         return {};
     }
     if (readerSource == nullptr)
         return "nothing loaded";
     if (sample < 0 || sample > fileLengthSamples)
         return "locate out of range";
+    const juce::ScopedLock guard (liveLock);
     transport.setPosition ((double) sample / fileSampleRate);
+    ++bedLocates;
     return {};
 }
 
@@ -1102,7 +1105,7 @@ juce::int64 Player::pullAudio (const float* const* in, int numInputs, float* con
             // Converted delivery renders the bed in steps of its own, so its
             // advance only approximates a block's.
             blockBed = { false, (double) liveRate, liveConverter == nullptr ? 0 : n + 1024, region ? liveSession->loopRegionFrom() : 0,
-                         region ? liveSession->loopRegionTo() : liveLoop ? liveLength : 0 };
+                         region ? liveSession->loopRegionTo() : liveLoop ? liveLength : 0, bedLocates };
             if (livePlaying.load())
             {
                 if (liveConverter == nullptr)
@@ -1192,7 +1195,7 @@ juce::int64 Player::pullAudio (const float* const* in, int numInputs, float* con
         // juce::ResamplingAudioSource still reads 3 samples more than a block
         // on its first block after a flush, which a stop and a locate cause.
         blockBed = { false, fileSampleRate, juce::exactlyEqual (fileSampleRate, currentDeviceRate()) ? 3 : n + 1024, 0,
-                     looping ? fileLengthSamples : 0 };
+                     looping ? fileLengthSamples : 0, bedLocates };
         juce::AudioBuffer<float> buffer (const_cast<float**> (out), numChannels, n);
         juce::AudioSourceChannelInfo info (&buffer, 0, n);
         transport.getNextAudioBlock (info);
@@ -1224,6 +1227,7 @@ void Player::processBlock (const float* const* in, int numInputs, float* const* 
         midi.slack = blockBed.slack;
         midi.wrapFrom = blockBed.wrapFrom;
         midi.wrapTo = blockBed.wrapTo;
+        midi.locates = blockBed.locates;
         midiOutputs.play (midi);
     }
     // Counted after the pull: a finalize that has seen two more epochs
