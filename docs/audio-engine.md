@@ -505,14 +505,17 @@ schedule, `midi_out_close`, and the end of the connection that opened
 the output. A note that a locate lands inside is not started again. Each
 of those also lifts a sustain pedal (control change 64) the schedule
 left down, because a note the pedal sustains sounds on after its
-note-off. Before the note-offs of anything but a wrap, the daemon
-unschedules what CoreMIDI still holds for a destination with
-`MIDIFlushOutput`, so nothing queued for a bed that stopped or jumped
-reaches the synth. It
-flushes only when CoreMIDI holds something, because a flush reaches a
-virtual destination as a System Reset (`0xFF`). The callback queues only
-the events of the block it is in, so CoreMIDI holds some only when
-blocks run back to back.
+note-off. Each also centers a pitch bend the schedule left off center,
+because a bend stays on the receiver and detunes the next note. A pedal
+pressed before a loop's start, or a bend sent there, therefore ends at
+the first wrap and is not sent again, so later passes through the loop
+can sound different from the first. Before the note-offs of anything but
+a wrap, the daemon unschedules what CoreMIDI still holds for a
+destination with `MIDIFlushOutput`, so nothing queued for a bed that
+stopped or jumped reaches the synth. It flushes only when CoreMIDI holds
+something, because a flush reaches a virtual destination as a System
+Reset (`0xFF`). The callback queues only the events of the block it is
+in, so CoreMIDI holds some only when blocks run back to back.
 
 An output's `clock` lists the samples of its MIDI clock pulses (`0xF8`),
 24 to the quarter note, which the CLI projects from the tempo map as it
