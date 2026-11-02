@@ -223,6 +223,33 @@ describe.skipIf(process.platform === 'win32')('field sc voice outside a project'
     writeFileSync(join(dir, 'field-audiod'), '#!/usr/bin/env node\nprocess.exit(1);\n');
     expect(await hostHandedFor()).toMatchObject({ device: null });
   });
+
+  // What a helper prints when macOS refuses it a MIDI client, for the first
+  // `refusals` starts.
+  const refusedHelper = (refusals: number): string => `#!/usr/bin/env node
+const { appendFileSync, existsSync, readFileSync } = require('node:fs');
+const starts = ${JSON.stringify(join(dir, 'helper-starts'))};
+const before = existsSync(starts) ? readFileSync(starts, 'utf8').length : 0;
+appendFileSync(starts, '.');
+if (before < ${refusals}) {
+  console.log(JSON.stringify({ error: 'cannot create a virtual MIDI source named ' + process.argv[3] + ' on this system' }));
+  process.exit(1);
+}
+${HELPER_STUB.replace('#!/usr/bin/env node\n', '')}`;
+
+  it.skipIf(process.platform !== 'darwin')('starts a new helper when macOS refuses one a MIDI client, and names the output', { timeout: 30_000 }, async () => {
+    writeFileSync(join(dir, 'field-audiod'), refusedHelper(1));
+    expect(await hostHandedFor()).toMatchObject({ device: 'Stub Out', helperClosed: true });
+    expect(readFileSync(join(dir, 'helper-starts'), 'utf8')).toBe('..');
+  });
+
+  it.skipIf(process.platform !== 'darwin')('stops with the error rather than start the host with no device when macOS refuses a new helper too', { timeout: 30_000 }, async () => {
+    writeFileSync(join(dir, 'field-audiod'), refusedHelper(2));
+    await expect(
+      scVoice(['./pad.scd'], { source: [] }, { cwd: dir, env: { ...process.env, FIELD_SCLANG: join(dir, 'sclang'), STUB_LOG: join(dir, 'host.json') }, print: () => {} }),
+    ).rejects.toThrow('cannot create a virtual MIDI source named Field Voice');
+    expect(existsSync(join(dir, 'host.json'))).toBe(false);
+  });
 });
 
 // `field sc notes` (sequencer.md §2.8) through real sclang.

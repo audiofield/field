@@ -152,13 +152,20 @@ async function daemonOutput(root: string): Promise<string | undefined> {
 
 // The helper publishes a MIDI source while it runs, so it closes before
 // the host lists the sources. Where it cannot run, as on Windows, the host
-// starts with no device.
+// starts with no device. macOS can refuse a new process its MIDI client,
+// and a new process clears that, so a refused helper starts once more.
+// With no device, scsynth on macOS would open the default input and wait
+// on the microphone permission, so a second refusal stops here.
 async function helperOutput(): Promise<string | undefined> {
-  try {
+  const output = async (): Promise<string | undefined> => {
     const helper = await KeysHelper.start('Field Voice');
     await helper.close();
     return helper.defaultOutput;
-  } catch {
+  };
+  try {
+    return await output();
+  } catch (error) {
+    if (process.platform === 'darwin' && /cannot create a virtual MIDI source/.test(String(error))) return await output();
     return undefined;
   }
 }

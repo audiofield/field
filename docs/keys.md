@@ -66,7 +66,9 @@ You do not need to be inside a Field project.
 
 If `field keys` says it cannot create a virtual MIDI source on macOS,
 run it again. CoreMIDI has refused the first source a new process asked
-for, once, and a new process gets a new MIDI client.
+for, once, and a new process gets a new MIDI client. `field sc voice`,
+which starts the same helper to name the system output when no daemon
+can answer, tries once more by itself, and then stops with that error.
 
 ## Play
 

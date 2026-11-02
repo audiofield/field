@@ -1001,7 +1001,10 @@ them settled these points:
   `field sc voice` asks the daemon for the system output, and with no
   daemon to answer, asks `field-audiod --keys`, as `field keys` does.
   That helper publishes a MIDI source, so it closes before the host
-  lists the sources.
+  lists the sources. macOS can refuse a new process its MIDI client, so
+  a refused helper starts once more, and a second refusal stops with the
+  error, because with no device `scsynth` on macOS would open the
+  default input and wait on the microphone permission.
 - **A note's pitch comes from `~freq`, rounded to a MIDI note.** Every
   spelling of pitch reaches `~freq`, and `~midinote` misses `\freq`,
   `\ctranspose`, and `\harmonic`.
