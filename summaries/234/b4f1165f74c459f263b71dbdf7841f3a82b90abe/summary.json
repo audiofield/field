@@ -1,0 +1,273 @@
+{
+ "version": 1,
+ "name": "Live notes and MIDI sequencing",
+ "project": "sequencer",
+ "pr": {
+  "repo": "audiofield/field",
+  "number": 234,
+  "title": "Send scheduled MIDI and MIDI clock from field-audiod's audio callback (sequencer.md chunk 4)",
+  "head": "b4f1165f74c459f263b71dbdf7841f3a82b90abe",
+  "headRef": "seq-midi-out",
+  "base": "4c036db7a608b4e5bfa3d79525137b0221bb5172",
+  "baseRef": "seq-notes",
+  "basePr": 233
+ },
+ "overview": {
+  "summary": [
+   "<code>field-audiod</code> is the daemon that owns the audio device and the transport. The coming <code>field seq</code> command has to play a part's notes on time, to a SuperCollider voice or a hardware synth, and to send MIDI clock to gear that runs its own patterns. Node timers cannot keep that deadline, so the sequencer plan has the engine send the MIDI from its audio callback, as it already does for the click.",
+   "This layer is that engine half. The new <code>midi_out</code> op opens a named output and gives it a schedule, which is a list of MIDI messages, each with the sample it belongs to on the bed's timeline. The bed is whatever the transport plays, either a live session or a file. In each audio block, the callback picks the messages due soon and queues them with no allocation and no lock. A realtime sender thread then delivers each message at its time.",
+   "The daemon also ends an output's notes whenever the transport stops or jumps, and it can send MIDI clock with the transport messages that external gear follows. <code>field seq</code> and the projection of the tempo map into a schedule stay with chunk 5, so only tests call <code>midi_out</code> at this head.",
+   "The latest review found this head clean, and no finding is open. Two suggestions remain, and neither blocks the change. The <b>Review at b4f1165</b> card says what was checked. Whether <code>field-audiod</code> should exit when macOS refuses its MIDI client is an open question for the owner, and this head adds no such exit."
+  ],
+  "cards": [
+   {
+    "id": "terms",
+    "title": "Terms on this page",
+    "html": "<ul class=\"tight\"><li><b>Schedule:</b> MIDI bytes, each with a sample on the bed's timeline. The daemon never learns what a note or a bar is.</li><li><b>Source:</b> a virtual MIDI port that the daemon publishes for an output, which a voice listens to.</li><li><b>Destination:</b> an existing MIDI port that an output sends to, such as a hardware synth's.</li><li><b>Lead:</b> how many samples early an output sends each event, to cover the time a receiver takes to produce sound.</li><li><b>Lookahead window:</b> the block's span on the timeline, moved later by the lead. The callback takes the events inside it.</li><li><b>Wrap:</b> the moment a loop jumps from its end back to its start.</li><li><b>Converted delivery:</b> a session rendered at its own rate and resampled for a device at another rate. The session advances in steps of its own, not by the block.</li><li><b>MIDI clock:</b> timing pulses, 24 to the quarter note, with Start, Stop, Continue, and Song Position Pointer (SPP), which names a position in sixteenth notes.</li></ul>"
+   },
+   {
+    "id": "review",
+    "title": "Review at b4f1165",
+    "html": "<p>This head makes more of a refused daemon's errors mention the refusal. macOS can refuse a process its first MIDI client, and only a new process clears that:</p><ul class=\"tight\"><li><b>On a real refusal:</b> 2 of 85 fresh daemons were refused. Each one mentioned the refusal for a source, a destination, and a MIDI <code>arm</code>. After <code>field transport quit</code>, the next daemon published a source both times.</li><li><b>On a healthy daemon:</b> the same note also appears when the machine lists no MIDI ports, as with no controller connected. The first clause of each message is correct, and following the note costs a needless daemon restart. The review suggests a sharper check.</li></ul><p>The earlier findings stay fixed, and all 10 finding threads remain resolved. <code>midi-out.test.ts</code> passed 10 of 10, four times in a row.</p><p class=\"note\">Not tested: physical MIDI hardware. Linux and Windows results come from CI, where both jobs pass. The refusal was measured on macOS 27.0.1 only. Two real-<code>sclang</code> render tests in code this pull request does not change gave different bytes between renders in one full run, and one of them failed again in 1 of 5 reruns. The cause is unknown.</p>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "contract",
+   "title": "Define output schedules",
+   "kicker": "Start with the wire contract and who owns an output",
+   "intro": [
+    "A client describes an output in one JSON request. It names the output, chooses a source or a destination, and gives the rate, the lead, and the events. Sending <code>midi_out</code> again under an open name replaces the schedule and keeps the port, so whatever listens to a source stays connected.",
+    "An output belongs to the connection that opened it and closes when that connection ends, as an input does. So a killed <code>field seq</code> leaves no output playing."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "src/audiod/protocol.ts",
+     "note": "Adds the request and response schemas for <code>midi_out</code>, and <code>outputs</code> in <code>status</code>."
+    },
+    {
+     "path": "src/audiod/client.ts",
+     "note": "Adds the client's <code>midiOut</code> and <code>closeMidiOut</code> calls."
+    },
+    {
+     "path": "native/audiod/src/midi_out.h",
+     "note": "Describes the three threads that share an output, and the block facts the callback receives from the player."
+    }
+   ]
+  },
+  {
+   "id": "sender",
+   "title": "Select and deliver MIDI events",
+   "kicker": "Read the scheduling engine before its callers",
+   "intro": [
+    "<code>MidiOutputs</code> is the core of this layer, and three threads share each output:",
+    "<ol><li><b>The message thread</b> opens, replaces, and closes outputs. It passes a new schedule to the callback by pointer and frees the old one later.</li><li><b>The audio callback</b> runs <code>play</code> each block. <code>take</code> finds the events in the lookahead window, continuing at the loop's start past its end, and <code>push</code> queues each one with its time.</li><li><b>The sender thread</b> runs <code>service</code>. It sends a source's messages when they fall due, and it hands a destination's messages to CoreMIDI at once, stamped with their times, on macOS.</li></ol>",
+    "The sender also records which notes each output holds, which sustain pedals are down, and which pitch bends are off center. When the transport stops or jumps, it sends the note-offs, lifts the pedals, and centers the bends. A queued <code>Entry::cut</code> means the bed stopped or jumped, so the sender does all of that and drops what was queued for after it. An <code>Entry::wrap</code> does the same at the loop's end and drops nothing.",
+    "Each window starts where the last one ended. So <code>from</code>, the window's start relative to the block, goes negative when the bed stepped past the last window's end, and what lies behind the position leaves at the block's start. A window holds a wrap at its end and not one at its start, so a wrap where two windows meet is pushed once."
+   ],
+   "checks": [
+    {
+     "kind": "verify",
+     "text": "The callback's path allocates nothing and takes no lock. I traced <code>play</code>, <code>take</code>, <code>push</code>, and the wake of the sender by reading them, and no tool measured this."
+    }
+   ],
+   "files": [
+    {
+     "path": "native/audiod/src/midi_out.cpp",
+     "note": "Holds the whole engine. Read selection first, then wrapping, delivery, and teardown. The second half of the file is the sinks and the self-test.",
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 428,
+       "text": "The callback reads both schedules before it stores <code>outgoing</code> in <code>spent</code>, and it does not touch <code>outgoing</code> after that, so the thread that frees it cannot race these reads. This was checked by reading, and the race was never reproduced."
+      },
+      {
+       "kind": "verify",
+       "line": 434,
+       "text": "New pulses during playback send <code>Stop, SPP 5, Continue</code> on the real daemon."
+      },
+      {
+       "kind": "verify",
+       "line": 472,
+       "text": "Stepping past a window's end loses nothing. A 44.1 kHz session on the 48 kHz null device at lead 0 sent 401 of 402 due events, where it sent 367 of 401 before the fix."
+      },
+      {
+       "kind": "verify",
+       "line": 536,
+       "text": "A wrap is pushed once when it lands on a block boundary. A long note in a loop of exactly 94 blocks gets a note-off and a clock reposition at each wrap."
+      },
+      {
+       "kind": "verify",
+       "line": 717,
+       "text": "A schedule that sends pedal down, note-on, and note-off now sends pedal up at the stop, on the real daemon."
+      },
+      {
+       "kind": "verify",
+       "line": 725,
+       "text": "This loop runs on the sender thread and adds nothing to the audio callback. On the real daemon, a stop, a pause, a locate, a replaced schedule, a wrap, and a close each sent the center, <code>0x00, 0x40</code>, which <code>sc/voicer.scd</code> reads as no bend. Only the bent channels got one, and a schedule that centered its own bend got no second message."
+      },
+      {
+       "kind": "verify",
+       "line": 898,
+       "text": "A real refusal printed this text, and asking again under a new name printed it again. After <code>field transport quit</code>, the next daemon published a source. A refusal comes from the operating system: a small C program with no Field code saw <code>MIDIClientCreate</code> return <code>-304</code> in 8 of 200 fresh processes with no other MIDI client alive, and 40 more calls in one process did not clear it."
+      },
+      {
+       "kind": "verify",
+       "line": 923,
+       "text": "A refused daemon now adds the refusal note here. It also did so for a MIDI <code>arm</code>, in <code>player.cpp</code>. A healthy daemon adds it too when the machine lists no destinations, because an empty list looks the same in both cases, as a run with a daemon that went on to publish a source showed."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "callback",
+   "title": "Connect output to playback",
+   "kicker": "Transport position and callback timing feed selection",
+   "intro": [
+    "Each block, <code>processBlock</code> tells the outputs where the bed is: its position, how far it advances, and the loop in force. <code>MidiOutputs::play</code> compares each position with the last one plus its advance. A different position counts as a jump, as a locate does, and <code>slack</code> says how far the position may stray first.",
+    "A session the device plays at its own rate advances exactly, so its <code>slack</code> is 0. A file at the device's rate gets 3, because JUCE's resampler reads 3 extra samples on its first block after a flush. Converted delivery and a resampled file do not advance exactly, so they get a block plus 1024 samples.",
+    "A voice's audio returns through a ring input, whose reader holds back a block plus 256 frames. <code>readerMargin</code> exposes that margin, so an output with a <code>lead_input</code> can lead by it too. Arming for a MIDI take also leaves out the daemon's own sources, so a take records what you play and not the part playing beside it."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "native/audiod/src/player.cpp",
+     "note": "Feeds each block's facts to the outputs, binds an output's lead input when that input opens, and runs the null clock as a realtime thread on macOS.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "A 48 kHz file played from the top sends <code>Start, note-on</code>, then nothing else until the stop, on the real daemon."
+      },
+      {
+       "kind": "context",
+       "text": "Arming leaves out only this daemon's own sources. A take in one daemon recorded 25 messages from an output in another daemon, so a <code>field seq</code> in another project reaches a take here. The review suggests leaving out every <code>Field Seq</code> source, as the plan has voices do."
+      },
+      {
+       "kind": "verify",
+       "text": "The refusal note on an <code>arm</code> depends on the list before the daemon's own sources are removed, so an <code>arm</code> with only its own source listed gets no note. A run on the real daemon showed that."
+      }
+     ]
+    },
+    {
+     "path": "native/audiod/src/player.h",
+     "note": "Declares the output ops and the block facts. The sender is declared after the outputs, so the sender stops first."
+    },
+    {
+     "path": "native/audiod/src/live.h",
+     "note": "Adds <code>readerMargin</code> to the input interface, with a default of 0."
+    },
+    {
+     "path": "native/audiod/src/ring_input.h",
+     "note": "Reports a ring reader's margin, a block plus one writer burst."
+    }
+   ]
+  },
+  {
+   "id": "integration",
+   "title": "Wire requests and monitor timestamps",
+   "kicker": "Daemon lifetime, requests, and the MIDI monitor",
+   "intro": [
+    "The server routes the two new ops and closes an output when its connection ends. The daemon's exit path closes outputs too, so their notes end before it quits.",
+    "<code>--midi-monitor</code> is the tool that reads what an output sends. Each line now gives the message's arrival on the daemon's clock as <code>host_ms</code>. With <code>--destination</code> it publishes a virtual destination, and on macOS each line also gives <code>timestamp_ms</code>, the time stamped on the message."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "native/audiod/src/server.cpp",
+     "note": "Dispatches <code>midi_out</code> and <code>midi_out_close</code>, and closes a connection's outputs in the sweep. Both ops run under the message lock, so they do not race the heartbeat."
+    },
+    {
+     "path": "native/audiod/src/main.cpp",
+     "note": "Adds the <code>--midi-out-selftest</code> and <code>--destination</code> flags, the heartbeat's reclaim of old schedules, and the close at exit."
+    },
+    {
+     "path": "native/audiod/src/keys.cpp",
+     "note": "Moves virtual-source creation and MIDI byte parsing into shared helpers, and adds the monitor's timestamps, its destination mode, and the note that an error adds when macOS may have refused the MIDI client. A SIGTERM during the wait for a source ends the monitor at once."
+    },
+    {
+     "path": "native/audiod/src/keys.h",
+     "note": "Declares those shared helpers."
+    },
+    {
+     "path": "native/audiod/CMakeLists.txt",
+     "note": "Adds <code>midi_out.cpp</code> to the build."
+    }
+   ]
+  },
+  {
+   "id": "evidence",
+   "title": "Exercise and document the engine",
+   "kicker": "Tests and the docs that describe current behavior",
+   "intro": [
+    "Two layers of test cover the engine. <code>--midi-out-selftest</code> drives the callback's selection against a fake clock and fake sinks. <code>midi-out.test.ts</code> runs the real daemon in null-output mode, sends through real virtual MIDI, and reads the result back with <code>--midi-monitor</code> and MIDI takes.",
+    "The docs describe the engine as it runs, and the plan's new section 10 records what building it measured."
+   ],
+   "checks": [
+    {
+     "kind": "verify",
+     "text": "On macOS at this head, these pass: the native build, <code>--midi-out-selftest</code>, <code>pnpm typecheck</code>, <code>project check</code>, and the three test files the Testing section names. The tests that match the changed messages do so by substring. The <code>linux</code> and <code>windows</code> CI jobs pass too."
+    },
+    {
+     "kind": "context",
+     "text": "<code>pnpm test</code> on macOS failed 9 of 1363 tests. 7 are in <code>push.test.ts</code> and <code>pull.test.ts</code>, where a global <code>pre-push</code> hook refuses the fixtures' temporary repositories, as the pull request body documents. The other 2 are real-<code>sclang</code> render tests, in code this pull request does not change, where two renders of one input gave different bytes. The cause and the rate at the base are unknown."
+    }
+   ],
+   "files": [
+    {
+     "path": "src/audiod/midi-out.test.ts",
+     "note": "Runs the daemon end to end: timing across a wrap, a converted session, a file bed, note-offs in every case, capture leaving out the outputs, destination timestamps, and the clock's transport messages.",
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 178,
+       "text": "<code>replaceDaemon</code> waits for the process to exit, because a daemon that is quitting can still accept a connection and then drop it. The same sequence failed in 0 of 60 cycles this way, and in 22 of 60 with a wait that ends on a failed connect."
+      },
+      {
+       "kind": "verify",
+       "line": 26,
+       "text": "This comment matches the behavior. A run's channel and take pitches together follow <code>process.pid % 60</code>, so two runs share both 1 time in 60. Overlapping runs were not repeated at this head, because this head changes only messages and docs."
+      },
+      {
+       "kind": "context",
+       "text": "The branch of <code>open</code> that replaces a refused daemon runs only when a refusal happens, and nothing can force one, so this review read that branch and did not run it. <code>replaceDaemon</code> itself runs in the timing test."
+      },
+      {
+       "kind": "context",
+       "text": "This file does not cover a wrap on a block boundary, the sustain pedal, the pitch bend, or a replaced clock. <code>--midi-out-selftest</code> covers those against a fake clock, and this file runs that self-test."
+      }
+     ]
+    },
+    {
+     "path": "src/keys/helper-native.test.ts",
+     "note": "Expects <code>host_ms</code> on each monitor line."
+    },
+    {
+     "path": "docs/architecture.md",
+     "note": "Says that the daemon sends MIDI on the clock the audio callback keeps."
+    },
+    {
+     "path": "docs/audio-engine.md",
+     "note": "Adds the <b>MIDI outputs</b> section, the reference for the op, its fields, and its counters.",
+     "checks": []
+    },
+    {
+     "path": "docs/keys.md",
+     "note": "Documents <code>host_ms</code> and the monitor's <code>--destination</code> mode."
+    },
+    {
+     "path": "docs/projects/sequencer/readme.md",
+     "note": "Adds section 10, which records what building the engine measured.",
+     "checks": [
+      {
+       "kind": "context",
+       "text": "Section 10 corrects section 2.5 on one point: CoreMIDI holds at most one block of a destination's events, not a block and the lead, because each queued event falls due within the block that queued it. It also records that <code>MIDIFlushOutput</code> reaches a virtual destination as a System Reset, so the daemon flushes only when CoreMIDI still holds something."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
