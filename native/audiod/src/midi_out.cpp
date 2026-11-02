@@ -913,7 +913,7 @@ public:
 constexpr double testRate = 48000.0;
 constexpr int testBlock = 512;
 double msOf (juce::int64 sample) { return (double) sample * 1000.0 / testRate; }
-bool near (double a, double b) { return std::abs (a - b) < 1.0e-6; }
+bool closeTo (double a, double b) { return std::abs (a - b) < 1.0e-6; }
 
 struct Harness
 {
@@ -989,7 +989,7 @@ std::string checkLead()
             const auto s = samples[i];
             if (s - 960 < p || s - 960 >= p + testBlock)
                 return "lead: the event at " + std::to_string (s) + " left in the block at " + std::to_string (p);
-            if (! near (h.log[i].ms, msOf (s - 960)))
+            if (! closeTo (h.log[i].ms, msOf (s - 960)))
                 return "lead: the event at " + std::to_string (s) + " left at " + std::to_string (h.log[i].ms) + " ms";
         }
     }
@@ -1088,7 +1088,7 @@ std::string checkHeld()
         h.serve (1.0e9);
         if (h.sent() != Bytes { { 0x9f, 60, 100 }, { 0x8f, 60, 0 }, { 0x9f, 60, 100 } })
             return "held: a wrap did not end the note and start it again";
-        if (! near (h.log[1].ms, msOf (3000)) || ! near (h.log[2].ms, msOf (3000)))
+        if (! closeTo (h.log[1].ms, msOf (3000)) || ! closeTo (h.log[2].ms, msOf (3000)))
             return "held: the wrap's note-off and note-on did not leave at the wrap";
     }
     {
@@ -1158,7 +1158,7 @@ std::string checkClock()
     };
 
     auto at = play (0, 4);
-    if (transport (at) != Bytes { { clockStart } } || ! near (firstPulseMs (at), 0.0))
+    if (transport (at) != Bytes { { clockStart } } || ! closeTo (firstPulseMs (at), 0.0))
         return "clock: playing from the top did not send Start, then pulse 0";
     at = play (4 * testBlock, 3, false);
     if (h.sent (at) != Bytes { { clockStop } })
@@ -1166,18 +1166,18 @@ std::string checkClock()
 
     const double bar3 = ms;
     at = play (192000, 2);
-    if (transport (at) != Bytes { { songPosition, 32, 0 }, { clockContinue } } || ! near (firstPulseMs (at), bar3))
+    if (transport (at) != Bytes { { songPosition, 32, 0 }, { clockContinue } } || ! closeTo (firstPulseMs (at), bar3))
         return "clock: playing from bar 3 did not send Song Position Pointer 32 and Continue, then pulse 192 at once";
 
     const double beat2 = ms;
     at = play (792000, 2);
-    if (transport (at) != Bytes { { clockStop }, { songPosition, 4, 1 }, { clockContinue } } || ! near (firstPulseMs (at), beat2))
+    if (transport (at) != Bytes { { clockStop }, { songPosition, 4, 1 }, { clockContinue } } || ! closeTo (firstPulseMs (at), beat2))
         return "clock: a locate to beat 2 of bar 9 did not send Stop, Song Position Pointer 132, and Continue, then pulse 792";
 
     play (792000 + 2 * testBlock, 1, false);
     const double between = ms;
     at = play (193500, 10);
-    if (transport (at) != Bytes { { songPosition, 33, 0 }, { clockContinue } } || ! near (firstPulseMs (at), between + msOf (4500)))
+    if (transport (at) != Bytes { { songPosition, 33, 0 }, { clockContinue } } || ! closeTo (firstPulseMs (at), between + msOf (4500)))
         return "clock: playing from between sixteenths did not resume on the next one's pulse";
 
     play (193500 + 10 * testBlock, 1, false);
@@ -1186,7 +1186,7 @@ std::string checkClock()
     const double wrapMs = wrapStart + msOf (1000);
     if (transport (at) != Bytes { { songPosition, 8, 1 }, { clockContinue }, { clockStop }, { songPosition, 0, 1 }, { clockContinue } })
         return "clock: a wrap did not send Stop, the loop start's Song Position Pointer, and Continue";
-    if (! near (firstPulseMs (at), wrapMs))
+    if (! closeTo (firstPulseMs (at), wrapMs))
         return "clock: after the wrap, the first pulse was not the loop start's, at the wrap";
 
     at = play (768000 + 2 * testBlock - 1000, 2, false);
