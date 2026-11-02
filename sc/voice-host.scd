@@ -118,32 +118,35 @@ boot = {
 	server.boot;
 	Routine {
 		var waiting = true;
-		while { waiting } {
-			0.1.wait;
-			if (launched.isNil and: { server.pid.notNil }) {
-				launched = server.pid;
-				emit.(["server_pid", launched]);
+		// An error nothing catches ends this routine and leaves sclang running.
+		try {
+			while { waiting } {
+				0.1.wait;
+				if (launched.isNil and: { server.pid.notNil }) {
+					launched = server.pid;
+					emit.(["server_pid", launched]);
+				};
+				case
+				{ server.serverRunning } {
+					waiting = false;
+					addAll.();
+					routeDef !? { |path| server.sendMsg(\d_load, path) };
+					server.sync;
+					startRoutes.();
+					server.sync;
+					booting = false;
+					emit.(["ready", true, "device", device ? "system output", "sample_rate", server.sampleRate.asInteger]);
+				}
+				{ launched.notNil and: { server.pid.isNil } } {
+					waiting = false;
+					fail.("scsynth exited while it booted on " ++ (device ? "the system output") ++ ": the device did not start");
+				}
+				{ Main.elapsedTime - started > 20 } {
+					waiting = false;
+					fail.("scsynth did not boot on " ++ (device ? "the system output") ++ " within 20 seconds");
+				};
 			};
-			case
-			{ server.serverRunning } {
-				waiting = false;
-				addAll.();
-				routeDef !? { |path| server.sendMsg(\d_load, path) };
-				server.sync;
-				startRoutes.();
-				server.sync;
-				booting = false;
-				emit.(["ready", true, "device", device ? "system output", "sample_rate", server.sampleRate.asInteger]);
-			}
-			{ launched.notNil and: { server.pid.isNil } } {
-				waiting = false;
-				fail.("scsynth exited while it booted on " ++ (device ? "the system output") ++ ": the device did not start");
-			}
-			{ Main.elapsedTime - started > 20 } {
-				waiting = false;
-				fail.("scsynth did not boot on " ++ (device ? "the system output") ++ " within 20 seconds");
-			};
-		};
+		} { |error| fail.(error.errorString.replace("ERROR: ", "")) };
 	}.play(AppClock);
 };
 

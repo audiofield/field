@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { sclangCommand } from '../../generators/supercollider.js';
+import { KeysHelper } from '../../keys/helper.js';
 import { resolveInstrument } from '../../keys/targets.js';
 import { freeUdpPort, instrumentPath, oscMessage, parseHostLine, VoiceHost, type VoiceHostStatus } from './host.js';
 
@@ -366,11 +367,11 @@ const realSclang = (() => {
 describe.skipIf(realSclang === undefined)('a voice host through real sclang', () => {
   // The reason a host gives for a program that fails as it loads, starting
   // again past a refused MIDI client, as field sc voice does.
-  async function reasonFor(text: string): Promise<string> {
+  async function reasonFor(text: string, device?: string): Promise<string> {
     const program = join(dir, 'failing.scd');
     writeFileSync(program, text);
     for (let attempt = 0; ; attempt++) {
-      const host = await VoiceHost.start({ instruments: [program], env: process.env });
+      const host = await VoiceHost.start({ instruments: [program], ...(device !== undefined ? { device } : {}), env: process.env });
       const reason = await host.ready.then(
         () => 'it went live',
         (error: Error) => error.message,
@@ -389,5 +390,26 @@ describe.skipIf(realSclang === undefined)('a voice host through real sclang', ()
     const reason = await reasonFor(text);
     expect(reason).toContain(`failed with ERROR: ${kept}`);
     expect(reason).not.toContain('@field');
+  });
+
+  // Booting a real scsynth needs an output to name, which the helper reports.
+  it('ends the host with the reason when a voice throws as the server takes it', { timeout: 60_000 }, async (ctx) => {
+    let output: string | undefined;
+    try {
+      const helper = await KeysHelper.start('Field Voice Host Test');
+      await helper.close();
+      output = helper.defaultOutput;
+    } catch (error) {
+      ctx.skip(`no output to name: ${String(error)}`);
+    }
+    if (output === undefined) ctx.skip('the helper reports no output');
+    const started = Date.now();
+    const reason = await reasonFor(
+      'var def = SynthDef(\\pad, { |gate = 1, out = 0| Out.ar(out, SinOsc.ar * EnvGen.kr(Env.asr, gate, doneAction: 2)) });\ndef.children = [1];\ndef;\n',
+      output,
+    );
+    expect(reason).toContain('could not write def');
+    expect(reason).not.toContain('@field');
+    expect(Date.now() - started).toBeLessThan(30_000);
   });
 });
