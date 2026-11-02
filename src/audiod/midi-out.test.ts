@@ -161,13 +161,41 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
     return watching;
   }
 
-  // Opens an output, or skips where the machine has no virtual MIDI.
-  // CoreMIDI can refuse a new source for a moment after an earlier test's
-  // went away, so a refusal on macOS is tried again for a second.
-  async function open(ctx: TestContext, output: MidiOut, through: AudiodClient = client) {
+  // Replaces the daemon with a new process, on the same session. A daemon
+  // that is quitting can still accept a connection and then drop it, so
+  // this waits for the process to exit.
+  async function replaceDaemon(): Promise<void> {
+    const first = client.pid!;
+    try {
+      await client.quit();
+    } catch {
+      // the daemon can close the connection before it answers
+    }
+    client.close();
+    await waitFor(
+      () => {
+        try {
+          process.kill(first, 0);
+          return false;
+        } catch {
+          return true;
+        }
+      },
+      5000,
+      'the first daemon to exit',
+    );
+    client = await AudiodClient.connect(root, { nullOutput: true, idleSeconds: 60 });
+    await client.session((await compileSession(root, 'bed')).session);
+  }
+
+  // Opens an output, or skips where the machine has no virtual MIDI. macOS
+  // can refuse a process its first MIDI client, and only a new process
+  // clears that, so a refusal there replaces the daemon, which has not
+  // published anything when `through` is `client`.
+  async function open(ctx: TestContext, output: MidiOut, through?: AudiodClient) {
     for (let attempt = 0; ; attempt++) {
       try {
-        return await through.midiOut(output);
+        return await (through ?? client).midiOut(output);
       } catch (error) {
         const message = String(error);
         if (/cannot create a virtual MIDI source/.test(message)) {
@@ -181,8 +209,8 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
             console.warn(`skipping a MIDI output test: ${reason}`);
             ctx.skip(reason);
           }
-          if (process.platform === 'darwin' && attempt < 4) {
-            await sleep(250);
+          if (process.platform === 'darwin' && through === undefined && attempt < 4) {
+            await replaceDaemon();
             continue;
           }
         }
@@ -226,30 +254,9 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
     async (ctx) => {
       // A take leaves the daemon's own outputs out, unless this seam lets
       // it hear them; it reaches the daemon at its spawn, so the daemon
-      // the setup started is replaced. A daemon that is quitting can still
-      // accept a connection and then drop it, so wait for the process to exit.
-      const first = client.pid!;
-      try {
-        await client.quit();
-      } catch {
-        // the daemon can close the connection before it answers
-      }
-      client.close();
+      // the setup started is replaced.
       process.env['FIELD_AUDIOD_CAPTURE_OUTPUTS'] = '1';
-      await waitFor(
-        () => {
-          try {
-            process.kill(first, 0);
-            return false;
-          } catch {
-            return true;
-          }
-        },
-        5000,
-        'the first daemon to exit',
-      );
-      client = await AudiodClient.connect(root, { nullOutput: true, idleSeconds: 60 });
-      await client.session((await compileSession(root, 'bed')).session);
+      await replaceDaemon();
 
       // Short notes off the block grid, one at the loop's start and one
       // ending just before its end, through a one-bar loop.
@@ -312,7 +319,6 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
   it('plays through the first blocks of a file bed at the device rate, and of a play after a locate', { timeout: 30_000 }, async (ctx) => {
     const wav = join(root, 'bed.wav');
     writeWavFloat32(wav, RATE, [new Float32Array(10 * RATE), new Float32Array(10 * RATE)]);
-    await client.load(wav);
     const source = name('file');
     const events = [
       { sample: 0, midi: [ON, PITCH, 100] },
@@ -323,6 +329,7 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
     const pulses = Array.from({ length: 480 }, (_, i) => i * 1000);
     await open(ctx, { name: 'seq:file', source, rate: RATE, lead: 0, events, clock: { pulses } });
     const watching = await monitor(source);
+    await client.load(wav);
     const transport = () => watching.lines.filter((l) => l.midi[0] !== 0xf8).map((l) => l.midi);
 
     await client.play();
@@ -494,6 +501,7 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
       const events = notes(starts, 512);
       const destination = name('destination');
       const source = name('source');
+      await open(ctx, { name: 'seq:source', source, rate: RATE, lead: 0, events });
       const atDestination = await monitor(destination, true);
       await waitFor(
         async () => {
@@ -508,7 +516,6 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
         5000,
         `${destination} to be listed`,
       );
-      await open(ctx, { name: 'seq:source', source, rate: RATE, lead: 0, events });
       const fromSource = await monitor(source);
       await client.loop(0, loop);
       await client.locate(0);

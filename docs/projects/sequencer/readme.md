@@ -928,6 +928,12 @@ points, each measured on macOS 27 with JUCE 8.0.4:
   each block; a capture input has none. The binding rides the schedule,
   so binding a new input swaps in a schedule that shares the old one's
   events, and leaves the notes sounding.
+- **A daemon whose first MIDI client macOS refuses stays refused.**
+  JUCE asks for its client once per process and keeps the answer, so
+  only a new daemon process clears it, and the `midi_out` error says so.
+  A review measured `MIDIClientCreate` returning `-304` in 8 of 200
+  fresh processes with no other MIDI client alive. A later run on this
+  machine saw it in 0 of 300, so the rate depends on what else is alive.
 - **The daemon refuses** a replacement that names another port, a
   second output on a source or destination already in use, SysEx, and
   a 65th output.

@@ -896,6 +896,11 @@ std::unique_ptr<MidiSink> makeMidiSink (const MidiTarget& target, juce::String& 
         if (auto port = createVirtualSource (target.name))
             return std::make_unique<PortSink> (std::move (port), true);
         error = "cannot create a virtual MIDI source named " + target.name + " on this system";
+#if JUCE_MAC
+        // JUCE asks for its MIDI client once per process and keeps the answer.
+        error += ". macOS can refuse a process its first MIDI client, and only a new daemon process clears that: "
+                 "run field transport quit, then try again";
+#endif
         return nullptr;
     }
     const auto devices = juce::MidiOutput::getAvailableDevices();
