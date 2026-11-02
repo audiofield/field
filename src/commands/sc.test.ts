@@ -272,9 +272,22 @@ ${STUB.replace('#!/usr/bin/env node\n', '')}`;
     expect(readFileSync(join(dir, 'host-starts'), 'utf8')).toBe('.');
   });
 
-  it('starts the host with no device when the helper cannot start', { timeout: 30_000 }, async () => {
+  it('starts the host with no device off macOS when the helper cannot start', { timeout: 30_000 }, async () => {
     writeFileSync(join(dir, 'field-audiod'), '#!/usr/bin/env node\nprocess.exit(1);\n');
-    expect(await hostHandedFor()).toMatchObject({ device: null });
+    expect(await hostHandedFor('linux')).toMatchObject({ device: null });
+  });
+
+  it('stops on macOS when the helper cannot start, and starts it only once', { timeout: 30_000 }, async () => {
+    const starts = join(dir, 'helper-starts');
+    writeFileSync(
+      join(dir, 'field-audiod'),
+      `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(starts)}, '.');\nprocess.exit(1);\n`,
+    );
+    await expect(
+      scVoice(['./pad.scd'], { source: [] }, { cwd: dir, env: { ...process.env, FIELD_SCLANG: join(dir, 'sclang'), STUB_LOG: join(dir, 'host.json') }, platform: 'darwin', print: () => {} }),
+    ).rejects.toThrow('To start without it, name the output with --device');
+    expect(readFileSync(starts, 'utf8')).toBe('.');
+    expect(existsSync(join(dir, 'host.json'))).toBe(false);
   });
 
   // What a helper prints when macOS refuses it a MIDI client, for the first

@@ -1005,6 +1005,12 @@ them settled these points:
   a refused helper starts once more, and a second refusal stops with the
   error, because with no device `scsynth` on macOS would open the
   default input and wait on the microphone permission.
+- **On macOS, `field sc voice` never starts a host with no device
+  unless you ask.** Any helper failure there stops the command, not only a
+  refusal, as `field keys` stops: `scsynth` with no device would open the
+  default input and wait on the microphone permission, whatever kept the
+  helper from answering. `--device` gets past it. Linux and Windows keep
+  the no-device path, where a helper that cannot run costs nothing.
 - **A voice host that macOS refuses a MIDI client fails, and
   `field sc voice` starts it once more.** `MIDIClient.init` throws in a
   refused `sclang`, and nothing else ends the host then. `field keys`

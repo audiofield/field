@@ -70,7 +70,11 @@ for, once, and a new process gets a new MIDI client. `field sc voice`,
 which starts the same helper to name the system output when no daemon
 can answer, tries once more by itself, and then stops with that error.
 It does the same when macOS refuses `sclang` its MIDI client as the voice
-host starts.
+host starts. On macOS, `field sc voice` also stops when the helper cannot
+run at all, such as when `field-audiod` is not built, because `scsynth`
+with no device would wait on the microphone permission. Name the output
+with `--device` to get past either. On Linux and Windows, it starts with
+no device when the helper cannot run.
 
 ## Play
 
