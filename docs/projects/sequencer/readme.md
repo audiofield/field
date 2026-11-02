@@ -938,9 +938,9 @@ points, each measured on macOS 27 with JUCE 8.0.4:
   8 of 200 fresh processes with no other MIDI client alive, and it kept
   returning `-304` through 40 calls over 4 seconds in one process. So
   JUCE's keeping its first answer is not the whole cause, and a client of
-  the daemon's own would not clear it. A later run on this machine saw
-  the refusal in 0 of 300 processes, so the rate depends on what else is
-  alive.
+  the daemon's own would not clear it. On this machine, a bare C program
+  saw it in 0 of 300 processes, real `field-audiod` in 1 of 150, and real
+  `sclang` in 6 of 35 voice host starts.
 - **The daemon refuses** a replacement that names another port, a
   second output on a source or destination already in use, SysEx, and
   a 65th output.

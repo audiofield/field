@@ -283,7 +283,10 @@ juce::String midiClientRefusalNote()
 {
 #if JUCE_MAC
     // A refused process keeps being refused, and a healthy one with no ports
-    // gets a client, so asking again tells the two apart.
+    // gets a client, so asking again tells the two apart. Call this only
+    // after JUCE has its client: Apple's MIDIClientDispose documentation warns
+    // that disposing a process's last client can stop later MIDIClientCreate
+    // calls from working.
     MIDIClientRef probe = 0;
     if (MIDIClientCreate (CFSTR ("field-audiod refusal probe"), nullptr, nullptr, &probe) == noErr)
     {
