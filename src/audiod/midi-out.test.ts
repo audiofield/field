@@ -22,9 +22,14 @@ import { midiTakeLineSchema, okResponseSchema, type MidiOut, type MidiTakeLine }
 // a Linux machine without the ALSA sequencer, and Windows, which has no
 // virtual ports, may skip.
 //
-// Every message is on channel 16, from sources and to a destination
-// named for this run's pid, so a run beside another, or beside a
-// `field keys` someone is playing, reads only its own.
+// Sources and a destination named for this run's pid keep what
+// `--midi-monitor` reads to this run's own. A MIDI take hears every source
+// on the machine, another daemon's outputs included, so the messages also
+// keep apart. Each run sends on a channel chosen by its pid, and never on
+// channel 16, which the takes in src/commands/record-midi-daemon.test.ts
+// read. The tests that read a take send on pitches chosen by the pid, below
+// the ones the other tests send. Two runs share both 1 time in 60, and then
+// the tests that read a take can fail on each other's messages.
 
 const binary = (() => {
   try {
@@ -37,8 +42,11 @@ const binary = (() => {
 const execFileAsync = promisify(execFile);
 const RATE = 48000;
 const BAR = 96000; // 120 bpm, 4/4
-const ON = 0x9f;
-const OFF = 0x8f;
+const CHANNEL = process.pid % 15;
+const ON = 0x90 | CHANNEL;
+const OFF = 0x80 | CHANNEL;
+const TAKE_PITCH = (Math.floor(process.pid / 15) % 4) * 12; // 0, 12, 24, or 36, with 12 pitches each
+const PITCH = 48;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function waitFor(predicate: () => boolean | Promise<boolean>, ms: number, what: string): Promise<void> {
@@ -76,8 +84,8 @@ interface Monitor {
   closed: Promise<void>;
 }
 
-// Notes `length` samples long on channel 16, starting at each of `starts`.
-function notes(starts: number[], length: number, first = 40): MidiOut['events'] {
+// Notes `length` samples long, starting at each of `starts`.
+function notes(starts: number[], length: number, first = PITCH): MidiOut['events'] {
   const events = starts.flatMap((sample, i) => [
     { sample, midi: [ON, first + i, 100] },
     { sample: sample + length, midi: [OFF, first + i, 0] },
@@ -246,7 +254,7 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
       // Short notes off the block grid, one at the loop's start and one
       // ending just before its end, through a one-bar loop.
       const starts = [0, 6137, 15011, 30500, 48001, 61999, 79123, 94500];
-      const events = notes(starts, 1300);
+      const events = notes(starts, 1300, TAKE_PITCH);
       const source = name('timing');
       await open(ctx, { name: 'seq:timing', source, rate: RATE, lead: 0, events });
       await waitFor(
@@ -288,7 +296,7 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
     writeFileSync(songYaml, `${readFileSync(songYaml, 'utf8')}rate: ${rate}\n`);
     await client.session((await compileSession(root, 'bed')).session);
     const every = 1000;
-    const events = Array.from({ length: 400 }, (_, i) => ({ sample: i * every, midi: [ON, 40, 100] }));
+    const events = Array.from({ length: 400 }, (_, i) => ({ sample: i * every, midi: [ON, PITCH, 100] }));
     await open(ctx, { name: 'seq:converted', source: name('converted'), rate, lead: 0, events });
     await client.locate(0);
     await client.play();
@@ -307,10 +315,10 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
     await client.load(wav);
     const source = name('file');
     const events = [
-      { sample: 0, midi: [ON, 40, 100] },
-      { sample: 2 * RATE, midi: [ON, 41, 100] },
-      { sample: 8 * RATE, midi: [OFF, 40, 0] },
-      { sample: 8 * RATE, midi: [OFF, 41, 0] },
+      { sample: 0, midi: [ON, PITCH, 100] },
+      { sample: 2 * RATE, midi: [ON, PITCH + 1, 100] },
+      { sample: 8 * RATE, midi: [OFF, PITCH, 0] },
+      { sample: 8 * RATE, midi: [OFF, PITCH + 1, 0] },
     ];
     const pulses = Array.from({ length: 480 }, (_, i) => i * 1000);
     await open(ctx, { name: 'seq:file', source, rate: RATE, lead: 0, events, clock: { pulses } });
@@ -321,7 +329,7 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
     await sleep(400);
     await client.stop();
     await sleep(200);
-    expect(transport()).toEqual([[0xfa], [ON, 40, 100], [OFF, 40, 0], [0xfc]]);
+    expect(transport()).toEqual([[0xfa], [ON, PITCH, 100], [OFF, PITCH, 0], [0xfc]]);
 
     const mark = watching.lines.length;
     await client.locate(2 * RATE);
@@ -334,8 +342,8 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
     expect(watching.lines.slice(mark).filter((l) => l.midi[0] !== 0xf8).map((l) => l.midi)).toEqual([
       [0xf2, 16, 0],
       [0xfb],
-      [ON, 41, 100],
-      [OFF, 41, 0],
+      [ON, PITCH + 1, 100],
+      [OFF, PITCH + 1, 0],
       [0xfc],
     ]);
   });
@@ -392,12 +400,12 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
       const beforeWrap = watching.lines.length;
       await client.play();
       await waitFor(
-        () => watching.lines.slice(beforeWrap).filter((l) => l.midi[0] === ON && l.midi[1] === 40).length >= 2,
+        () => watching.lines.slice(beforeWrap).filter((l) => l.midi[0] === ON && l.midi[1] === PITCH).length >= 2,
         4000,
         'the loop to wrap',
       );
       const lap = watching.lines.slice(beforeWrap);
-      const again = lap.findIndex((l, i) => i > 0 && l.midi[0] === ON && l.midi[1] === 40);
+      const again = lap.findIndex((l, i) => i > 0 && l.midi[0] === ON && l.midi[1] === PITCH);
       expect(held(lap.slice(0, again))).toEqual(new Set());
       await client.stop();
       await client.loop();
@@ -428,7 +436,8 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
 
   it('leaves its own outputs out of a MIDI take', { timeout: 30_000 }, async (ctx) => {
     const source = name('beside');
-    await open(ctx, { name: 'seq:beside', source, rate: RATE, lead: 0, events: notes([0, 4800, 9600], 2400) });
+    const played = TAKE_PITCH + 8;
+    await open(ctx, { name: 'seq:beside', source, rate: RATE, lead: 0, events: notes([0, 4800, 9600], 2400, TAKE_PITCH) });
     const keys = spawn(binary!, ['--keys', name('keys')], { stdio: 'pipe' });
     const keyLines: string[] = [];
     createInterface({ input: keys.stdout }).on('line', (line) => keyLines.push(line));
@@ -455,17 +464,17 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
       await client.locate(0);
       const started = await client.record();
       await sleep(150);
-      keys.stdin.write(`${JSON.stringify({ midi: [ON, 100, 90] })}\n${JSON.stringify({ midi: [OFF, 100, 0] })}\n`);
+      keys.stdin.write(`${JSON.stringify({ midi: [ON, played, 90] })}\n${JSON.stringify({ midi: [OFF, played, 0] })}\n`);
       await sleep(400);
       await client.stop();
       const lines = readFileSync(join(root, started.file), 'utf8')
         .split('\n')
         .filter((line) => line !== '')
         .map((line) => midiTakeLineSchema.parse(JSON.parse(line)))
-        .filter((line) => (line.midi[0]! & 0x0f) === 0x0f);
+        .filter((line) => (line.midi[0]! & 0x0f) === CHANNEL && line.midi[1]! >= TAKE_PITCH && line.midi[1]! < TAKE_PITCH + 12);
       expect(lines.map((line) => line.midi)).toEqual([
-        [ON, 100, 90],
-        [OFF, 100, 0],
+        [ON, played, 90],
+        [OFF, played, 0],
       ]);
       expect((await client.status()).outputs![0]!.sent).toBeGreaterThanOrEqual(6);
     } finally {
