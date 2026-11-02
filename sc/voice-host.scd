@@ -46,7 +46,11 @@ var jsonValue, emit, fail, stopServer, deviceProblem, run, boot, restart;
 
 jsonValue = { |value|
 	if (value.isString or: { value.isKindOf(Symbol) }) {
-		"\"" ++ value.asString.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") ++ "\""
+		var text = value.asString.replace("\\", "\\\\").replace("\"", "\\\"");
+		// JSON takes no raw control character, and a status that does not
+		// parse loses what it says.
+		(1..31).do { |code| text = text.replace(code.asAscii.asString, "\\u" ++ code.asHexString(4)) };
+		"\"" ++ text ++ "\""
 	} { value.asString }
 };
 emit = { |pairs|

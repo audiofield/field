@@ -1011,6 +1011,9 @@ them settled these points:
   default input and wait on the microphone permission, whatever kept the
   helper from answering. `--device` gets past it. Linux and Windows keep
   the no-device path, where a helper that cannot run costs nothing.
+- **The host escapes every control character in a status line.** JSON
+  takes none raw, and a status that does not parse loses its reason, as
+  a program's error with a tab in it did.
 - **A voice host that macOS refuses a MIDI client fails, and
   `field sc voice` starts it once more.** `MIDIClient.init` throws in a
   refused `sclang`, and nothing else ends the host then. `field keys`

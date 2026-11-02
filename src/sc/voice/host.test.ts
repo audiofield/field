@@ -2,6 +2,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { sclangCommand } from '../../generators/supercollider.js';
 import { resolveInstrument } from '../../keys/targets.js';
 import { freeUdpPort, instrumentPath, oscMessage, parseHostLine, VoiceHost, type VoiceHostStatus } from './host.js';
 
@@ -351,5 +352,42 @@ describe('the voice host process', () => {
     await expect(
       VoiceHost.start({ instruments: ['/p/x.scd'], env: { ...process.env, FIELD_SCLANG: join(dir, 'missing') } }),
     ).rejects.toThrow('FIELD_SCLANG points at a missing binary');
+  });
+});
+
+const realSclang = (() => {
+  try {
+    return sclangCommand();
+  } catch {
+    return undefined;
+  }
+})();
+
+describe.skipIf(realSclang === undefined)('a voice host through real sclang', () => {
+  // The reason a host gives for a program that fails as it loads, starting
+  // again past a refused MIDI client, as field sc voice does.
+  async function reasonFor(text: string): Promise<string> {
+    const program = join(dir, 'failing.scd');
+    writeFileSync(program, text);
+    for (let attempt = 0; ; attempt++) {
+      const host = await VoiceHost.start({ instruments: [program], env: process.env });
+      const reason = await host.ready.then(
+        () => 'it went live',
+        (error: Error) => error.message,
+      );
+      await host.close();
+      if (attempt >= 8 || !/the MIDI client did not start/.test(reason)) return reason;
+    }
+  }
+
+  it.each([
+    ['a tab', 'Error("a\\tb").throw;\n', 'a\tb'],
+    ['a newline', 'Error("a\\nb").throw;\n', 'a\nb'],
+    ['a carriage return', 'Error("a\\rb").throw;\n', 'a\rb'],
+    ['a quote and a backslash', 'Error("a\\"b\\\\c").throw;\n', 'a"b\\c'],
+  ])('keeps the reason of a failure with %s in it', { timeout: 60_000 }, async (_what, text, kept) => {
+    const reason = await reasonFor(text);
+    expect(reason).toContain(`failed with ERROR: ${kept}`);
+    expect(reason).not.toContain('@field');
   });
 });
