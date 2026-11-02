@@ -502,10 +502,13 @@ sends a destination's events at their times, as it does a source's.
 The daemon keeps the notes each output has started, and sends a
 note-off for each on stop, pause, a locate, a loop wrap, a replaced
 schedule, `midi_out_close`, and the end of the connection that opened
-the output. A note that a locate lands inside is not started again.
-Before the note-offs of anything but a wrap, the daemon unschedules
-what CoreMIDI still holds for a destination with `MIDIFlushOutput`, so
-nothing queued for a bed that stopped or jumped reaches the synth. It
+the output. A note that a locate lands inside is not started again. Each
+of those also lifts a sustain pedal (control change 64) the schedule
+left down, because a note the pedal sustains sounds on after its
+note-off. Before the note-offs of anything but a wrap, the daemon
+unschedules what CoreMIDI still holds for a destination with
+`MIDIFlushOutput`, so nothing queued for a bed that stopped or jumped
+reaches the synth. It
 flushes only when CoreMIDI holds something, because a flush reaches a
 virtual destination as a System Reset (`0xFF`). The callback queues only
 the events of the block it is in, so CoreMIDI holds some only when

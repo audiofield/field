@@ -153,8 +153,9 @@ private:
     double service (Output& output, double nowMs);
     void deliver (Output& output, const Entry& entry, double nowMs);
     void send (Output& output, const juce::uint8* bytes, int size, double ms, double nowMs);
-    // Sends a note-off for every note the output holds. With `flush`,
-    // first unschedules what a scheduling sink still holds.
+    // Sends a note-off for every note the output holds, and lifts each
+    // sustain pedal it holds down. With `flush`, first unschedules what a
+    // scheduling sink still holds.
     void endHeldNotes (Output& output, double ms, double nowMs, bool flush);
     Output* find (const juce::String& name) const;
     void closeWhere (const std::function<bool (const Output&)>& match);

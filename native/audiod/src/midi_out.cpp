@@ -35,6 +35,7 @@ constexpr int noteSlots = 16 * 128;
 // A loop much shorter than a block wraps more than once in it; past this
 // many wraps the rest of the block's window is left out.
 constexpr int maxLaps = 16;
+constexpr juce::uint8 sustainPedal = 64; // the control change's number
 constexpr juce::uint8 clockPulse = 0xf8, clockStart = 0xfa, clockContinue = 0xfb, clockStop = 0xfc, songPosition = 0xf2;
 
 juce::DynamicObject::Ptr obj() { return new juce::DynamicObject(); }
@@ -147,6 +148,9 @@ struct MidiOutputs::Output
     // was stamped for, and the latest time a scheduling sink was handed.
     std::array<bool, noteSlots> held {};
     std::array<double, noteSlots> offAt {};
+    // Each channel's sustain pedal, and when its last release was stamped for.
+    std::array<bool, 16> pedalDown {};
+    std::array<double, 16> pedalUpAt {};
     double handedUntil = 0.0;
 
     std::atomic<juce::int64> sent { 0 };
@@ -665,6 +669,14 @@ void MidiOutputs::send (Output& output, const juce::uint8* bytes, int size, doub
     if (size < 3)
         return;
     const int kind = bytes[0] & 0xf0;
+    if (kind == 0xb0 && bytes[1] == sustainPedal)
+    {
+        const auto channel = (size_t) (bytes[0] & 0x0f);
+        output.pedalDown[channel] = bytes[2] >= 64;
+        if (! output.pedalDown[channel])
+            output.pedalUpAt[channel] = ms;
+        return;
+    }
     const auto note = (size_t) ((bytes[0] & 0x0f) * 128 + (bytes[1] & 0x7f));
     if (kind == 0x90 && bytes[2] > 0)
         output.held[note] = true;
@@ -689,6 +701,14 @@ void MidiOutputs::endHeldNotes (Output& output, double ms, double nowMs, bool fl
             continue;
         const juce::uint8 off[3] { (juce::uint8) (0x80 | (note / 128)), (juce::uint8) (note % 128), 0 };
         send (output, off, 3, ms, nowMs);
+    }
+    // A note the pedal sustains sounds on after its note-off.
+    for (size_t channel = 0; channel < output.pedalDown.size(); ++channel)
+    {
+        if (! output.pedalDown[channel] && ! (flushing && output.pedalUpAt[channel] > nowMs))
+            continue;
+        const juce::uint8 up[3] { (juce::uint8) (0xb0 | channel), sustainPedal, 0 };
+        send (output, up, 3, ms, nowMs);
     }
 }
 
@@ -1164,6 +1184,70 @@ std::string checkHeld()
         h.outputs.close ("held");
         if (h.sent() != Bytes { { 0x9f, 60, 100 }, { 0x8f, 60, 0 } })
             return "held: closing the output did not end the note";
+    }
+    {
+        // A note the pedal sustains still sounds after its note-off, so
+        // whatever ends the notes also lifts the pedal.
+        const juce::String pedalled = R"({"name":"pedal","source":"Pedal","rate":48000,"lead":0,"events":[
+            {"sample":0,"midi":[191,64,127]},{"sample":100,"midi":[159,60,100]},{"sample":200,"midi":[143,60,0]}]})";
+        const Bytes lifted { { 0xbf, 64, 127 }, { 0x9f, 60, 100 }, { 0x8f, 60, 0 }, { 0xbf, 64, 0 } };
+
+        Harness stops;
+        stops.open (pedalled);
+        stops.block (0, 0.0);
+        stops.serve (0.0);
+        stops.block (testBlock, msOf (testBlock), false);
+        stops.serve (1.0e9);
+        if (stops.sent() != lifted)
+            return "held: a stop did not lift the sustain pedal";
+
+        Harness locates;
+        locates.open (pedalled);
+        locates.block (0, 0.0);
+        locates.serve (0.0);
+        locates.block (48000, msOf (testBlock));
+        locates.serve (1.0e9);
+        if (locates.sent() != lifted)
+            return "held: a locate did not lift the sustain pedal";
+
+        Harness closes;
+        closes.open (pedalled);
+        closes.block (0, 0.0);
+        closes.serve (1.0e9);
+        closes.outputs.close ("pedal");
+        if (closes.sent() != lifted)
+            return "held: closing the output did not lift the sustain pedal";
+
+        Harness wraps;
+        wraps.open (pedalled);
+        wraps.block (0, 0.0, true, 0, 1024);
+        wraps.block (testBlock, msOf (testBlock), true, 0, 1024);
+        wraps.serve (1.0e9);
+        if (wraps.sent() != lifted)
+            return "held: a wrap did not lift the sustain pedal";
+
+        // A pedal the schedule lifted itself stays as it is.
+        Harness liftedBySchedule;
+        liftedBySchedule.open (R"({"name":"pedal","source":"Pedal","rate":48000,"lead":0,"events":[
+            {"sample":0,"midi":[191,64,127]},{"sample":200,"midi":[191,64,0]}]})");
+        liftedBySchedule.block (0, 0.0);
+        liftedBySchedule.serve (0.0);
+        liftedBySchedule.block (testBlock, msOf (testBlock), false);
+        liftedBySchedule.serve (1.0e9);
+        if (liftedBySchedule.sent() != Bytes { { 0xbf, 64, 127 }, { 0xbf, 64, 0 } })
+            return "held: a stop lifted a pedal the schedule had already lifted";
+
+        // CoreMIDI still holds the schedule's own release, which the flush
+        // unschedules, so the daemon sends it again.
+        Harness flushed (true);
+        flushed.open (R"({"name":"pedal","destination":"Pedal","rate":48000,"lead":0,"events":[
+            {"sample":0,"midi":[191,64,127]},{"sample":400,"midi":[191,64,0]}]})");
+        flushed.block (0, 1000.0);
+        flushed.serve (1000.01);
+        flushed.block (testBlock, 1003.0, false);
+        flushed.serve (1003.0);
+        if (flushed.flushes != 1 || flushed.sent() != Bytes { { 0xbf, 64, 127 }, { 0xbf, 64, 0 } } || ! closeTo (flushed.log[1].ms, 1003.0))
+            return "held: a flush that unscheduled the pedal's release did not lift the pedal";
     }
     return {};
 }
