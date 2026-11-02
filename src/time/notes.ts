@@ -84,8 +84,10 @@ function at<T>(path: string, resolve: () => T): T {
 export function resolveNotes(file: NotesFile, anchor: number, time: NotesTime): ResolvedNotes {
   const inTicks = file.sample_rate === undefined;
   const from = inTicks ? anchor : 0;
-  const origin = inTicks ? time.tempo.ticksToSamples(anchor) : 0;
-  const sample = (t: number): number => (inTicks ? time.tempo.ticksToSamples(t) - origin : t);
+  // Rounded once, on the distance from the anchor: rounding the two ticks
+  // apart moves a note by a sample with where the part is placed, which
+  // gives each placement a render of its own.
+  const sample = (t: number): number => (inTicks ? Math.round(time.tempo.secondsBetween(anchor, t) * time.tempo.sampleRate) : t);
   const meter = inTicks ? time.meter : undefined;
   const start = (row: { at: number | number[] }, path: string): number =>
     at(`${path}.at`, () => positionTicks(row.at, from, meter));

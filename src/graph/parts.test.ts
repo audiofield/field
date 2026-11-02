@@ -152,6 +152,16 @@ describe('a placed part', () => {
     expect((stem['clips'] as { start: number }[]).map((c) => c.start)).toEqual([0, 2, 4, 6].map((bar) => bar * 96000));
   });
 
+  it('is one render for a whole loop at a tempo where a bar is not a whole number of samples', async () => {
+    const sixteenths = Array.from({ length: 16 }, (_, i) => `  - {at: ${i * 240}, length: 240, note: C3}`);
+    writePart('steps', ['length: [1]', 'notes:', ...sixteenths, 'controls: []', 'bends: []', ''].join('\n'));
+    edit('songs/creek/song.yaml', 'bpm: 120', 'bpm: 133');
+    writeTrack('keys', ['instrument: pad', 'inputs:', '  - notes: steps', '    at: [1]', '    duration: [32]', '    loop: {}']);
+    expect((await check(root)).diagnostics).toEqual([]);
+    expect(await inputs('//songs/creek/track:keys')).toEqual(['//songs/creek/gen:keys']);
+    expect(((await parameters('//songs/creek/track:keys'))['clips'] as unknown[]).length).toBe(32);
+  });
+
   it('resolves each repetition of its loop where the repetition starts, so a tempo change reaches the later ones', async () => {
     writePart('beat', ['length: [1]', 'notes:', '  - {at: [1, 2], length: [0, 1], note: C3}', 'controls: []', 'bends: []', ''].join('\n'));
     createTrack(root, 'creek', 'pads');

@@ -40,6 +40,18 @@ describe('resolving a part', () => {
     expect(at1).toMatchObject({ sample_rate: 48000, length: 2 * 3840 * TICK + 960 * TICK });
   });
 
+  it.each([133, 128, 96])('resolves alike at every bar of a steady song at %d bpm, where a tick is not a whole number of samples', (bpm) => {
+    const tempo = new TempoMap([{ at: 0, bpm }], 48000);
+    const time = { tempo, meter: fourFour };
+    // One tick of each kind in the bar: 133 bpm never lands on half a
+    // sample, and 96 and 128 bpm do, at ticks 2 and 8.
+    const ticks = part({ notes: Array.from({ length: 64 }, (_, i) => ({ at: i * 60 + (i % 16), length: 2, note: 60 })) });
+    const first = resolveNotes(ticks, 0, time);
+    for (let bar = 1; bar < 256; bar++) {
+      expect(resolveNotes(ticks, bar * 3840, time)).toEqual(first);
+    }
+  });
+
   it('follows the tempo map from where it is placed', () => {
     // 60 bpm from bar 2: a quarter note there is a second.
     const slowing = new TempoMap([{ at: 0, bpm: 120 }, { at: 3840, bpm: 60 }], 48000);
