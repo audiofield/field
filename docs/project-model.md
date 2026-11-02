@@ -509,7 +509,7 @@ named for the first repetition `<n>` that plays it.
 To edit a take, copy it into a part and place the part where the take
 plays, `started_at_ticks` after the record entry's `at`. While the
 entry has not moved since you recorded the take, that is the take's
-`musical_position`. Then mute the record entry, or delete it:
+`musical_position`. Then mute the record entry:
 
 ```console
 $ cp songs/creek/audio/keys/take-20261015-143012.notes.yaml songs/creek/notes/keys-verse.yaml
