@@ -34,7 +34,7 @@
    {
     "id": "review",
     "title": "Where review stands",
-    "html": "<p>The newest review of this head is clean, and all 10 findings are fixed. A human reviewer still has to merge it. One small suggestion stands, resting on a forced error with no real sequence behind it:</p><ul class=\"tight\"><li>Catch errors in the boot routine too.</li></ul>"
+    "html": "<p>The gpt-6.1-sol review of this head requests one change: a <code>seq:</code> input removes the claimed notes from the song's natural length, so the transport can stop early. The ten earlier findings are fixed.</p><p>The package build, typecheck, focused tests, project checks, and real voice-routing tests passed. The outstanding hardware-controller hand test remains separate from the reproduced length defect.</p>"
    },
    {
     "id": "later",
@@ -64,7 +64,7 @@
      "checks": [
       {
        "kind": "verify",
-       "text": "I compiled a session with <code>seq:creek/keys</code> open on a track whose only entry places notes. The track stays in the session and carries only the input. With <code>keys:</code> or <code>voice:</code> open, it keeps the render beside the input."
+       "text": "The session-compile tests passed: a <code>seq:</code> input suppresses the claimed track's part and MIDI take, keeps its audio, and leaves other tracks' notes intact. The test checks the input list but does not check the song's playback length."
       }
      ]
     },
@@ -74,8 +74,13 @@
      "checks": [
       {
        "kind": "context",
-       "text": "The order matters. Solo filters entries by index, so <code>applySolo</code> has to run before <code>leaveOutNotes</code> shifts them, and it does.",
-       "line": 160
+       "line": 160,
+       "text": "Solo filters entries by index, so it runs before <code>leaveOutNotes</code> changes that list."
+      },
+      {
+       "kind": "flag",
+       "line": 160,
+       "text": "With no declared song length, filtering notes here also removes their contribution to the session's natural extent. An eight-quarter-note part and a 0.1-second audio clip at 120 bpm and 48 kHz compile to 384,000 samples normally but 4,800 with <code>seq:creek/keys</code>. The real daemon stopped the claimed session within 300 ms. Preserve the placements' duration when suppressing their rendered audio."
       }
      ]
     },
@@ -84,8 +89,8 @@
      "checks": [
       {
        "kind": "verify",
-       "text": "This suite skips on Windows, where <code>sclangCommand</code> refuses its extensionless stub. The <code>windows</code> CI job on this head reports <code>src/model/live-notes.test.ts (2 tests | 2 skipped)</code> and passes. Without the skip, both tests fail with <code>FIELD_SCLANG points at …</code>, which I showed on macOS by setting <code>process.platform</code> to <code>win32</code> once the tests ran.",
-       "line": 123
+       "line": 123,
+       "text": "Both tests passed on macOS. The Windows guard excludes the extensionless test program that <code>sclangCommand</code> refuses on Windows; I checked that guard and the executable lookup code."
       }
      ]
     },
@@ -120,25 +125,17 @@
       {
        "kind": "verify",
        "line": 52,
-       "text": "Status lines now escape every control character. Through the real command on real <code>sclang</code>, a forced reason with a tab, a program error with codes 1, 31, 9, 13, and 127, a device name past ASCII, and a backslash before a tab all reached the user intact. With the earlier <code>jsonValue</code> restored, the tab and carriage-return tests fail. Those tests skip in CI, which has no <code>sclang</code>."
+       "text": "The real-host tests passed for program errors containing a tab, newline, carriage return, quote, and backslash. Each reason reaches the caller without raw <code>@field</code> protocol."
       },
       {
-       "kind": "verify",
+       "kind": "context",
        "line": 210,
-       "text": "A source that goes away as the host starts no longer hangs it. With one source killed during a 3-second load, the real host went live in 2 of 2 tries. With three sources and each killed in turn, it went live in 3 of 3, and notes from both survivors reached the voice that names them and the voice with no list, which is how <code>field keys</code> voices are set up. A voice that names the source that went away goes live and hears nothing, with no message."
+       "text": "Each source connects inside its own <code>try</code>, so an endpoint that disappears during program loading does not abort host startup. Sources are listed once when the host starts."
       },
       {
        "kind": "verify",
-       "text": "A real refusal now parses and ends the host. With no helper alive, 40 real starts had 9 refusals and 0 hangs, and all 9 rejected with <code>the MIDI client did not start: Primitive '_InitMIDI' failed.</code> in about 0.45 seconds. Through the real command, 6 of 19 runs were refused once, and all 6 went live on the second host. Refused twice, forced with the real text, it exits 1 in about 1.3 seconds with no raw protocol."
-      },
-      {
-       "kind": "verify",
-       "text": "The general guard is a <code>try</code> with no clock. Errors forced at four steps of the start each ended the command in under a second with <code>the voice host did not start: &lt;the reason&gt;</code>. A healthy program that took 25 seconds to load went live at 27 seconds. An error forced in the boot routine still hangs, which is the one suggestion that stands."
-      },
-      {
-       "kind": "verify",
-       "text": "I ran this host on real <code>sclang</code> and <code>scsynth</code> with three virtual MIDI sources and silent voices. A note from a named source started only the voice that names it and the voice with no list, and a note from a <code>Field Seq</code> source started no voice. So the source id a MIDI message carries matches the one <code>MIDIClient.sources</code> lists. I then ran <code>field sc voice</code> itself on a real daemon and FieldOut. A note from a named source reached the track's input at the voice's level, 0.0002 by the daemon's peak.",
-       "line": 206
+       "line": 206,
+       "text": "Both end-to-end tests passed with real <code>sclang</code>, <code>scsynth</code>, the daemon, and FieldOut. A note reached the track's live input, and two named MIDI sources each drove their own voice without sounding the other input."
       }
      ]
     },
@@ -182,7 +179,7 @@
      "checks": [
       {
        "kind": "verify",
-       "text": "All 8 tests passed here against <code>field-audiod</code> built from this head, and the Linux CI job passes. Without a daemon they skip."
+       "text": "All eight tests passed with a real daemon. The native source, build configuration, and dependency pins match this layer's base exactly, so this review reused artifacts built from that base."
       }
      ]
     },
@@ -191,8 +188,8 @@
      "note": "Replaces <code>src/keys/routing-voice.test.ts</code>, and adds a test that two sources each play one track's voice.",
      "checks": [
       {
-       "kind": "context",
-       "text": "This test needs SuperCollider, the built plugin, and an output device, and did not run in this review, because it boots <code>scsynth</code> with no device. The real run of <code>field sc voice</code> noted in the voice-sources group takes the same path with the device named."
+       "kind": "verify",
+       "text": "Both real-program tests passed: a voice reached its track through FieldOut, and each of two named sources played only its own voice. The tests closed their sources, hosts, inputs, and daemons afterward."
       }
      ]
     },
@@ -233,11 +230,11 @@
       {
        "kind": "verify",
        "line": 178,
-       "text": "On macOS, any helper failure now stops the command before <code>sclang</code> starts. The pull request's own hand test, with <code>field-audiod</code> really not built, prints the voice line, then <code>field-audiod is not built (field upgrade audiod, or set FIELD_AUDIOD). To start without it, name the output with --device</code>, and exits 1. With real <code>--keys</code>, 200 of 200 runs handed the host <code>MacBook Pro Speakers</code>, across 4 refusals. With <code>process.platform</code> set to <code>win32</code> or <code>linux</code>, a failed helper still leaves the host with no device, which simulates those platforms."
+       "text": "The SC-command suite passed all 20 tests, including helper refusal, one host retry on macOS, a second refusal stopping the command, no retry on Linux, and helper closure before host startup. These failure paths use stand-ins rather than a forced real CoreMIDI refusal."
       },
       {
        "kind": "verify",
-       "text": "SIGINT to the whole process group, as a terminal sends it, exited 0 in under 50 ms on real programs, on a track. The input closed, and no <code>sclang</code> or <code>scsynth</code> stayed running. A real terminal did not run."
+       "text": "An existing but non-executable <code>FIELD_SCLANG</code> was also checked through the real CLI: it exited 1 and reported <code>EACCES</code> promptly."
       }
      ]
     },
@@ -246,7 +243,7 @@
      "checks": [
       {
        "kind": "verify",
-       "text": "All 20 tests passed here against <code>field-audiod</code> built from this head and real <code>sclang</code>. The stand-in now prints the real prefix with no newline, and restoring the earlier parse or filter in <code>src/sc/voice/host.ts</code> fails them. These tests run off macOS through a <code>platform</code> option. No committed test runs a real refused <code>sclang</code>."
+       "text": "All 20 tests passed with a real daemon available and real <code>sclang</code> for notes mode. The voice-command startup and retry cases use the suite's stand-ins."
       }
      ]
     },
@@ -301,22 +298,17 @@
      "checks": [
       {
        "kind": "verify",
-       "text": "A pattern that fails while it plays now stops within about a second, with <code>throws.scd's pattern failed at beat 0: ERROR: Message 'frobnicate' not understood.</code> I ran this through real <code>sclang</code>. Before the <code>try</code>, it waited 120 seconds and hid the error.",
-       "line": 45
+       "line": 45,
+       "text": "The real <code>sclang</code> tests passed for a pattern that fails during playback and for negative duration. Both stop with the concrete reason rather than waiting for the timeout."
       },
       {
        "kind": "verify",
-       "text": "A negative <code>dur</code> now stops the command. <code>Pseq([-1, 1, 1], 1)</code> reported <code>whose dur is -1.0</code> when I ran it, where it wrote <code>at: -960</code> before.",
-       "line": 54
+       "line": 59,
+       "text": "The real pattern tests passed for <code>freq</code>, <code>ctranspose</code>, <code>harmonic</code>, and chords, plus seeded byte reproducibility, channel conversion, sustain, and amplitude."
       },
       {
        "kind": "verify",
-       "text": "The pitch now comes from <code>~freq</code>, which every spelling of pitch reaches. <code>Pbind(\\freq, Pseq([440, 880], inf), \\dur, 0.5, \\sustain, 0.1, \\amp, 0.5)</code> wrote notes 69 and 81 when I ran it, where it wrote 60. The new test covers <code>\\ctranspose</code>, <code>\\harmonic</code>, and a <code>\\freq</code> chord.",
-       "line": 59
-      },
-      {
-       "kind": "verify",
-       "text": "On the first head, I ran patterns with a <code>Rest</code> in <code>\\dur</code>, <code>\\rest</code> in <code>\\degree</code>, and chords, and each wrote the expected rows. A part whose last note rings past its <code>length</code> passes project validation. Only the pitch source and the two checks above changed since."
+       "text": "A separate CLI run of <code>Pbind(\\midinote, 60, \\dur, Pseq([0.5, Rest(0.5), 0.5], 1))</code> wrote notes at ticks 0 and 960, preserving the rest."
       }
      ]
     },
@@ -349,7 +341,7 @@
      "checks": [
       {
        "kind": "verify",
-       "text": "I read these sections against the code and against what the commands printed. The output lines in the example match the format that <code>field sc voice</code> printed on real programs."
+       "text": "The new command sections and example output were checked against command registration, source selection, routing, and the tested output format."
       }
      ]
     },
