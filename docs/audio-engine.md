@@ -524,6 +524,11 @@ sends the transport's changes:
 | Locates or wraps the loop while playing | Stop (`0xFC`), Song Position Pointer, then Continue |
 | Stops or pauses | Stop |
 
+Replacing a schedule while the transport plays moves the gear only when
+the pulses change. New pulses send Stop, Song Position Pointer, and
+Continue, as a locate to the transport's position does, and the same
+pulses send nothing. A schedule with no clock sends Stop.
+
 Song Position Pointer counts sixteenth notes, 6 pulses each. It names
 the first sixteenth at or after the transport's position, `ceil(i / 6)`
 for the next pulse `i`, and the pulses resume at pulse 6 times that, so

@@ -133,6 +133,9 @@ struct MidiOutputs::Output
     juce::int64 lastPosition = 0;
     juce::int64 lastAdvance = 0;
     juce::int64 takenAhead = 0;
+    // A new schedule's pulses count the song differently from the ones the
+    // gear followed, so the next block moves the gear as a locate does.
+    bool pulsesMoved = false;
     // Pulses before this sample wait for the next transport message.
     juce::int64 pulseFloor = 0;
 
@@ -239,6 +242,10 @@ juce::var MidiOutputs::open (const juce::var& request, const void* owner, const 
         if (existing->target.name != target.name || existing->target.source != target.source)
             return failure ("output \"" + existing->name + "\" sends " + (existing->target.source ? "from source " : "to destination ")
                             + existing->target.name + ": close it before naming another port");
+        // The same pulses keep their pointer, which is how the callback
+        // tells that the gear's count still holds.
+        if (*schedule.pulses == *existing->published.pulses)
+            schedule.pulses = existing->published.pulses;
         existing->leadInputName = leadInputName;
         existing->published = schedule;
         delete existing->spent.exchange (nullptr);
@@ -411,10 +418,19 @@ void MidiOutputs::play (Output& output, const MidiBlock& block) noexcept
             output.current = incoming;
             // Read before `spent` hands `outgoing` to the thread that frees it.
             const bool newEvents = incoming->events != outgoing->events;
+            const bool newPulses = incoming->clock && incoming->pulses != outgoing->pulses;
+            const bool clockEnded = outgoing->clock && ! incoming->clock;
             output.spent.store (outgoing);
-            // A new binding of the lead input keeps the notes; new notes end the old ones'.
-            if (output.rolling && newEvents)
-                push (output, Entry::cut (block.startMs));
+            if (output.rolling)
+            {
+                output.pulsesMoved = output.pulsesMoved || newPulses;
+                // A new binding of the lead input keeps the notes; new notes
+                // end the old ones'. Moving the gear ends them on its own.
+                if (newEvents && ! output.pulsesMoved)
+                    push (output, Entry::cut (block.startMs));
+                if (clockEnded)
+                    push (output, Entry::message (block.startMs, { clockStop }));
+            }
         }
     if (block.missed)
         return;
@@ -428,6 +444,7 @@ void MidiOutputs::play (Output& output, const MidiBlock& block) noexcept
                 push (output, Entry::message (block.startMs, { clockStop }));
         }
         output.rolling = false;
+        output.pulsesMoved = false;
         return;
     }
 
@@ -441,7 +458,7 @@ void MidiOutputs::play (Output& output, const MidiBlock& block) noexcept
             resumeClock (output, block.position, block.startMs, false);
     }
     else if (const auto moved = distance (output.lastPosition, block.position, block);
-             moved >= 0 && std::abs (moved - output.lastAdvance) <= block.slack)
+             ! output.pulsesMoved && moved >= 0 && std::abs (moved - output.lastAdvance) <= block.slack)
     {
         // Negative when the position landed past the last window's end.
         from = output.takenAhead - moved;
@@ -458,6 +475,7 @@ void MidiOutputs::play (Output& output, const MidiBlock& block) noexcept
     output.lastPosition = block.position;
     output.lastAdvance = block.advance;
     output.rolling = true;
+    output.pulsesMoved = false;
 }
 
 void MidiOutputs::take (Output& output, const MidiBlock& block, juce::int64 from, juce::int64 to, juce::int64 lead) noexcept
@@ -1236,6 +1254,62 @@ std::string checkClock()
     return {};
 }
 
+std::string checkReplacedClock()
+{
+    const auto schedule = [] (int every)
+    {
+        juce::String pulses;
+        for (int i = 0; i < 100; ++i)
+            pulses << (i > 0 ? "," : "") << juce::String (i * every);
+        return R"({"name":"clock","source":"Clock","rate":48000,"lead":0,"events":[],"clock":{"pulses":[)" + pulses + "]}}";
+    };
+    Harness h;
+    if (auto error = h.open (schedule (1000)); error.isNotEmpty())
+        return "replaced clock: " + error.toStdString();
+    juce::int64 position = 0;
+    const auto play = [&] (int blocks)
+    {
+        const auto first = h.log.size();
+        for (int i = 0; i < blocks; ++i, position += testBlock)
+            h.block (position, msOf (position));
+        h.serve (1.0e9);
+        return first;
+    };
+    const auto transport = [&] (size_t first)
+    {
+        Bytes messages;
+        for (auto i = first; i < h.log.size(); ++i)
+            if (h.log[i].bytes != std::vector<juce::uint8> { clockPulse })
+                messages.push_back (h.log[i].bytes);
+        return messages;
+    };
+
+    play (94);
+
+    // The same pulses in a new schedule keep the gear's count.
+    h.open (schedule (1000));
+    auto at = play (2);
+    if (! transport (at).empty() || at == h.log.size())
+        return "replaced clock: the same pulses in a new schedule stopped the clock or moved the gear";
+
+    // Pulses half as fast put sample 49152 at pulse 25, and the next
+    // sixteenth is pulse 30, at sample 60000.
+    h.open (schedule (2000));
+    at = play (2);
+    if (h.sent (at) != Bytes { { clockStop }, { songPosition, 5, 0 }, { clockContinue } })
+        return "replaced clock: new pulses did not send Stop, the new position, and Continue alone";
+    at = play (20);
+    if (h.sent (at) != Bytes { { clockPulse } } || ! closeTo (h.log[at].ms, msOf (60000)))
+        return "replaced clock: the pulses did not resume on the new position's sixteenth";
+
+    // A schedule with no clock ends the clock.
+    h.open (R"({"name":"clock","source":"Clock","rate":48000,"lead":0,"events":[]})");
+    at = play (2);
+    if (h.sent (at) != Bytes { { clockStop } })
+        return "replaced clock: a schedule with no clock did not send Stop";
+    return {};
+}
+
 // Converted delivery moves the bed in steps of its own, so a block's
 // position can land past the end of the last block's window.
 std::string checkSteps()
@@ -1334,7 +1408,7 @@ std::string checkRequests()
 
 std::string runMidiOutSelfTest()
 {
-    for (auto* check : { checkLead, checkFlush, checkHeld, checkClock, checkSteps, checkRequests })
+    for (auto* check : { checkLead, checkFlush, checkHeld, checkClock, checkReplacedClock, checkSteps, checkRequests })
         if (auto error = check(); ! error.empty())
             return error;
     return {};
