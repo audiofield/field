@@ -218,7 +218,9 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
     async (ctx) => {
       // A take leaves the daemon's own outputs out, unless this seam lets
       // it hear them; it reaches the daemon at its spawn, so the daemon
-      // the setup started is replaced.
+      // the setup started is replaced. A daemon that is quitting can still
+      // accept a connection and then drop it, so wait for the process to exit.
+      const first = client.pid!;
       try {
         await client.quit();
       } catch {
@@ -227,9 +229,9 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
       client.close();
       process.env['FIELD_AUDIOD_CAPTURE_OUTPUTS'] = '1';
       await waitFor(
-        async () => {
+        () => {
           try {
-            (await AudiodClient.connect(root, { spawnIfNeeded: false })).close();
+            process.kill(first, 0);
             return false;
           } catch {
             return true;
