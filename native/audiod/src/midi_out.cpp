@@ -409,9 +409,11 @@ void MidiOutputs::play (Output& output, const MidiBlock& block) noexcept
         {
             auto* outgoing = output.current;
             output.current = incoming;
+            // Read before `spent` hands `outgoing` to the thread that frees it.
+            const bool newEvents = incoming->events != outgoing->events;
             output.spent.store (outgoing);
             // A new binding of the lead input keeps the notes; new notes end the old ones'.
-            if (output.rolling && incoming->events != outgoing->events)
+            if (output.rolling && newEvents)
                 push (output, Entry::cut (block.startMs));
         }
     if (block.missed)
