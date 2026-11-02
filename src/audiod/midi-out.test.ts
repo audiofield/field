@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, type TestContext } from 'vitest';
+import { writeWavFloat32 } from '../audio/wav.js';
 import { createSong, createTrack } from '../commands/create.js';
 import { init } from '../commands/init.js';
 import { compileSession } from '../graph/live.js';
@@ -286,6 +287,45 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
     const due = Math.floor(status.sample / every) + 1;
     expect(status.outputs![0]).toMatchObject({ dropped: 0 });
     expect(status.outputs![0]!.sent).toBeGreaterThanOrEqual(due - 2);
+  });
+
+  it('plays through the first blocks of a file bed at the device rate, and of a play after a locate', { timeout: 30_000 }, async (ctx) => {
+    const wav = join(root, 'bed.wav');
+    writeWavFloat32(wav, RATE, [new Float32Array(10 * RATE), new Float32Array(10 * RATE)]);
+    await client.load(wav);
+    const source = name('file');
+    const events = [
+      { sample: 0, midi: [ON, 40, 100] },
+      { sample: 2 * RATE, midi: [ON, 41, 100] },
+      { sample: 8 * RATE, midi: [OFF, 40, 0] },
+      { sample: 8 * RATE, midi: [OFF, 41, 0] },
+    ];
+    const pulses = Array.from({ length: 480 }, (_, i) => i * 1000);
+    await open(ctx, { name: 'seq:file', source, rate: RATE, lead: 0, events, clock: { pulses } });
+    const watching = await monitor(source);
+    const transport = () => watching.lines.filter((l) => l.midi[0] !== 0xf8).map((l) => l.midi);
+
+    await client.play();
+    await sleep(400);
+    await client.stop();
+    await sleep(200);
+    expect(transport()).toEqual([[0xfa], [ON, 40, 100], [OFF, 40, 0], [0xfc]]);
+
+    const mark = watching.lines.length;
+    await client.locate(2 * RATE);
+    await client.play();
+    await sleep(400);
+    await client.stop();
+    await sleep(200);
+    // Pulse 96 is on a sixteenth, so the position is 16, and the note at
+    // the same sample starts with it.
+    expect(watching.lines.slice(mark).filter((l) => l.midi[0] !== 0xf8).map((l) => l.midi)).toEqual([
+      [0xf2, 16, 0],
+      [0xfb],
+      [ON, 41, 100],
+      [OFF, 41, 0],
+      [0xfc],
+    ]);
   });
 
   it(

@@ -463,7 +463,9 @@ private:
     {
         bool missed = false; // the pull missed liveLock
         double rate = 0.0;
-        bool exact = true; // the bed advances by the block's frames exactly
+        // How far the next block's position may stray from this one's plus
+        // its advance before it counts as a jump.
+        juce::int64 slack = 0;
         juce::int64 wrapFrom = 0;
         juce::int64 wrapTo = 0;
     };

@@ -896,10 +896,13 @@ points, each measured on macOS 27 with JUCE 8.0.4:
   advance, along the loop in force. A different position is a jump, as
   a locate is: the daemon ends the notes and, with a clock, sends Stop,
   Song Position Pointer, and Continue. The advance is exact for a live
-  session the device plays at its own rate. Converted delivery renders
-  in steps of its own and a resampled file reads through a buffer, so
-  for them a position within a block and 1024 samples of the expected
-  one still continues. A block in which the pull missed the live lock is
+  session the device plays at its own rate. A file at the device's rate
+  reads through JUCE's `ResamplingAudioSource`, which takes 3 samples
+  more than a block on its first block after a flush, so a position 3
+  samples from the expected one still continues. Converted delivery
+  renders in steps of its own and a resampled file reads through a
+  buffer, so for them a position within a block and 1024 samples of the
+  expected one still continues. A block in which the pull missed the live lock is
   skipped, because the bed did not move in it. A window holds a wrap at
   its end and not one at its start, so a wrap exactly where one block's
   window meets the next, as in a loop a whole number of blocks long with

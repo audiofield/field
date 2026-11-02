@@ -1098,7 +1098,9 @@ juce::int64 Player::pullAudio (const float* const* in, int numInputs, float* con
             // which is where a take beginning here is placed.
             const juce::int64 position = liveSession->wrappedPosition();
             const bool region = liveSession->loopRegionTo() > liveSession->loopRegionFrom();
-            blockBed = { false, (double) liveRate, liveConverter == nullptr, region ? liveSession->loopRegionFrom() : 0,
+            // Converted delivery renders the bed in steps of its own, so its
+            // advance only approximates a block's.
+            blockBed = { false, (double) liveRate, liveConverter == nullptr ? 0 : n + 1024, region ? liveSession->loopRegionFrom() : 0,
                          region ? liveSession->loopRegionTo() : liveLoop ? liveLength : 0 };
             if (livePlaying.load())
             {
@@ -1185,7 +1187,10 @@ juce::int64 Player::pullAudio (const float* const* in, int numInputs, float* con
         // A file bed's position and pull under the same lock as a live
         // one's, so record's jump falls wholly before or after them.
         const juce::int64 position = transport.isPlaying() ? positionSamples() : -1;
-        blockBed = { false, fileSampleRate, juce::exactlyEqual (fileSampleRate, currentDeviceRate()), 0,
+        // A resampled file reads through a buffer. At the device's rate,
+        // juce::ResamplingAudioSource still reads 3 samples more than a block
+        // on its first block after a flush, which a stop and a locate cause.
+        blockBed = { false, fileSampleRate, juce::exactlyEqual (fileSampleRate, currentDeviceRate()) ? 3 : n + 1024, 0,
                      looping ? fileLengthSamples : 0 };
         juce::AudioBuffer<float> buffer (const_cast<float**> (out), numChannels, n);
         juce::AudioSourceChannelInfo info (&buffer, 0, n);
@@ -1215,10 +1220,7 @@ void Player::processBlock (const float* const* in, int numInputs, float* const* 
         midi.position = position;
         midi.bedPerFrame = blockBed.rate > 0.0 && deviceRate > 0.0 ? blockBed.rate / deviceRate : 1.0;
         midi.advance = std::llround (n * midi.bedPerFrame);
-        // Converted delivery renders the bed in steps of its own, and a
-        // resampled file through a buffer, so their advance only
-        // approximates a block's.
-        midi.slack = blockBed.exact ? 0 : n + 1024;
+        midi.slack = blockBed.slack;
         midi.wrapFrom = blockBed.wrapFrom;
         midi.wrapTo = blockBed.wrapTo;
         midiOutputs.play (midi);
