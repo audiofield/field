@@ -114,12 +114,28 @@ only `field`; run it from your Field checkout, or through
 ```console
 $ native/audiod/build/field-audiod_artefacts/Release/field-audiod --midi-monitor "Field Keys"
 {"ready":true,"name":"Field Keys"}
-{"midi":[144,60,100]}
-{"midi":[128,60,0]}
+{"midi":[144,60,100],"host_ms":5702312.481}
+{"midi":[128,60,0],"host_ms":5702519.027}
 ```
 
 The monitor prints every MIDI message from the source you name, so it
-also checks a USB controller: give it the controller's name.
+also checks a USB controller: give it the controller's name. Each line
+gives the message's bytes and `host_ms`, when it arrived, in
+milliseconds on the high-resolution clock the daemon stamps MIDI
+against.
+
+With `--destination`, the monitor publishes a virtual MIDI destination
+under the name instead, and prints each message sent to it, which checks
+a daemon MIDI output with a `destination`
+([audio-engine.md](audio-engine.md) "MIDI outputs"). On macOS each line
+adds `timestamp_ms`, the host time the message carries, which CoreMIDI
+delivers it at:
+
+```console
+$ native/audiod/build/field-audiod_artefacts/Release/field-audiod --midi-monitor "Test Synth" --destination
+{"ready":true,"name":"Test Synth"}
+{"midi":[144,48,110],"host_ms":5731020.112,"timestamp_ms":5731020.004}
+```
 
 ## Turn knobs
 

@@ -136,11 +136,15 @@ MIDI is hardware-facing too, so it lives here as well
 spawns `field-audiod --keys`, a short-lived mode separate from the
 daemon that owns the `Field Keys` virtual MIDI source and, on macOS,
 reports the active keyboard layout. `--midi-monitor` prints what a
-named MIDI source sends. Neither touches the transport or the control
+named MIDI source sends, or what reaches a virtual destination it
+publishes. Neither touches the transport or the control
 socket. The daemon itself records MIDI: armed for a MIDI take, it
 listens to every MIDI source and stamps each message on the clock the
 audio callback keeps, so a MIDI take lines up with the song as an
-audio take does.
+audio take does. It sends MIDI on that clock too: a MIDI output plays a
+schedule of messages and MIDI clock from the audio callback, to a
+virtual source it publishes or to a hardware port
+([audio-engine.md](audio-engine.md) "MIDI outputs").
 
 The real-time audio callback never depends on TypeScript or Python: GC
 pauses and JIT are disqualifying when a 64-sample buffer at 96kHz gives

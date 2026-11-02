@@ -48,6 +48,7 @@ target_sources(field-audiod PRIVATE
   src/click.cpp
   src/keys.cpp
   src/keyboard-layout.cpp
+  src/midi_out.cpp
   src/dsp/biquad.cpp
   src/dsp/limiter.cpp
   src/dsp/hall.cpp

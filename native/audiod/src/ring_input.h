@@ -45,6 +45,7 @@ public:
     // writer dropped frames because nothing read for longer than the ring
     // holds, what is held is stale, and the reader starts at the present.
     void read (float* left, float* right, int n) override;
+    juce::int64 readerMargin() const override { return (juce::int64) (block + writerBurst); }
 
     // For `status`: frames written, read, and dropped by the writer, how
     // often the reader ran dry, the frames it skipped for drift, and the

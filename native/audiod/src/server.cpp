@@ -193,6 +193,10 @@ juce::String Server::dispatch (const juce::var& request, const void* owner)
         // `monitor` on arm's audio entries: capture inputs a session's
         // input windows read (live-supercollider.md §12).
         features.add ("live-monitor");
+        // The midi_out and midi_out_close ops, `outputs` in status, and
+        // MIDI capture leaving the daemon's own outputs out (sequencer.md
+        // §2.5).
+        features.add ("midi-out");
         ok->setProperty ("features", features);
     }
     else if (op == "devices")
@@ -246,6 +250,23 @@ juce::String Server::dispatch (const juce::var& request, const void* owner)
     else if (op == "input_close")
     {
         auto error = player.closeInput (request.getProperty ("name", juce::var()).toString());
+        if (error.isNotEmpty())
+            return jsonLine (errorResponse (id, error));
+    }
+    else if (op == "midi_out")
+    {
+        // A MIDI output's schedule (sequencer.md §2.5): opens the output,
+        // or replaces the schedule of the one open under the name.
+        auto info = player.openMidiOutput (request, owner);
+        if (info.getProperty ("error", juce::var()).isString())
+            return jsonLine (errorResponse (id, info.getProperty ("error", juce::var()).toString()));
+        if (auto* o = info.getDynamicObject())
+            for (auto& prop : o->getProperties())
+                ok->setProperty (prop.name, prop.value);
+    }
+    else if (op == "midi_out_close")
+    {
+        auto error = player.closeMidiOutput (request.getProperty ("name", juce::var()).toString());
         if (error.isNotEmpty())
             return jsonLine (errorResponse (id, error));
     }
@@ -753,9 +774,11 @@ void Server::sweepClosedConnections()
         {
             if ((*it)->reader.joinable())
                 (*it)->reader.join();
-            // An input dies with the connection that opened it: a
-            // `field keys` killed outright never closes its own.
+            // An input or a MIDI output dies with the connection that
+            // opened it: a `field keys` or `field seq` killed outright
+            // never closes its own.
             player.closeInputsOwnedBy (it->get());
+            player.closeMidiOutputsOwnedBy (it->get());
             DisconnectNamedPipe (asHandle ((*it)->pipe));
             CloseHandle (asHandle ((*it)->pipe));
             it = connections.erase (it);
@@ -899,9 +922,11 @@ void Server::sweepClosedConnections()
         {
             if ((*it)->reader.joinable())
                 (*it)->reader.join();
-            // An input dies with the connection that opened it: a
-            // `field keys` killed outright never closes its own.
+            // An input or a MIDI output dies with the connection that
+            // opened it: a `field keys` or `field seq` killed outright
+            // never closes its own.
             player.closeInputsOwnedBy (it->get());
+            player.closeMidiOutputsOwnedBy (it->get());
             ::close ((*it)->fd);
             it = connections.erase (it);
         }

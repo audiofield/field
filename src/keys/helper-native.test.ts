@@ -164,8 +164,11 @@ describe.skipIf(!binary)('field-audiod --keys and --midi-monitor (native round t
       expect(await lineAt(monitor, 0)).toEqual({ ready: true, name: base });
 
       keys.child.stdin.write('{"midi":[144,60,100]}\n\n  \n{"midi":[128,60,0]}\n');
-      expect(await lineAt(monitor, 1)).toEqual({ midi: [144, 60, 100] });
-      expect(await lineAt(monitor, 2)).toEqual({ midi: [128, 60, 0] });
+      const on = await lineAt(monitor, 1);
+      const off = await lineAt(monitor, 2);
+      expect(on).toEqual({ midi: [144, 60, 100], host_ms: expect.any(Number) });
+      expect(off).toEqual({ midi: [128, 60, 0], host_ms: expect.any(Number) });
+      expect(off['host_ms']).toBeGreaterThanOrEqual(on['host_ms'] as number);
 
       keys.child.stdin.end();
       expect(await keys.closed).toBe(0);
