@@ -198,7 +198,9 @@ run = {
 	};
 	heard = { |src, action| hearing[src].do { |i| action.(voicers[i]) } };
 
-	MIDIIn.connectAll(verbose: false);
+	// A source listed when the host started can have gone by now, and
+	// connecting to it throws. The host starts without it.
+	MIDIClient.sources.do { |src, i| try { MIDIIn.connect(i, src) } };
 
 	MIDIdef.noteOn(\fieldNoteOn, { |velocity, note, chan, src|
 		if (booting.not) { heard.(src, _.noteOn(chan, note, velocity)) };
