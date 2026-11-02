@@ -16,8 +16,8 @@
   "summary": [
    "<code>field-audiod</code> is the daemon that owns the audio device and the transport. The coming <code>field seq</code> command has to play a part's notes on time, to a SuperCollider voice or a hardware synth, and to send MIDI clock to gear that runs its own patterns. Node timers cannot keep that deadline, so the sequencer plan has the engine send the MIDI from its audio callback, as it already does for the click.",
    "This layer is that engine half. The new <code>midi_out</code> op opens a named output and gives it a schedule, which is a list of MIDI messages, each with the sample it belongs to on the bed's timeline. The bed is whatever the transport plays, either a live session or a file. In each audio block, the callback picks the messages due soon and queues them with no allocation and no lock. A realtime sender thread then delivers each message at its time.",
-   "The daemon also ends an output's notes whenever the transport stops or jumps, and it can send MIDI clock with the transport messages that external gear follows. <code>field seq</code> and the projection of the tempo map into a schedule stay with chunk 5, so only tests call <code>midi_out</code> at this head.",
-   "The latest review found this head clean, and no finding is open. Two suggestions remain, and neither blocks the change. The <b>Review at 2b10344</b> card says what was checked. Whether <code>field-audiod</code> should exit when macOS refuses its MIDI client is an open question for the owner, and this head adds no such exit."
+   "The daemon adds note cleanup and MIDI clock transport messages when playback stops or jumps. The <code>field seq</code> command and the projection of the tempo map into a schedule stay with chunk 5, so only tests call <code>midi_out</code> at this head.",
+   "This review finds two transport defects: a short forward locate can leave notes and external clock state unchanged during resampled playback, and a loop one audio block long causes extra note attacks and clock reposition messages. All 10 earlier finding threads are addressed. The <b>Review at 2b10344</b> card records this review's checks."
   ],
   "cards": [
    {
@@ -28,7 +28,7 @@
    {
     "id": "review",
     "title": "Review at 2b10344",
-    "html": "<p>macOS can refuse a process its first MIDI client, and only a new process clears that. This head adds the note that says so only when a further client in the process also fails, which separates the two states:</p><div class=\"tblwrap\"><table class=\"tbl\"><thead><tr><th>Daemon</th><th>A source</th><th>A destination nobody has</th><th>A MIDI <code>arm</code> with no ports</th></tr></thead><tbody><tr><td>Healthy, on a machine with no ports</td><td>Succeeds</td><td>No note</td><td>No note</td></tr><tr><td>Refused, at once</td><td>Note</td><td>Note</td><td>Note</td></tr><tr><td>Refused, 60 seconds later</td><td>Note</td><td>Note</td><td>Note</td></tr></tbody></table></div><p>All 10 finding threads remain resolved. <code>midi-out.test.ts</code> passed 10 of 10, four times in a row.</p><p class=\"note\">Not tested: physical MIDI hardware. Linux and Windows results come from CI, where both jobs pass. The refusal was measured on macOS 27.0.1 only. A real-<code>sclang</code> render test, in code this pull request does not change, got a truncated render in the full suite. It has failed in several runs, and the cause is unknown.</p>"
+    "html": "<p>The review covers all 19 changed files and requests changes for two reproduced transport defects.</p><ul class=\"tight\"><li><b>Short forward locates:</b> a 44.1 kHz session on the 48 kHz null device accepts a 1000-sample forward seek as ordinary resampling drift, leaving a held note sounding and sending no clock reposition.</li><li><b>One-block loops:</b> a 512-sample loop in 512-frame blocks is treated as a locate on every block. With a lead, this adds a note attack between the intended attacks; without one it adds clock reposition messages.</li><li><b>Validation:</b> the native build, TypeScript checks and build, the MIDI self-test, and project validation pass. The three focused native test files pass 27 tests with one expected no-source skip. Both findings reproduce against the unchanged daemon and with a separate fake-clock probe.</li></ul><p class=\"note\">Physical MIDI hardware, Linux, and Windows were not exercised locally. This review does not rerun the full suite. Earlier review measurements below are retained as context.</p>"
    }
   ]
  },
@@ -86,37 +86,47 @@
       {
        "kind": "verify",
        "line": 434,
-       "text": "New pulses during playback send <code>Stop, SPP 5, Continue</code> on the real daemon."
+       "text": "The native self-test passes its replaced-clock cases: changed pulses reposition the clock, the same pulses preserve it, and removing the clock sends Stop."
       },
       {
        "kind": "verify",
        "line": 472,
-       "text": "Stepping past a window's end loses nothing. A 44.1 kHz session on the 48 kHz null device at lead 0 sent 401 of 402 due events, where it sent 367 of 401 before the fix."
+       "text": "The focused daemon test passes for a 44.1 kHz session on the 48 kHz null device with lead 0. The callback reaches back behind the current position to send events between successive rendering steps."
       },
       {
        "kind": "verify",
        "line": 536,
-       "text": "A wrap is pushed once when it lands on a block boundary. A long note in a loop of exactly 94 blocks gets a note-off and a clock reposition at each wrap."
+       "text": "The native self-test passes loop-boundary cleanup for a loop two blocks long, with lead 0 and lead 192. A loop only one block long still has the separate defect flagged at distance."
       },
       {
        "kind": "verify",
        "line": 717,
-       "text": "A schedule that sends pedal down, note-on, and note-off now sends pedal up at the stop, on the real daemon."
+       "text": "The native self-test passes the pedal release cases for stop, locate, close, wrap, and a flush that cancels a pending pedal release."
       },
       {
        "kind": "verify",
        "line": 725,
-       "text": "This loop runs on the sender thread and adds nothing to the audio callback. On the real daemon, a stop, a pause, a locate, a replaced schedule, a wrap, and a close each sent the center, <code>0x00, 0x40</code>, which <code>sc/voicer.scd</code> reads as no bend. Only the bent channels got one, and a schedule that centered its own bend got no second message."
+       "text": "The native self-test passes pitch-bend centering on stop, close, wrap, and a flush. The same endHeldNotes helper also serves a locate and a replaced schedule."
       },
       {
-       "kind": "verify",
+       "kind": "context",
        "line": 898,
-       "text": "A real refusal printed this text, and asking again under a new name printed it again. After <code>field transport quit</code>, the next daemon published a source. A refusal comes from the operating system: a small C program with no Field code saw <code>MIDIClientCreate</code> return <code>-304</code> in 8 of 200 fresh processes with no other MIDI client alive, and 40 more calls in one process did not clear it."
+       "text": "The earlier review reports: A real refusal printed this text, and asking again under a new name printed it again. After <code>field transport quit</code>, the next daemon published a source. A refusal comes from the operating system: a small C program with no Field code saw <code>MIDIClientCreate</code> return <code>-304</code> in 8 of 200 fresh processes with no other MIDI client alive, and 40 more calls in one process did not clear it."
       },
       {
-       "kind": "verify",
+       "kind": "context",
        "line": 923,
-       "text": "A refused daemon adds the refusal note here, at once and 60 seconds later. A healthy daemon on a machine with no ports does not, because <code>midiClientRefusalNote</code> now finds out by asking for another client. Both ran on the real daemon, and the healthy daemon went on to publish a source."
+       "text": "The earlier review reports: A refused daemon adds the refusal note here, at once and 60 seconds later. A healthy daemon on a machine with no ports does not, because <code>midiClientRefusalNote</code> now finds out by asking for another client. Both ran on the real daemon, and the healthy daemon went on to publish a source."
+      },
+      {
+       "kind": "flag",
+       "line": 469,
+       "text": "A short forward locate can fit inside the resampling drift tolerance and skip note cleanup and clock repositioning. On the unchanged daemon, a 44.1 kHz session on the 48 kHz null device locates from sample 10752 to 11752 with a long note sounding and sends no note-off or clock transport messages. Carry an explicit seek generation into the MIDI block so a manual locate always cuts the old state."
+      },
+      {
+       "kind": "flag",
+       "line": 58,
+       "text": "A whole loop can leave two blocks at the same wrapped position. distance returns zero, so a 512-sample loop in 512-frame blocks is treated as a locate every block. A fake-clock probe with lead 192 starts a note at sample 320, then cuts and retriggers it at sample 512, only 4 ms later. Count whole laps when deciding continuity."
       }
      ]
     }
@@ -146,8 +156,8 @@
        "text": "Arming leaves out only this daemon's own sources. A take in one daemon recorded 25 messages from an output in another daemon, so a <code>field seq</code> in another project reaches a take here. The review suggests leaving out every <code>Field Seq</code> source, as the plan has voices do."
       },
       {
-       "kind": "verify",
-       "text": "A refused daemon adds the refusal note to an <code>arm</code> that lists no ports. A healthy daemon does not, whether or not it has its own source open. Both ran on the real daemon."
+       "kind": "context",
+       "text": "The earlier review reports: A refused daemon adds the refusal note to an <code>arm</code> that lists no ports. A healthy daemon does not, whether or not it has its own source open. Both ran on the real daemon."
       }
      ]
     },
@@ -188,9 +198,9 @@
      "note": "Moves virtual-source creation and MIDI byte parsing into shared helpers, and adds the monitor's timestamps, its destination mode, and the note that an error adds when macOS has refused the MIDI client. A SIGTERM during the wait for a source ends the monitor at once.",
      "checks": [
       {
-       "kind": "verify",
+       "kind": "context",
        "line": 290,
-       "text": "This call leaves no client behind. After 400 more missing-destination errors on one healthy daemon, none carried the note, open files stayed at 14, memory grew 208 kB, and the slowest request took 0.5 ms. The daemon then published a source, and a monitor heard its notes."
+       "text": "The earlier review reports: This call leaves no client behind. After 400 more missing-destination errors on one healthy daemon, none carried the note, open files stayed at 14, memory grew 208 kB, and the slowest request took 0.5 ms. The daemon then published a source, and a monitor heard its notes."
       },
       {
        "kind": "context",
@@ -220,11 +230,11 @@
    "checks": [
     {
      "kind": "verify",
-     "text": "On macOS at this head, these pass: the native build, <code>--midi-out-selftest</code>, <code>pnpm typecheck</code>, <code>project check</code>, and the three test files the Testing section names. The <code>linux</code> and <code>windows</code> CI jobs pass too."
+     "text": "On macOS at this head, pnpm install --frozen-lockfile, pnpm build:native, pnpm typecheck, pnpm build, --midi-out-selftest, and project check pass. The focused run of midi-out.test.ts, helper-native.test.ts, and record-midi-daemon.test.ts passes 27 tests with one expected no-source skip."
     },
     {
      "kind": "context",
-     "text": "<code>pnpm test</code> on macOS failed 8 of 1363 tests. 7 are in <code>push.test.ts</code> and <code>pull.test.ts</code>, where a global <code>pre-push</code> hook refuses the fixtures' temporary repositories, as the pull request body documents. The eighth is a real-<code>sclang</code> render test, in code this pull request does not change, that got a truncated render. The cause and the rate at the base are unknown."
+     "text": "An earlier review reports 8 failures in the full suite: 7 fixture pushes blocked by the global pre-push hook, and one real-sclang render failure in unchanged code. This review does not rerun the full suite."
     }
    ],
    "files": [
@@ -235,12 +245,12 @@
       {
        "kind": "verify",
        "line": 178,
-       "text": "<code>replaceDaemon</code> waits for the process to exit, because a daemon that is quitting can still accept a connection and then drop it. The same sequence failed in 0 of 60 cycles this way, and in 22 of 60 with a wait that ends on a failed connect."
+       "text": "replaceDaemon reads the old pid, waits until process.kill(pid, 0) reports that it has exited, and then reconnects. The focused timing test exercises that path and passes."
       },
       {
        "kind": "verify",
        "line": 26,
-       "text": "This comment matches the behavior. A run's channel and take pitches together follow <code>process.pid % 60</code>, so two runs share both 1 time in 60. Overlapping runs were not repeated at this head, because this head changes only messages and docs."
+       "text": "The channel is process.pid modulo 15, and the take pitches follow the quotient modulo 4, so runs share both every 60 pids. The focused tests pass; overlapping copies of this file were not run."
       },
       {
        "kind": "context",
