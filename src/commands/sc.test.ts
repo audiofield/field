@@ -197,7 +197,7 @@ describe.skipIf(process.platform === 'win32')('field sc voice outside a project'
     rmSync(dir, { recursive: true, force: true });
   });
 
-  async function hostHandedFor(): Promise<{ device: string | null; helperClosed: boolean | null }> {
+  async function hostHandedFor(platform: NodeJS.Platform = process.platform): Promise<{ device: string | null; helperClosed: boolean | null }> {
     const log = join(dir, 'host.json');
     let quit!: () => void;
     const until = new Promise<void>((resolve) => {
@@ -207,7 +207,7 @@ describe.skipIf(process.platform === 'win32')('field sc voice outside a project'
     const running = scVoice(
       ['./pad.scd'],
       { source: [] },
-      { cwd: dir, env: { ...process.env, FIELD_SCLANG: join(dir, 'sclang'), STUB_LOG: log }, until, print: (line) => lines.push(line) },
+      { cwd: dir, env: { ...process.env, FIELD_SCLANG: join(dir, 'sclang'), STUB_LOG: log }, until, platform, print: (line) => lines.push(line) },
     );
     for (let i = 0; i < 100 && !lines.some((l) => l.includes(' live at ')); i++) await sleep(50);
     quit();
@@ -237,17 +237,17 @@ if (before < ${refusals}) {
 }
 ${HELPER_STUB.replace('#!/usr/bin/env node\n', '')}`;
 
-  it.skipIf(process.platform !== 'darwin')('starts a new helper when macOS refuses one a MIDI client, and names the output', { timeout: 30_000 }, async () => {
+  it('starts a new helper when macOS refuses one a MIDI client, and names the output', { timeout: 30_000 }, async () => {
     writeFileSync(join(dir, 'field-audiod'), refusedHelper(1));
-    expect(await hostHandedFor()).toMatchObject({ device: 'Stub Out', helperClosed: true });
+    expect(await hostHandedFor('darwin')).toMatchObject({ device: 'Stub Out', helperClosed: true });
     expect(readFileSync(join(dir, 'helper-starts'), 'utf8')).toBe('..');
   });
 
-  it.skipIf(process.platform !== 'darwin')('stops with the error rather than start the host with no device when macOS refuses a new helper too', { timeout: 30_000 }, async () => {
+  it('stops with the error and what to do rather than start the host with no device when macOS refuses a new helper too', { timeout: 30_000 }, async () => {
     writeFileSync(join(dir, 'field-audiod'), refusedHelper(2));
     await expect(
-      scVoice(['./pad.scd'], { source: [] }, { cwd: dir, env: { ...process.env, FIELD_SCLANG: join(dir, 'sclang'), STUB_LOG: join(dir, 'host.json') }, print: () => {} }),
-    ).rejects.toThrow('cannot create a virtual MIDI source named Field Voice');
+      scVoice(['./pad.scd'], { source: [] }, { cwd: dir, env: { ...process.env, FIELD_SCLANG: join(dir, 'sclang'), STUB_LOG: join(dir, 'host.json') }, platform: 'darwin', print: () => {} }),
+    ).rejects.toThrow('cannot create a virtual MIDI source named Field Voice on this system: run the command again, or name the output with --device');
     expect(existsSync(join(dir, 'host.json'))).toBe(false);
   });
 });

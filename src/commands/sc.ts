@@ -48,6 +48,7 @@ export interface ScVoiceContext {
   // Settles when it should quit; otherwise Ctrl-C, SIGTERM, or SIGHUP.
   until?: Promise<void>;
   print?: (line: string) => void;
+  platform?: NodeJS.Platform;
 }
 
 // `field sc voice` (sequencer.md §2.6): the targets' voices, as field keys
@@ -58,6 +59,7 @@ export async function scVoice(targets: string[], options: ScVoiceOptions, contex
   const cwd = context.cwd ?? process.cwd();
   const env = context.env ?? process.env;
   const print = context.print ?? ((line: string) => process.stdout.write(`${line}\n`));
+  const platform = context.platform ?? process.platform;
   const voices = resolveKeysTargets(targets, cwd, 'field sc voice');
   const root = findProjectRoot(cwd);
   // Every knob file is checked before anything starts.
@@ -85,7 +87,7 @@ export async function scVoice(targets: string[], options: ScVoiceOptions, contex
     for (const voice of voices) print(voiceLine(voice, routing !== undefined, options.source));
     const state = instrumentState(voices, routing !== undefined, routed !== undefined && 'reason' in routed ? routed.reason : undefined)!;
     // A routed voice is heard on the daemon's device, so it is made there.
-    const output = routing !== undefined ? routing.device : (options.device ?? (await systemOutput(root)));
+    const output = routing !== undefined ? routing.device : (options.device ?? (await systemOutput(root, platform)));
     const programs = routing?.programs ?? [...new Set(voices.map((v) => v.program))];
     const host = await startVoices({
       instruments: programs,
@@ -133,8 +135,8 @@ function voiceLine(voice: ArmedInstrument, routed: boolean, sources: string[]): 
 // default input as well, and waits on the microphone permission
 // (keyboard-instrument.md §10.1), so a voice that plays straight to the
 // device names its output.
-async function systemOutput(root: string | undefined): Promise<string | undefined> {
-  return (root !== undefined ? await daemonOutput(root) : undefined) ?? (await helperOutput());
+async function systemOutput(root: string | undefined, platform: NodeJS.Platform): Promise<string | undefined> {
+  return (root !== undefined ? await daemonOutput(root) : undefined) ?? (await helperOutput(platform));
 }
 
 async function daemonOutput(root: string): Promise<string | undefined> {
@@ -156,7 +158,7 @@ async function daemonOutput(root: string): Promise<string | undefined> {
 // and a new process clears that, so a refused helper starts once more.
 // With no device, scsynth on macOS would open the default input and wait
 // on the microphone permission, so a second refusal stops here.
-async function helperOutput(): Promise<string | undefined> {
+async function helperOutput(platform: NodeJS.Platform): Promise<string | undefined> {
   const output = async (): Promise<string | undefined> => {
     const helper = await KeysHelper.start('Field Voice');
     await helper.close();
@@ -165,8 +167,12 @@ async function helperOutput(): Promise<string | undefined> {
   try {
     return await output();
   } catch (error) {
-    if (process.platform === 'darwin' && /cannot create a virtual MIDI source/.test(String(error))) return await output();
-    return undefined;
+    if (platform !== 'darwin' || !/cannot create a virtual MIDI source/.test(String(error))) return undefined;
+  }
+  try {
+    return await output();
+  } catch (error) {
+    throw new Error(`${(error as Error).message}: run the command again, or name the output with --device`);
   }
 }
 
