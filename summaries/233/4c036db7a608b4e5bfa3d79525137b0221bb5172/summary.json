@@ -26,7 +26,7 @@
    {
     "id": "validation",
     "title": "Review evidence",
-    "html": "<p>Two models have reviewed this pull request. The newest review is clean, so the pull request is ready for a person to read. No finding thread is open.</p><ul class=\"tight\"><li><b>This head:</b> it changes one sentence in <code>docs/build-graph.md</code>, about where a render stops. An incremental review read that sentence against the code. It ran none of this head’s code, because the change has none.</li><li><b>The full review, of <code>afebc30</code>:</b> it reproduced as fixed a steady song rendering one part many times, notes played before a track starts sounding on its first tick, and a documented step that failed <code>field check</code>. It measured the rewrapped lines that a fourth finding asked for.</li><li><b>Tests at <code>afebc30</code>:</b> a full serial run with an existing <code>field-audiod</code> binary ran 1353 tests. 1340 passed, 6 were skipped, and 7 failed. All 7 are push and pull tests that the reviewing machine’s <code>pre-push</code> hook refuses. Type checking, project validation, and whitespace checks also pass.</li><li><b>Not run in either review:</b> the UI build, the by-hand steps in the pull request’s Testing section, and a native build from this branch.</li></ul>"
+    "html": "<p>A full review of <code>4c036db</code> is clean. All five earlier finding threads are resolved, and their fixes hold at this head.</p><ul class=\"tight\"><li><b>Timing and build:</b> the review traced note resolution, loop repetitions, graph inputs, cache keys, and take placement. Tests cover meter and tempo changes, copied-take cache reuse, legacy takes, and notes captured before the track starts.</li><li><b>Tests:</b> 238 tests passed across 14 serial suites. The no-MIDI-source case skipped because this Mac has a MIDI service. The checks include real MIDI capture, mixed audio/MIDI recording, offline SuperCollider rendering, and live voice routing.</li><li><b>Builds and validation:</b> this head’s native build, CLI build, UI build, type checking, bloom example check, project validation, and whitespace check all passed.</li><li><b>Scope:</b> the full repository suite and the pull request’s manual walkthrough were not run. Three audio landing cases initially ran before the native build finished; all passed after the build completed.</li></ul>"
    }
   ]
  },
@@ -80,15 +80,11 @@
      "checks": [
       {
        "kind": "verify",
-       "text": "Resolver tests passed for meter changes, tempo changes, relative positions, note lengths, legacy sample-timed takes, and musical take anchors."
+       "text": "Resolver tests passed for meter changes, tempo changes, relative positions, note lengths, legacy sample-timed takes, and entry-relative take anchors."
       },
       {
        "kind": "verify",
-       "text": "Ran at 16 tempos, from 90 to 174 bpm and including 96, 128, 133, and 174: a one-bar, 16-note loop of 32 repetitions makes one render, and one part at bars 1 and 17 has one action key. An earlier head made 26 renders at 133 bpm."
-      },
-      {
-       "kind": "context",
-       "text": "An absolute entry can start between two ticks. Across 512 such placements at 128 bpm, where some ticks land on half a sample, the resolved times came out two ways, so such a loop can make one extra render. The other 15 tempos tried gave one list, and the two lists at 128 bpm differ only by that rounding."
+       "text": "The resolver returns the same event list across 256 bars at 133, 128, and 96 bpm. The graph test confirms that a 32-bar loop at 133 bpm uses one render."
       }
      ]
     },
@@ -166,7 +162,7 @@
      "checks": [
       {
        "kind": "verify",
-       "text": "Ran a take recorded from bar 1 on a track placed at bar 5: the three notes that ended before the track are dropped, and a note sounding across the track’s start starts with the track, at tick 0, for the part of it still sounding."
+       "text": "The landing test passed for a take that starts before its track: a note that ended before the track is dropped, a note that ends exactly at the track start has zero length, and a note still sounding there retains its remaining length."
       }
      ]
     },
