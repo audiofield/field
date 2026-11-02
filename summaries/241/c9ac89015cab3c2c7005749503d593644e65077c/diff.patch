@@ -1,0 +1,3252 @@
+diff --git a/docs/architecture.md b/docs/architecture.md
+index 4dfaf5f2..29fb785f 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -205,10 +205,12 @@ OSC over UDP, which TypeScript handles fine. Two modes:
+   ([build-graph.md](build-graph.md) "`voice-render`").
+ - **Live** — `field keys <instrument>` runs a voice host: `sclang` on
+   `sc/voice-host.scd`, which boots its own scsynth on the output device
+-  and plays the instrument's voice from every MIDI source
+-  ([keys.md](keys.md)). Its sound goes straight to the device, beside
+-  the daemon's rather than through the session graph. Bringing it into
+-  that graph, so a track's inserts process it, is
++  and plays the instrument's voice from every MIDI source except the
++  `Field Seq` ones ([keys.md](keys.md)). `field sc voice` runs the same
++  host from the sources you name, with no keyboard ([cli.md](cli.md)
++  "Play a voice from MIDI sources"). Its sound goes straight to the
++  device, beside the daemon's rather than through the session graph.
++  Bringing it into that graph, so a track's inserts process it, is
+   [live-supercollider](projects/live-supercollider/readme.md)'s work.
+   The engine's half has landed: a live session carries an input up
+   through every chain above its track ([audio-engine.md](audio-engine.md)
+diff --git a/docs/build-graph.md b/docs/build-graph.md
+index 4bb2db06..7bb5ab47 100644
+--- a/docs/build-graph.md
++++ b/docs/build-graph.md
+@@ -278,6 +278,11 @@ reading them. A `supercollider:` entry never runs in voice mode, so
+ voice mode changes its renders only through the program's own content
+ hash. See [keys.md](keys.md).
+ 
++A program can also write parts. When `FIELD_MODE` is `notes`, its value
++is a Pattern, which `field sc notes` plays with no server and prints as
++a part. The graph never runs this mode, so a part reaches a render only
++as a file ([keys.md](keys.md) "Write parts from a pattern").
++
+ ### `voice-render` — notes, rendered through an instrument
+ 
+ The graph mints one for each `notes:` entry, and for each record entry
+diff --git a/docs/cli.md b/docs/cli.md
+index 2dbfc35a..df0b5bb4 100644
+--- a/docs/cli.md
++++ b/docs/cli.md
+@@ -625,6 +625,53 @@ rendered /path/to/creek-kit.wav (seed 7801, 3.182s @ 48000 Hz)
+ `--channels <n>` takes 1 or 2 (default 2), and `--output <path>` writes
+ somewhere other than `<program>.wav` in the current directory.
+ 
++## Play a voice from MIDI sources
++
++`field sc voice <targets...>` plays instruments or tracks from MIDI
++sources with no keyboard, so a hardware controller or another
++application can play them with no `field keys` running. It takes the
++targets `field keys` takes: an instrument by name or path, or a track
++such as `creek/track:keys`. Each program must answer
++`FIELD_MODE=voice` ([keys.md](keys.md) "Make an instrument playable").
++
++```console
++$ field sc voice creek/track:keys --source "Field Keys"
++voice  keys (juno) · from Field Keys → voice:creek/keys
++keys (juno) live at 48000 Hz on MacBook Pro Speakers
++```
++
++Each `--source <name>` names a MIDI source to play from, by its name or
++its device, and every voice plays from all of them. With no `--source`,
++the voices play from every source except the `Field Seq <song>/<track>`
++ones, each of which carries one track's parts for that track's own
++voice. A source you name must exist when the command starts; otherwise
++the command stops and lists the sources there are.
++
++A track's voice plays through the track's effects, through an input in
++`field-audiod` named `voice:<song>/<track>`. When it cannot, it plays
++straight to the device, and its line says why ([keys.md](keys.md) "Play
++a track"). An instrument you name without a track plays straight to the
++device you give with `--device`, or to the system output. Saving a
++program or its knob file loads it again. Press Ctrl-C to quit, which
++closes the voices and the inputs.
++
++## Write a part from a pattern
++
++`field sc notes <program> --seed <n> --beats <n>` plays the pattern a
++SuperCollider program answers under `FIELD_MODE=notes`, with no server,
++and prints the part it makes to stdout. The same program, seed, and
++beats print the same bytes, and the first line is a comment naming the
++command.
++
++```console
++$ field sc notes shared/instruments/creek-groove.scd --seed 4 --beats 16 > songs/creek/notes/groove.yaml
++```
++
++`--beats` counts quarter notes. It sets the part's `length`, and a part
++keeps each note that starts before then, even one that rings past it.
++[keys.md](keys.md) "Write parts from a pattern" says what a program
++answers and how an event becomes a note.
++
+ ## Environment variables
+ 
+ | Variable | Does |
+@@ -703,5 +750,7 @@ amended. Porting the rest is tracked there and in
+ | `field choose <song>/<name> --variant <n>` | repoint which generated take plays |
+ | `field choose <song>/<name> --take <name>` | repoint which recorded take plays |
+ | `field sc render <program>` | render an SC program directly, uncached |
++| `field sc voice <targets...>` | play instruments or tracks from MIDI sources, with no keyboard |
++| `field sc notes <program>` | write a part from a program's pattern, to stdout |
+ 
+ Every command takes `--help`.
+diff --git a/docs/keys.md b/docs/keys.md
+index 2b08a6d6..fa51e670 100644
+--- a/docs/keys.md
++++ b/docs/keys.md
+@@ -66,7 +66,17 @@ You do not need to be inside a Field project.
+ 
+ If `field keys` says it cannot create a virtual MIDI source on macOS,
+ run it again. CoreMIDI has refused the first source a new process asked
+-for, once, and a new process gets a new MIDI client.
++for, once, and a new process gets a new MIDI client. `field sc voice`,
++which starts the same helper to name the system output when no daemon
++can answer, tries once more by itself, and then stops with that error.
++It does the same when macOS refuses `sclang` its MIDI client as the voice
++host starts. On macOS, `field sc voice` also stops when the helper cannot
++run at all, such as when `field-audiod` is not built, because `scsynth`
++with no device would wait on the microphone permission. Name the output
++with `--device` to get past a helper failure. It does not help a refused
++`sclang`, which needs a new process with or without it. On Linux and
++Windows, `field sc voice` starts with no device when the helper cannot
++run.
+ 
+ ## Play
+ 
+@@ -319,8 +329,10 @@ instrument, and it resolves from where you are.
+    output. It runs at the device's current sample rate and never
+    changes it, so `field play` and `field keys` can share a device.
+ 3. The host loads the instrument's voice and plays it from every MIDI
+-   source, so a USB controller plays it too. The instrument's line
+-   shows it live, with its device and rate.
++   source except the `Field Seq <song>/<track>` ones, each of which
++   carries one track's parts for that track's own voice, so a USB
++   controller plays it too. The instrument's line shows it live, with
++   its device and rate.
+ 
+ The voice's sound goes straight to the device, beside `field play`'s
+ rather than through the song's inserts and master chain. If something
+@@ -443,6 +455,41 @@ The next save that loads puts `· reloaded` on the line instead.
+   times its cutoff, and its knobs are `juno`'s four. It plays at true
+   pitch, so in `musical` press `Z` to drop an octave.
+ 
++### Write parts from a pattern
++
++A program can also write parts. When `FIELD_MODE` is `notes`, its value,
++the file's last expression, must be a Pattern of note events, and it
++must not render or exit. `field sc notes` plays that pattern with no
++server and prints a part ([cli.md](cli.md) "Write a part from a
++pattern"). The render variables are absent in notes mode, as they are in
++voice mode, so check `FIELD_MODE` before you read them:
++
++```supercollider
++(
++if ("FIELD_MODE".getenv == "notes") {
++	Pbind(\midinote, Pseq([36, Prand([43, 46, 48], 1)], inf), \dur, 0.5, \amp, Pwhite(0.5, 0.9))
++} {
++	// voice and render modes: the program as it reads today
++}
++)
++```
++
++Each event that is not a rest writes one note for each pitch it sounds:
++
++| Part field | What the event gives it |
++| --- | --- |
++| `at` | Where the event starts, the sum of the `dur` values before it |
++| `length` | Its `sustain` |
++| `note` | The pitch it sounds, rounded to a MIDI note, however the pattern spells it: `\midinote`, `\note`, `\degree`, `\freq`, `\ctranspose`, or `\harmonic` |
++| `velocity` | Its `amp` times 127, from 1 to 127, because the voice host plays a velocity at `amp` velocity / 127 |
++| `channel` | Its `chan` plus 1, because a pattern counts channels from 0 |
++
++`field sc notes` stops with the reason when a program's value is not a
++Pattern, when the pattern fails as it plays, when an event's `dur` is
++negative or not a number, when a note falls outside MIDI's 0 to 127 or a
++`chan` outside 0 to 15, or when 100,000 events go by without reaching
++the last beat.
++
+ ## Play a track
+ 
+ Name a track instead of an instrument, and `field keys` plays the
+diff --git a/docs/project-model.md b/docs/project-model.md
+index 32d70c49..d18382f3 100644
+--- a/docs/project-model.md
++++ b/docs/project-model.md
+@@ -453,8 +453,9 @@ hashes, and `field fmt` covers them.
+ ## Parts
+ 
+ A part is a notes file you write: `songs/<song>/notes/<name>.yaml`, by
+-hand, with an agent, or by copying a take. A `- notes: <name>` entry
+-places it on a track, which plays it through the track's instrument
++hand, with an agent, by copying a take, or from a SuperCollider pattern
++with `field sc notes`. A `- notes: <name>` entry places it on a track,
++which plays it through the track's instrument
+ ([projects/sequencer/readme.md](projects/sequencer/readme.md) §2.2).
+ 
+ ```yaml
+diff --git a/docs/projects/sequencer/readme.md b/docs/projects/sequencer/readme.md
+index 64c0fec5..87a03e27 100644
+--- a/docs/projects/sequencer/readme.md
++++ b/docs/projects/sequencer/readme.md
+@@ -971,3 +971,70 @@ early, no event handed over early reaching the destination after a
+ stop with a fake CoreMIDI, and the clock's transport messages through
+ `--midi-monitor`. Only macOS ran them. Linux and Windows were not built
+ here; CI builds and tests them. The clock's projection row is chunk 5's.
++
++## 11 Voices and `field sc notes`, as built
++
++Chunks 3 and 6 built §2.6 and §2.8 in `src/sc/voice/`,
++`src/commands/sc.ts`, `sc/voice-sources.scd`, and
++`sc/notes-render.scd`. They landed in one pull request rather than the
++two §6 asks for. keys.md and cli.md describe them as they run. Building
++them settled these points:
++
++- **A voice's sources match by name or by device.** So `--source` can
++  name a hardware device with several ports. A source named that is not
++  there when the host starts stops the host, which lists the sources
++  there are.
++- **`--source` applies to every voice a command starts.** Each voice has
++  its own list in `FIELD_INSTRUMENTS`, because `field seq` needs one per
++  voice, but `field sc voice` gives them all the same one.
++- **The `Field Seq` rule is a name prefix.** A voice with no list plays
++  from every source except those whose name starts `Field Seq `.
++- **`seq:` leaves out a track's `notes:` entries and its record entry
++  when the track has an instrument, and keeps its audio.** Validation
++  refuses an audio take on such a track, so every take its record entry
++  can choose renders notes.
++- **A voice that plays straight to the device names its output.**
++  `field sc voice` asks the daemon for the system output, and with no
++  daemon to answer, asks `field-audiod --keys`, as `field keys` does.
++  That helper publishes a MIDI source, so it closes before the host
++  lists the sources. macOS can refuse a new process its MIDI client, so
++  a refused helper starts once more, and a second refusal stops with the
++  error, because with no device `scsynth` on macOS would open the
++  default input and wait on the microphone permission.
++- **On macOS, `field sc voice` never starts a host with no device
++  unless you ask.** Any helper failure there stops the command, not only a
++  refusal, as `field keys` stops: `scsynth` with no device would open the
++  default input and wait on the microphone permission, whatever kept the
++  helper from answering. `--device` gets past it. Linux and Windows keep
++  the no-device path, where a helper that cannot run costs nothing.
++- **The host escapes every control character in a status line.** JSON
++  takes none raw, and a status that does not parse loses its reason, as
++  a program's error with a tab in it did.
++- **A voice host that macOS refuses a MIDI client fails, and
++  `field sc voice` starts it once more.** `MIDIClient.init` throws in a
++  refused `sclang`, and nothing else ends the host then. `field keys`
++  keeps its helper's client alive beside the host, and a review measured
++  no refusal that way, so it does not start the host again.
++- **A note's pitch comes from `~freq`, rounded to a MIDI note.** Every
++  spelling of pitch reaches `~freq`, and `~midinote` misses `\freq`,
++  `\ctranspose`, and `\harmonic`.
++- **A note's velocity comes from `amp`.** It is `amp` times 127, from 1
++  to 127, because the voice host plays a velocity at `amp` velocity /
++  127. So a part plays back at the pattern's level.
++- **A part's `length` comes from `--beats`.** The part keeps each note
++  that starts before then, and a note may ring past it, which project
++  validation accepts.
++- **The harness writes its notes to a file, not to stdout.** sclang
++  prints its own lines to stdout, so `sc/notes-render.scd` writes JSON
++  to `FIELD_OUTPUT`, and Field prints the part from that.
++- **A pattern refuses what would write a bad part.** An error as it
++  plays, a negative or non-numeric `dur`, and 100,000 events without
++  reaching the last beat each stop `field sc notes` with the reason.
++
++The tests are `src/commands/sc.test.ts`, `src/sc/voice/sources.test.ts`,
++`src/sc/voice/routing-voice.test.ts`, `src/sc/voice/knob-files.test.ts`,
++and `src/model/live-notes.test.ts`. `field sc notes` and the sources
++rule run through real sclang, and `routing-voice.test.ts` runs a real
++voice host and daemon. `field sc voice` itself runs against a stand-in
++for sclang. Nobody has run it by hand with a hardware controller, which
++is still owed.
+diff --git a/sc/notes-render.scd b/sc/notes-render.scd
+new file mode 100644
+index 00000000..8b985053
+--- /dev/null
++++ b/sc/notes-render.scd
+@@ -0,0 +1,81 @@
++// Plays a program's pattern into notes for `field sc notes`
++// (sequencer.md §2.8), with no server. The program runs under
++// FIELD_MODE=notes, where its value must be a Pattern of note events.
++// The harness plays it under the seed for FIELD_BEATS quarter notes and
++// writes each note that starts before then to FIELD_OUTPUT as JSON,
++// {"notes": [[beat, sustain, midinote, amp, chan], ...]}, with times in
++// quarter notes from the start and chan 0-based, as a pattern spells
++// them. A note is its MIDI number from ~freq, which every spelling of
++// pitch reaches: ~midinote misses \freq, \ctranspose, and \harmonic. Field
++// writes the part from that.
++//
++// FIELD_PROGRAM  the program, by absolute path
++// FIELD_SEED     the seed, for the program as it runs and for its pattern
++// FIELD_BEATS    how many quarter notes to play
++// FIELD_OUTPUT   the JSON file to write
++(
++var program = "FIELD_PROGRAM".getenv;
++var seed = "FIELD_SEED".getenv.asInteger;
++var beats = "FIELD_BEATS".getenv.asFloat;
++var out = "FIELD_OUTPUT".getenv;
++var name = PathName(program).fileName;
++// A pattern whose events never move time on would play forever.
++var most = 100000;
++var compiled, pattern, error, problem, stream, event, now = 0, count = 0, notes = [], finite, saved;
++
++// Read above, and gone before the program runs, so in notes mode the
++// program sees FIELD_MODE alone.
++["FIELD_PROGRAM", "FIELD_SEED", "FIELD_BEATS", "FIELD_OUTPUT"].do(_.unsetenv);
++finite = { |x| x.isNumber and: { x.isNaN.not } and: { x.abs != inf } };
++
++thisThread.randSeed = seed;
++compiled = thisProcess.interpreter.compileFile(program);
++if (compiled.isNil) { problem = name ++ " does not compile" } {
++	// As executeFile runs it, so a program can find its own directory.
++	saved = thisProcess.nowExecutingPath;
++	thisProcess.nowExecutingPath = program;
++	pattern = protect { try { compiled.value } { |e| error = e.errorString; nil } } { thisProcess.nowExecutingPath = saved };
++	case
++	{ error.notNil } { problem = name ++ " does not answer FIELD_MODE=notes: running it in notes mode failed with " ++ error }
++	{ pattern.isKindOf(Pattern).not } { problem = name ++ " does not answer FIELD_MODE=notes: in notes mode its value must be a Pattern" };
++};
++
++// sclang stays running after an uncaught error, so a pattern that fails
++// as it plays would wait out Field's timeout and lose what it printed.
++try {
++	// A seed given as a number would repeat the pattern forever; one seed
++	// plays it once.
++	problem ?? { stream = Pseed(Pn(seed, 1), pattern).asStream };
++	while { problem.isNil and: { now < beats } and: { (event = stream.next(Event.default)).notNil } } {
++		count = count + 1;
++		case
++		{ event.isKindOf(Event).not } { problem = name ++ "'s pattern makes " ++ event.class.name ++ ", not events" }
++		{ count > most } { problem = name ++ "'s pattern made " ++ most ++ " events without reaching beat " ++ beats }
++		{ finite.(event.delta).not or: { event.delta < 0 } } { problem = name ++ "'s pattern has an event at beat " ++ now ++ " whose dur is " ++ event.delta }
++		{
++			if (event.isRest.not) {
++				event.use {
++					var sustains = ~sustain.value.asArray, amps = ~amp.value.asArray;
++					~freq.value.cpsmidi.asArray.do { |note, i|
++						var row = [now, sustains.wrapAt(i), note, amps.wrapAt(i), ~chan ? 0];
++						if (row.every(finite)) { notes = notes.add(row) } {
++							problem = name ++ "'s pattern has a note at beat " ++ now ++ " that is not a number: " ++ row;
++						};
++					};
++				};
++			};
++			now = now + event.delta;
++		};
++	};
++} { |e| problem = name ++ "'s pattern failed at beat " ++ now ++ ": " ++ e.errorString };
++
++if (problem.notNil) {
++	("ERROR: " ++ problem).postln;
++	1.exit;
++} {
++	File.use(out, "w", { |file|
++		file.write("{\"notes\":[" ++ notes.collect { |row| "[" ++ row.join(",") ++ "]" }.join(",") ++ "]}");
++	});
++	0.exit;
++};
++)
+diff --git a/sc/voice-host.scd b/sc/voice-host.scd
+index 9159bd93..3a2245d1 100644
+--- a/sc/voice-host.scd
++++ b/sc/voice-host.scd
+@@ -1,14 +1,15 @@
+-// The voice host behind `field keys <instrument>` (keyboard-instrument.md
+-// §2.6). It boots its own scsynth on the output device, loads each armed
+-// instrument's voice (arming.md §2.1), and plays them from every MIDI
+-// source, each note on all of them. Field reads
++// The voice host behind `field keys` and `field sc voice`
++// (keyboard-instrument.md §2.6, sequencer.md §2.6). It boots its own
++// scsynth on the output device, loads each voice (arming.md §2.1), and
++// plays each from its own MIDI sources (voice-sources.scd). Field reads
+ // only the lines that start with "@field ", each one JSON object; the rest
+ // of sclang's output is left for diagnosing a failure.
+ //
+-// Environment: FIELD_INSTRUMENTS (a JSON list of the programs, played in
+-// unison: each note sounds a voice from each, and each is an object with
+-// "program", its absolute path, and "knobs", the checked copy of its knob
+-// file, absent when it has none: instrument-knobs.md §2.4),
++// Environment: FIELD_INSTRUMENTS (a JSON list of the voices, each an
++// object with "program", its absolute path; "knobs", the checked copy of
++// its knob file, absent when it has none: instrument-knobs.md §2.4; and
++// "sources", the names of the MIDI sources it plays from, absent to play
++// from every source but the Field Seq ones),
+ // FIELD_SC_PORT (the scsynth port Field chose), FIELD_PARENT_PID,
+ // FIELD_DEVICE (optional output device), FIELD_MODE=voice, and
+ // FIELD_VOICE_TRACE (optional: report each voice as it starts and ends).
+@@ -19,11 +20,13 @@
+ // sclang has no FieldOut class). Field puts FieldOut's directory on
+ // SC_PLUGIN_PATH, which scsynth searches beside its own plugins.
+ // sclang's own port, which Field also chooses (-u), takes /field/reload:
+-// load every program again, as one has changed (§14), keeping them all as
+-// they were if one does not load.
++// load every program again, as one has changed (keyboard-instrument.md
++// §14), keeping them all as they were if one does not load.
+ (
+ var here = PathName(thisProcess.nowExecutingPath).pathOnly;
+ var loadVoice = thisProcess.interpreter.executeFile(here +/+ "voice-load.scd");
++var playsFrom = thisProcess.interpreter.executeFile(here +/+ "voice-sources.scd");
++var makeVoicer = thisProcess.interpreter.executeFile(here +/+ "voicer.scd");
+ var instruments = "FIELD_INSTRUMENTS".getenv.parseJSON;
+ var port = "FIELD_SC_PORT".getenv.asInteger;
+ var parentPid = "FIELD_PARENT_PID".getenv;
+@@ -35,13 +38,19 @@ var routeDef = "FIELD_ROUTE_DEF".getenv;
+ var buses = [], routes = [], startRoutes, stopRoutes;
+ // True until the server answers, at the first boot and at each restart:
+ // a note then has no server to sound on, so it is ignored.
+-var server, voiceDefs, problem, voicer, booting = true;
++var server, voiceDefs, problem, voicers, booting = true;
++// Each source's uid, and the voices that play from it.
++var hearing, sourceProblem, heard, midiProblem;
+ var loadAll, addAll;
+ var jsonValue, emit, fail, stopServer, deviceProblem, run, boot, restart;
+ 
+ jsonValue = { |value|
+ 	if (value.isString or: { value.isKindOf(Symbol) }) {
+-		"\"" ++ value.asString.replace("\\", "\\\\").replace("\"", "\\\"") ++ "\""
++		var text = value.asString.replace("\\", "\\\\").replace("\"", "\\\"");
++		// JSON takes no raw control character, and a status that does not
++		// parse loses what it says.
++		(1..31).do { |code| text = text.replace(code.asAscii.asString, "\\u" ++ code.asHexString(4)) };
++		"\"" ++ text ++ "\""
+ 	} { value.asString }
+ };
+ emit = { |pairs|
+@@ -77,13 +86,17 @@ stopServer = {
+ // exit does not stop the code that called it, so a failure is the last
+ // thing its branch does.
+ fail = { |message|
++	// A primitive can fail without ending its line, as _InitMIDI does, and a
++	// status starts its own.
++	"".postln;
+ 	emit.(["error", message]);
+ 	stopServer.();
+ 	1.exit;
+ };
+ // scsynth falls back to the default input and output for a name it does
+-// not find, which opens the microphone (§10.1), and SuperCollider passes
+-// the name to the shell that starts scsynth between bare double quotes.
++// not find, which opens the microphone (keyboard-instrument.md §10.1), and
++// SuperCollider passes the name to the shell that starts scsynth between
++// bare double quotes.
+ deviceProblem = { |name|
+ 	case
+ 	{ name.any { |char| "\"`$\\".includes(char) } } {
+@@ -156,7 +169,7 @@ addAll = { voiceDefs.do(_.add) };
+ // carries the booted rate and the rate measured from the device clock.
+ restart = {
+ 	booting = true;
+-	voicer.forgetVoices;
++	voicers.do(_.forgetVoices);
+ 	emit.(["restarting", true]);
+ 	stopRoutes.();
+ 	server.quit(onComplete: boot);
+@@ -177,27 +190,31 @@ run = {
+ 	};
+ 	Server.default = server;
+ 
+-	voicer = thisProcess.interpreter.executeFile(here +/+ "voicer.scd").(
+-		{ |note, velocity, freq, controls|
+-			voiceDefs.collect { |def, i|
++	// A voicer per voice, with its own notes, pedal, and controllers,
++	// because each voice hears only its own sources.
++	voicers = instruments.collect { |each, i|
++		makeVoicer.(
++			{ |note, velocity, freq, controls|
+ 				var out = buses[i] !? (_.index) ? 0;
+-				Synth(def.name, [\freq, freq, \amp, velocity / 127, \gate, 1, \out, out] ++ controls, server)
+-			}
+-		},
+-		{ |synths, control, value| synths.do(_.set(control, value)) },
+-		{ |synths| synths.do(_.set(\gate, 0)) },
+-		if (trace) { { |note, on| emit.([if (on) { "voice_on" } { "voice_off" }, note]) } }
+-	);
++				Synth(voiceDefs[i].name, [\freq, freq, \amp, velocity / 127, \gate, 1, \out, out] ++ controls, server)
++			},
++			{ |synth, control, value| synth.set(control, value) },
++			{ |synth| synth.set(\gate, 0) },
++			if (trace) { { |note, on| emit.([if (on) { "voice_on" } { "voice_off" }, note, "voice", i]) } }
++		)
++	};
++	heard = { |src, action| hearing[src].do { |i| action.(voicers[i]) } };
+ 
+-	MIDIClient.init(verbose: false);
+-	MIDIIn.connectAll(verbose: false);
++	// A source listed when the host started can have gone by now, and
++	// connecting to it throws. The host starts without it.
++	MIDIClient.sources.do { |src, i| try { MIDIIn.connect(i, src) } };
+ 
+-	MIDIdef.noteOn(\fieldNoteOn, { |velocity, note, chan|
+-		if (booting.not) { voicer.noteOn(chan, note, velocity) };
++	MIDIdef.noteOn(\fieldNoteOn, { |velocity, note, chan, src|
++		if (booting.not) { heard.(src, _.noteOn(chan, note, velocity)) };
+ 	});
+-	MIDIdef.noteOff(\fieldNoteOff, { |velocity, note, chan| voicer.noteOff(chan, note) });
+-	MIDIdef.cc(\fieldControl, { |value, number, chan| voicer.cc(chan, number, value) });
+-	MIDIdef.bend(\fieldBend, { |value, chan| voicer.bend(chan, value) });
++	MIDIdef.noteOff(\fieldNoteOff, { |velocity, note, chan, src| heard.(src, _.noteOff(chan, note)) });
++	MIDIdef.cc(\fieldControl, { |value, number, chan, src| heard.(src, _.cc(chan, number, value)) });
++	MIDIdef.bend(\fieldBend, { |value, chan, src| heard.(src, _.bend(chan, value)) });
+ 
+ 	// A program's file changed: load them again. Voices that load are what
+ 	// the next note plays, and the notes sounding finish as they started;
+@@ -250,9 +267,22 @@ run = {
+ 	boot.();
+ };
+ 
+-# voiceDefs, problem = loadAll.();
+-case
+-	{ problem.notNil } { fail.(problem) }
+-	{ device.notNil and: { deviceProblem.(device).notNil } } { fail.(deviceProblem.(device)) }
+-	{ run.() };
++// A voice hears the sources there when the host starts, so a command
++// publishes its own, as `field keys` publishes Field Keys, first.
++// An error nothing catches leaves sclang running with no host. macOS can
++// refuse a new process its MIDI client, which throws here.
++midiProblem = try { MIDIClient.init(verbose: false); nil } { |error| "the MIDI client did not start: " ++ error.errorString.replace("ERROR: ", "") };
++if (midiProblem.notNil) {
++	fail.(midiProblem);
++} {
++	try {
++		# hearing, sourceProblem = playsFrom.(instruments, MIDIClient.sources);
++		# voiceDefs, problem = loadAll.();
++		case
++			{ problem.notNil } { fail.(problem) }
++			{ sourceProblem.notNil } { fail.(sourceProblem) }
++			{ device.notNil and: { deviceProblem.(device).notNil } } { fail.(deviceProblem.(device)) }
++			{ run.() };
++	} { |error| fail.(error.errorString.replace("ERROR: ", "")) };
++};
+ )
+diff --git a/sc/voice-sources.scd b/sc/voice-sources.scd
+new file mode 100644
+index 00000000..db6e208e
+--- /dev/null
++++ b/sc/voice-sources.scd
+@@ -0,0 +1,30 @@
++// Which voices play from each MIDI source (sequencer.md §2.6), for the
++// voice host. Its value is a function of the voices, FIELD_INSTRUMENTS
++// as the host parses it, and the sources, as MIDIClient.sources lists
++// them, that answers [hearing, problem]: `hearing` maps each source's uid
++// to the indexes of the voices that play from it, and `problem` says
++// which source a voice names that is not there, or is nil.
++//
++// A voice with "sources" plays from each source whose name or device is
++// one of them. A voice without plays from every source except the
++// `Field Seq <song>/<track>` ones, each of which carries one track's
++// parts for that track's own voice.
++{ |voices, endpoints|
++	var hearing = IdentityDictionary.new, problem;
++	var matches = { |endpoint, name| endpoint.name == name or: { endpoint.device == name } };
++	var sequenced = { |endpoint| endpoint.name.beginsWith("Field Seq ") };
++	voices.do { |voice, i|
++		var named = voice["sources"];
++		named.do { |name|
++			if (problem.isNil and: { endpoints.any { |endpoint| matches.(endpoint, name) }.not }) {
++				problem = "no MIDI source named " ++ name ++ "; the sources are "
++					++ if (endpoints.isEmpty) { "none" } { endpoints.collect(_.name).join(", ") };
++			};
++		};
++		endpoints.do { |endpoint|
++			var hears = if (named.notNil) { named.any { |name| matches.(endpoint, name) } } { sequenced.(endpoint).not };
++			if (hears) { hearing[endpoint.uid] = hearing[endpoint.uid].add(i) };
++		};
++	};
++	[hearing, problem]
++}
+diff --git a/src/audiod/live-inputs.ts b/src/audiod/live-inputs.ts
+index ae41f4ed..2e070ecc 100644
+--- a/src/audiod/live-inputs.ts
++++ b/src/audiod/live-inputs.ts
+@@ -1,17 +1,21 @@
+ import type { AudiodClient } from './client.js';
+ import { compileSession, type CompiledSession, type SessionInput } from '../graph/live.js';
+ 
+-// The inputs a song's input windows read (live-supercollider.md): a
+-// `field keys` voice's ring, `keys:<song>/<track>` (chunk 3), and an armed
+-// input a `field record --monitoring host` hears, `capture:<song>/<track>`
+-// (§12). Every command that loads a song's session compiles in the ones
+-// open for it, so a reload from `field play`, its watch, `field ui`, or
+-// `field record` keeps both heard.
+-const LIVE_INPUT = /^(?:keys|capture):([^/]+)\/(.+)$/;
++// The inputs a song's input windows read, each named
++// `<kind>:<song>/<track>`: the ring of a voice that `field keys` plays,
++// `keys:` (live-supercollider.md chunk 3), that `field seq` plays, `seq:`,
++// and that `field sc voice` plays, `voice:` (sequencer.md §2.6), and an
++// armed input a `field record --monitoring host` hears, `capture:`
++// (live-supercollider.md §12). Every command that loads a song's session
++// compiles in the ones open for it, so a reload from `field play`, its
++// watch, `field ui`, or `field record` keeps all four heard. A `seq:`
++// input also tells the compile that its track's notes play live
++// (src/graph/live.ts).
++export type LiveInputKind = 'keys' | 'seq' | 'voice' | 'capture';
++const LIVE_INPUT = /^(?:keys|seq|voice|capture):([^/]+)\/(.+)$/;
+ 
+-// The capture input `field record --monitoring host` opens for `track`.
+-export function captureInputName(song: string, track: string): string {
+-  return `capture:${song}/${track}`;
++export function liveInputName(kind: LiveInputKind, song: string, track: string): string {
++  return `${kind}:${song}/${track}`;
+ }
+ 
+ // The open inputs for `song`, as `compileSession` takes them.
+diff --git a/src/audiod/live-ring.test.ts b/src/audiod/live-ring.test.ts
+index 6d51dfe6..5a6c0cc9 100644
+--- a/src/audiod/live-ring.test.ts
++++ b/src/audiod/live-ring.test.ts
+@@ -9,7 +9,7 @@ import { createSong, createTrack } from '../commands/create.js';
+ import { init } from '../commands/init.js';
+ import { compileSession } from '../graph/live.js';
+ import { writeWavFloat32 } from '../audio/wav.js';
+-import { nrtScore, oscBundle, oscMessage, routeSynthDef, synthDefFile } from '../keys/synthdef.js';
++import { nrtScore, oscBundle, oscMessage, routeSynthDef, synthDefFile } from '../sc/voice/synthdef.js';
+ import { removeTempProject } from '../testing/temp.js';
+ import { AudiodClient, daemonBinary } from './client.js';
+ 
+diff --git a/src/cli.ts b/src/cli.ts
+index 567be8a9..18336641 100644
+--- a/src/cli.ts
++++ b/src/cli.ts
+@@ -1,12 +1,11 @@
+ #!/usr/bin/env node
+ import { spawn } from 'node:child_process';
+-import { existsSync } from 'node:fs';
+-import { basename, extname, resolve } from 'node:path';
+ import { Command } from 'commander';
+ import {
+   drawSeed,
+   formatSeeds,
+   parseBars,
++  parseBeats,
+   parseGenTarget,
+   parseBpm,
+   parseChannels,
+@@ -32,7 +31,6 @@ import {
+   transportStatusLines,
+ } from './commands/transport.js';
+ import { check } from './commands/check.js';
+-import { runScProgram } from './generators/supercollider.js';
+ import { createSong, createTrack } from './commands/create.js';
+ import { fmt } from './commands/fmt.js';
+ import { importAsset } from './commands/import.js';
+@@ -229,20 +227,40 @@ sc.command('render <program>')
+   .option('--output <path>', 'output WAV path (defaults to <program>.wav in the current directory)')
+   .action(async (programPath: string, opts: { seed: number; duration: number; channels: number; output?: string }) => {
+     try {
+-      const root = findProjectRoot(process.cwd());
+-      const project = root ? loadProject(root) : undefined;
+-      const sampleRate = project?.manifest?.data.sample_rate ?? 48000;
+-      const output = resolve(opts.output ?? `${basename(programPath, extname(programPath))}.wav`);
+-      await runScProgram(resolve(programPath), output, {
+-        seed: opts.seed,
+-        duration: opts.duration,
+-        channels: opts.channels,
+-        sampleRate,
+-      });
+-      if (!existsSync(output)) {
+-        throw new Error('sc program exited without writing FIELD_OUTPUT');
+-      }
+-      process.stdout.write(`rendered ${output} (seed ${opts.seed}, ${opts.duration}s @ ${sampleRate} Hz)\n`);
++      const { scRender } = await import('./commands/sc.js');
++      process.stdout.write(`${await scRender(programPath, opts)}\n`);
++    } catch (err) {
++      fail(err);
++    }
++  });
++sc.command('voice <targets...>')
++  .description(
++    'play instruments, or tracks (creek/track:keys) through their effects, from MIDI sources with no keyboard ' +
++      '(Ctrl-C quits)',
++  )
++  .option(
++    '--source <name>',
++    'a MIDI source to play from, by its name or its device (repeatable; default: every source but the Field Seq ones)',
++    (value: string, previous: string[]) => [...previous, value],
++    [] as string[],
++  )
++  .option('--device <name>', 'output device for an instrument named without a track (field devices lists them)')
++  .action(async (targets: string[], opts: { source: string[]; device?: string }) => {
++    try {
++      const { scVoice } = await import('./commands/sc.js');
++      await scVoice(targets, opts);
++    } catch (err) {
++      fail(err);
++    }
++  });
++sc.command('notes <program>')
++  .description('write a part from the pattern a program answers under FIELD_MODE=notes, to stdout')
++  .requiredOption('--seed <n>', 'random seed', parseSeed)
++  .requiredOption('--beats <n>', 'how many quarter notes to play the pattern for', parseBeats)
++  .action(async (programPath: string, opts: { seed: number; beats: number }) => {
++    try {
++      const { scNotes } = await import('./commands/sc.js');
++      process.stdout.write(await scNotes(programPath, opts));
+     } catch (err) {
+       fail(err);
+     }
+diff --git a/src/cliParsers.test.ts b/src/cliParsers.test.ts
+index e9d010cd..e3623016 100644
+--- a/src/cliParsers.test.ts
++++ b/src/cliParsers.test.ts
+@@ -3,6 +3,7 @@ import {
+   drawSeed,
+   formatSeeds,
+   parseBars,
++  parseBeats,
+   parseGenTarget,
+   parseBpm,
+   parseChannels,
+@@ -20,6 +21,8 @@ describe('cli parsers', () => {
+     expect(parseSeed('0')).toBe(0);
+     expect(parseDurationSeconds('10')).toBe(10);
+     expect(parseDurationSeconds('0.25')).toBe(0.25);
++    expect(parseBeats('16')).toBe(16);
++    expect(parseBeats('3.5')).toBe(3.5);
+     expect(parseChannels('1')).toBe(1);
+     expect(parseChannels('2')).toBe(2);
+   });
+@@ -31,6 +34,8 @@ describe('cli parsers', () => {
+     expect(() => parseDurationSeconds('abc')).toThrow('(0, 3600]');
+     expect(() => parseDurationSeconds('0')).toThrow('(0, 3600]');
+     expect(() => parseDurationSeconds('3601')).toThrow('(0, 3600]');
++    expect(() => parseBeats('0')).toThrow('positive number of quarter notes');
++    expect(() => parseBeats('four')).toThrow('positive number of quarter notes');
+     expect(() => parseChannels('5')).toThrow('1 or 2');
+   });
+ 
+diff --git a/src/cliParsers.ts b/src/cliParsers.ts
+index 21336a10..6c22dcb7 100644
+--- a/src/cliParsers.ts
++++ b/src/cliParsers.ts
+@@ -21,6 +21,14 @@ export function parseDurationSeconds(value: string): number {
+   return n;
+ }
+ 
++export function parseBeats(value: string): number {
++  const n = Number(value);
++  if (!Number.isFinite(n) || n <= 0) {
++    throw new InvalidArgumentError('beats must be a positive number of quarter notes');
++  }
++  return n;
++}
++
+ export function parseBars(value: string): number {
+   const n = Number(value);
+   if (!Number.isInteger(n) || n <= 0) {
+diff --git a/src/commands/keys.test.ts b/src/commands/keys.test.ts
+index 9aeaef44..20f14c37 100644
+--- a/src/commands/keys.test.ts
++++ b/src/commands/keys.test.ts
+@@ -1,12 +1,10 @@
+-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+-import { tmpdir } from 'node:os';
+ import { join } from 'node:path';
+-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
++import { describe, expect, it } from 'vitest';
+ import { builtinKeymapDir, loadKeymap, parseKeymap } from '../keys/keymap.js';
+-import { KnobsError, knobList, loadKnobs, parseKnobs } from '../keys/knobs.js';
++import { knobList, loadKnobs } from '../keys/knobs.js';
+ import { KeysSession } from '../keys/session.js';
+ import { BUILD_DAEMON } from '../remedies.js';
+-import { instrumentState, instrumentText, KnobFiles, KnobLine, loadKnobSources, redrawAbove, statusText } from './keys.js';
++import { instrumentState, instrumentText, KnobLine, redrawAbove, statusText } from './keys.js';
+ 
+ // field keys' status line: the sounding notes come last, so playing
+ // changes only the end of the line, and a narrow terminal shortens what
+@@ -93,7 +91,7 @@ describe('the status line', () => {
+ 
+ describe('the instrument line', () => {
+   const live = { state: 'live' as const, device: 'MacBook Pro Speakers', sampleRate: 48000 };
+-  // The reason routeArmed gives without FieldOut: field keys runs in a
++  // The reason routeVoices gives without FieldOut: field keys runs in a
+   // song project, so it names the command that builds it from there.
+   const notBuilt = `FieldOut is not built: run ${BUILD_DAEMON}`;
+ 
+@@ -272,70 +270,3 @@ describe('redrawing the lines above the status line', () => {
+     expect(redrawAbove(['juno live'], ['juno live', 'mod   0'])).toBe('\r\x1b[Kmod   0\n');
+   });
+ });
+-
+-describe('knob files in a session', () => {
+-  let dir: string;
+-  beforeEach(() => {
+-    dir = mkdtempSync(join(tmpdir(), 'field-keys-knobs-'));
+-  });
+-  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+-
+-  it('reads an armed instrument’s knob file beside its program, and each --knobs file', () => {
+-    writeFileSync(join(dir, 'juno.scd'), '');
+-    writeFileSync(join(dir, 'juno.knobs.yaml'), readFileSync(join(shelf, 'juno.knobs.yaml')));
+-    writeFileSync(join(dir, 'pad.scd'), '');
+-    writeFileSync(join(dir, 'ju-06a.yaml'), 'knobs:\n  - { name: cutoff, cc: 74 }\n');
+-    const sources = loadKnobSources(
+-      [
+-        { program: join(dir, 'juno.scd'), track: 'creek/keys', unheardEffects: [] },
+-        { program: join(dir, 'pad.scd'), unheardEffects: [] },
+-      ],
+-      [join(dir, 'ju-06a.yaml')],
+-      undefined,
+-    );
+-    expect(sources.map(({ name, program }) => ({ name, program }))).toEqual([
+-      { name: 'keys', program: join(dir, 'juno.scd') },
+-      { name: 'ju-06a', program: undefined },
+-    ]);
+-    expect(sources[0]!.knobs).toEqual(juno);
+-    expect(() => loadKnobSources([], [join(dir, 'missing.yaml')], undefined)).toThrow(/no such file/);
+-    writeFileSync(join(dir, 'juno.knobs.yaml'), 'knobs:\n  - { name: cutoff, cc: 1 }\n');
+-    expect(() => loadKnobSources([{ program: join(dir, 'juno.scd'), unheardEffects: [] }], [], undefined)).toThrow(KnobsError);
+-  });
+-
+-  it('keeps the voice’s copy after a save that fails and asks for no reload, and rewrites it before one that passes', () => {
+-    const path = join(dir, 'juno.knobs.yaml');
+-    const files = new KnobFiles([
+-      { name: 'juno', path, program: '/p/juno.scd', knobs: juno },
+-      { name: 'ju-06a', path: join(dir, 'ju-06a.yaml'), knobs: juno.slice(0, 1) },
+-    ]);
+-    try {
+-      const copy = files.copies.get('/p/juno.scd')!;
+-      expect(parseKnobs(readFileSync(copy, 'utf8'), copy)).toEqual(juno);
+-      expect([...files.copies.keys()]).toEqual(['/p/juno.scd']);
+-
+-      let failed: KnobsError | undefined;
+-      try {
+-        parseKnobs('knobs:\n  - { name: res, cc: 1 }\n', path);
+-      } catch (err) {
+-        failed = err as KnobsError;
+-      }
+-      expect(files.saved(path, { error: failed! })).toBe(false);
+-      expect(files.errors.get(path)).toBe('juno.knobs.yaml: knobs.0.cc: res: cc 1 is the modulation wheel, which is the knob mod');
+-      expect(parseKnobs(readFileSync(copy, 'utf8'), copy)).toEqual(juno);
+-      expect(files.list().map((k) => k.label)).toContain('juno.release');
+-
+-      expect(files.saved(path, { knobs: juno.slice(0, 2) })).toBe(true);
+-      expect(files.errors.size).toBe(0);
+-      expect(parseKnobs(readFileSync(copy, 'utf8'), copy)).toEqual(juno.slice(0, 2));
+-      expect(files.list().map((k) => k.label)).toEqual(['mod', 'juno.cutoff', 'juno.res', 'ju-06a.cutoff']);
+-
+-      // A --knobs file reaches no voice, so its save reloads none.
+-      expect(files.saved(join(dir, 'ju-06a.yaml'), { knobs: juno.slice(1, 2) })).toBe(false);
+-      expect(files.list().map((k) => k.label)).toEqual(['mod', 'juno.cutoff', 'juno.res', 'ju-06a.res']);
+-    } finally {
+-      files.remove();
+-    }
+-    expect(existsSync(files.copies.get('/p/juno.scd')!)).toBe(false);
+-  });
+-});
+diff --git a/src/commands/keys.ts b/src/commands/keys.ts
+index d885fdee..9b09104d 100644
+--- a/src/commands/keys.ts
++++ b/src/commands/keys.ts
+@@ -1,32 +1,18 @@
+-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+-import { tmpdir } from 'node:os';
+-import { basename, join } from 'node:path';
++import { basename } from 'node:path';
+ import { KeysHelper, SOURCE_NAME } from '../keys/helper.js';
+ import { keyboardLines } from '../keys/keyboard.js';
+ import { loadKeymap, resolveKeymapSource, watchKeymap, type KeymapSource } from '../keys/keymap.js';
+-import {
+-  formatKnobValue,
+-  knobFileFor,
+-  knobFileName,
+-  knobList,
+-  knobsCopy,
+-  knobValueWidth,
+-  loadKnobs,
+-  resolveKnobsPath,
+-  watchKnobs,
+-  type KnobsReload,
+-  type ShownKnob,
+-} from '../keys/knobs.js';
++import { formatKnobValue, knobValueWidth } from '../keys/knobs.js';
+ import { charactersToPositions, PressedKeys, unplayablePositions, type KeyboardLayout } from '../keys/position.js';
+ import { publishControllers, unpublishControllers } from '../keys/published.js';
+ import { printKeymap, signed } from '../keys/print.js';
+ import { KeysSession, TICK_MS, type MidiMessage } from '../keys/session.js';
+ import { decodeTerminal, ENABLE, isQuit, probeKittyProtocol, RESTORE, type Tty } from '../keys/terminal.js';
+-import { routeArmed, type Routing, type Unrouted } from '../keys/routing.js';
+ import { resolveKeysTargets, type ArmedInstrument } from '../keys/targets.js';
+ import { findProjectRoot } from '../model/project.js';
+-import { VoiceHost, type VoiceHostStatus } from '../keys/voice-host.js';
+-import { watchText } from '../keys/watch.js';
++import { KnobFiles, loadKnobSources, type KnobSource } from '../sc/voice/knob-files.js';
++import { routeVoices, type Routing, type Unrouted } from '../sc/voice/routing.js';
++import { startVoices, type VoiceState } from '../sc/voice/start.js';
+ import type { Knob } from '../schema/knobs.js';
+ import type { Keymap } from '../schema/keymap.js';
+ 
+@@ -100,94 +86,12 @@ interface PlayOptions {
+   root: string | undefined;
+ }
+ 
+-// A knob file `field keys` reads (instrument-knobs.md §2.2): an armed
+-// instrument's, which its voice also maps through, or one given with
+-// --knobs, for whatever else listens to Field Keys.
+-export interface KnobSource {
+-  name: string; // what the knob line puts before its knobs' names
+-  path: string;
+-  program?: string; // the instrument whose voice reads it
+-  knobs: Knob[];
+-}
+-
+-// A session's knob files, and the copies its voices read: each voice
+-// reads the copy of its knob file that passed the schema, never the file
+-// itself, so a save that fails cannot reach it (instrument-knobs.md §2.4).
+-// The copies live in a directory of their own for the session.
+-export class KnobFiles {
+-  // Each program with a knob file, and the copy its voice reads.
+-  readonly copies = new Map<string, string>();
+-  // Why the last save of each file did not load, by path.
+-  readonly errors = new Map<string, string>();
+-  private dir: string | undefined;
+-
+-  constructor(private readonly sources: KnobSource[]) {
+-    sources.forEach((source) => this.write(source));
+-  }
+-
+-  paths(): string[] {
+-    return [...new Set(this.sources.map((s) => s.path))];
+-  }
+-
+-  list(): ShownKnob[] {
+-    return knobList(this.sources);
+-  }
+-
+-  // A save that passes takes the file's new knobs and rewrites the copy
+-  // of each voice that reads it; one that fails changes nothing but its
+-  // error. Answers whether a voice reads the file, and so must reload.
+-  saved(path: string, result: KnobsReload): boolean {
+-    if ('error' in result) {
+-      this.errors.set(path, `${basename(path)}: ${result.error.problems[0]}`);
+-      return false;
+-    }
+-    this.errors.delete(path);
+-    const changed = this.sources.filter((s) => s.path === path);
+-    for (const source of changed) {
+-      source.knobs = result.knobs;
+-      this.write(source);
+-    }
+-    return changed.some((s) => s.program !== undefined);
+-  }
+-
+-  remove(): void {
+-    if (this.dir !== undefined) rmSync(this.dir, { recursive: true, force: true });
+-  }
+-
+-  private write({ program, path, knobs }: KnobSource): void {
+-    if (program === undefined) return;
+-    this.dir ??= mkdtempSync(join(tmpdir(), 'field-knobs-'));
+-    const copy = this.copies.get(program) ?? join(this.dir, `${this.copies.size}-${basename(path)}`);
+-    writeFileSync(copy, knobsCopy(knobs));
+-    this.copies.set(program, copy);
+-  }
+-}
+-
+-export function loadKnobSources(armed: ArmedInstrument[], specs: string[], root: string | undefined): KnobSource[] {
+-  const sources: KnobSource[] = [];
+-  for (const { program, track } of armed) {
+-    const path = knobFileFor(program);
+-    if (!existsSync(path)) continue;
+-    sources.push({ name: track?.split('/').pop() ?? basename(program, '.scd'), path, program, knobs: loadKnobs(path) });
+-  }
+-  for (const spec of specs) {
+-    const path = resolveKnobsPath(spec, root);
+-    sources.push({ name: knobFileName(path), path, knobs: loadKnobs(path) });
+-  }
+-  return sources;
+-}
+-
+-export type InstrumentState = {
++export type InstrumentState = VoiceState & {
+   name: string; // what is armed, as the line names it
+   dry: string[]; // tracks whose effects the voices do not pass through yet
+   // Why the voices do not pass through them (live-supercollider.md
+   // chunk 3), when routing them was not possible.
+   dryReason?: string;
+-  // Why nothing is heard at all: routed, but scsynth never ran the route.
+-  silent?: string;
+-  status: Extract<VoiceHostStatus, { state: 'live' | 'restarting' }> | { state: 'starting' };
+-  // What the last save of the program did (keyboard-instrument.md §14).
+-  reload?: { loaded: true } | { failed: string };
+ };
+ 
+ async function play(tty: Tty, options: PlayOptions, carried: string): Promise<'abandoned' | undefined> {
+@@ -210,7 +114,7 @@ async function play(tty: Tty, options: PlayOptions, carried: string): Promise<'a
+   });
+   const routing0 =
+     options.root !== undefined
+-      ? routeArmed(options.armed, options.root, options.device !== undefined ? { device: options.device } : {})
++      ? routeVoices(options.armed, options.root, { kind: 'keys', ...(options.device !== undefined ? { device: options.device } : {}) })
+       : Promise.resolve(undefined);
+   const first = await Promise.race([routing0, quit]);
+   tty.stdin.removeListener('data', onQuit!);
+@@ -315,51 +219,27 @@ async function playRouted(
+   const device = routing !== undefined ? routing.device : (options.device ?? helper.defaultOutput);
+   const host =
+     programs.length > 0
+-      ? await VoiceHost.start({
++      ? await startVoices({
+           instruments: programs,
+           knobs: knobFiles.copies,
+           ...(device !== undefined ? { device } : {}),
+-          ...(routing !== undefined ? { rings: routing.rings, fieldOut: routing.fieldOut } : {}),
+-          onStatus: (status) => {
+-            if (status.state === 'voice') return;
+-            if (status.state === 'reloaded') instrument!.reload = { loaded: true };
+-            else if (status.state === 'reload-failed') instrument!.reload = { failed: status.reason };
+-            else instrument!.status = status;
+-            draw();
+-          },
+-          onExit: (reason) => stop(new Error(`the voice host stopped: ${reason}`)),
++          routing,
++          state: instrument!,
++          changed: draw,
++          stop,
+         })
+       : undefined;
+-  host?.ready.catch((err: Error) => stop(new Error(`the voice host did not start: ${err.message}`)));
+-  // A route scsynth never ran, because FieldOut did not load in it, leaves
+-  // its ring empty: the voice is then nowhere, and the line says so.
+-  if (host !== undefined && routing !== undefined) {
+-    void host.ready
+-      .then(() => routing.flowing())
+-      .then((flowing) => {
+-        if (flowing || instrument === undefined) return;
+-        // The voices play into a bus nothing reads: not dry, silent.
+-        instrument.silent = 'FieldOut did not load in scsynth, so nothing reaches the daemon';
+-        draw();
+-      })
+-      .catch(() => {});
+-  }
+ 
+   // Saving a program loads it again, as saving a keymap does
+   // (keyboard-instrument.md §14).
+-  // Each program once, however many tracks play it: one save, one reload.
+-  const stopWatchingPrograms =
+-    host !== undefined ? [...new Set(programs)].map((p) => watchText(p, () => void host.reload())) : [];
++  const stopWatchingPrograms = host?.reloadOnSave();
+   // A knob file saved: the knobs change and a voice that maps through it
+   // reloads, or, when the save fails, only the status line changes.
+-  const stopWatchingKnobs = knobFiles.paths().map((path) =>
+-    watchKnobs(path, (result) => {
+-      const reload = knobFiles.saved(path, result);
+-      if ('knobs' in result) session.setKnobs(knobFiles.list());
+-      if (reload) void host?.reload();
+-      draw();
+-    }),
+-  );
++  const stopWatchingKnobs = knobFiles.watch((_path, result, reload) => {
++    if ('knobs' in result) session.setKnobs(knobFiles.list());
++    if (reload) void host?.reload();
++    draw();
++  });
+   const stopWatching =
+     source.kind === 'file'
+       ? watchKeymap(source.path, (result) => {
+@@ -404,8 +284,8 @@ async function playRouted(
+   tty.stdin.removeListener('data', onData);
+   for (const signal of ['SIGTERM', 'SIGHUP', 'SIGINT'] as const) process.removeListener(signal, onSignal);
+   stopWatching?.();
+-  stopWatchingPrograms.forEach((stopWatchingProgram) => stopWatchingProgram());
+-  stopWatchingKnobs.forEach((stopWatchingKnob) => stopWatchingKnob());
++  stopWatchingPrograms?.();
++  stopWatchingKnobs();
+   send(session.quit());
+   tickWhileMoving();
+   // A host still booting closes too: quitting never waits for it. The
+@@ -453,7 +333,7 @@ export function instrumentText({ name, dry, dryReason, silent, status, reload }:
+ 
+ // A track names itself and its instrument; an instrument given by program
+ // names only itself.
+-function armedName(armed: ArmedInstrument): string {
++export function armedName(armed: ArmedInstrument): string {
+   const program = basename(armed.program, '.scd');
+   return armed.track === undefined ? program : `${armed.track.split('/').pop()} (${program})`;
+ }
+diff --git a/src/commands/record.ts b/src/commands/record.ts
+index c174963a..fd3cbe61 100644
+--- a/src/commands/record.ts
++++ b/src/commands/record.ts
+@@ -1,5 +1,5 @@
+ import { AudiodClient } from '../audiod/client.js';
+-import { captureInputName, compileWithInputs, reloadIfPlaying, reloadWithInputs } from '../audiod/live-inputs.js';
++import { compileWithInputs, liveInputName, reloadIfPlaying, reloadWithInputs } from '../audiod/live-inputs.js';
+ import { anyTakeSchema, type AnyTake, type AudiodEvent, type RecordingEntry } from '../audiod/protocol.js';
+ import { DEFAULT_SAMPLE_RATE } from '../constants.js';
+ import { expandPattern } from '../graph/graph.js';
+@@ -306,7 +306,7 @@ async function captureTakes(
+           client,
+           root,
+           resolved.song,
+-          monitored.map((t) => ({ track: t.node.trackName, input: captureInputName(t.resolved.song, t.node.trackName) })),
++          monitored.map((t) => ({ track: t.node.trackName, input: liveInputName('capture', t.resolved.song, t.node.trackName) })),
+         );
+       } catch (err) {
+         throw new Error(`host monitoring cannot play the input through ${resolved.song}: ${(err as Error).message}`);
+@@ -330,7 +330,7 @@ async function captureTakes(
+                 track: t.resolved.label,
+                 kind: 'audio' as const,
+                 input: t.input!,
+-                ...(monitored.includes(t) ? { monitor: captureInputName(t.resolved.song, t.node.trackName) } : {}),
++                ...(monitored.includes(t) ? { monitor: liveInputName('capture', t.resolved.song, t.node.trackName) } : {}),
+               },
+         ),
+         options.device,
+diff --git a/src/commands/sc.test.ts b/src/commands/sc.test.ts
+new file mode 100644
+index 00000000..d50c4f2d
+--- /dev/null
++++ b/src/commands/sc.test.ts
+@@ -0,0 +1,425 @@
++import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { afterEach, beforeEach, describe, expect, it } from 'vitest';
++import { parse } from 'yaml';
++import { AudiodClient, daemonBinary } from '../audiod/client.js';
++import { sclangCommand } from '../generators/supercollider.js';
++import { notesFileOrder, notesFileSchema } from '../schema/notes.js';
++import { removeTempProject } from '../testing/temp.js';
++import { canonicalText } from '../yaml/emit.js';
++import { createSong, createTrack } from './create.js';
++import { init } from './init.js';
++import { scNotes, scVoice } from './sc.js';
++
++const binary = (() => {
++  try {
++    return daemonBinary();
++  } catch {
++    return undefined;
++  }
++})();
++const sclang = (() => {
++  try {
++    return sclangCommand();
++  } catch {
++    return undefined;
++  }
++})();
++const shelf = join(import.meta.dirname, '..', '..', 'examples', 'bloom', 'shared', 'instruments');
++
++const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
++
++// `field sc voice` (sequencer.md §2.6) with a stand-in for sclang that
++// records what the voice host was handed, goes live, and stays until it
++// is stopped, or with STUB_FAIL, says why it cannot start and exits.
++const STUB = `#!/usr/bin/env node
++const { writeFileSync } = require('node:fs');
++writeFileSync(process.env.STUB_LOG, JSON.stringify({
++  instruments: JSON.parse(process.env.FIELD_INSTRUMENTS),
++  device: process.env.FIELD_DEVICE ?? null,
++  rings: process.env.FIELD_RINGS ? JSON.parse(process.env.FIELD_RINGS) : null,
++  helperClosed: process.env.STUB_HELPER_CLOSED ? require('node:fs').existsSync(process.env.STUB_HELPER_CLOSED) : null,
++}));
++if (process.env.STUB_FAIL) {
++  console.log('@field {"error":"no MIDI source named Nowhere; the sources are Field Keys"}');
++  process.exit(1);
++}
++console.log('@field {"ready":true,"device":"Test Out","sample_rate":48000}');
++setInterval(() => {}, 1000);
++process.on('SIGTERM', () => process.exit(0));
++`;
++
++describe.skipIf(!binary || process.platform === 'win32')('field sc voice', () => {
++  let root: string;
++  let log: string;
++  let env: NodeJS.ProcessEnv;
++
++  beforeEach(() => {
++    root = mkdtempSync(join(tmpdir(), 'field-sc-voice-'));
++    log = join(root, 'host.json');
++    const stub = join(root, 'sclang');
++    writeFileSync(stub, STUB);
++    chmodSync(stub, 0o755);
++    // FieldOut itself is not needed, only somewhere it would be.
++    const fieldOut = join(root, 'fieldout');
++    mkdirSync(fieldOut);
++    writeFileSync(join(fieldOut, 'FieldOut.scx'), '');
++    env = { ...process.env, FIELD_SCLANG: stub, STUB_LOG: log, FIELD_FIELDOUT: fieldOut };
++    process.env['FIELD_AUDIOD_NULL'] = '1';
++    init({ dir: root, name: 'sc-voice' });
++    copyFileSync(join(shelf, 'juno.scd'), join(root, 'shared/instruments/juno.scd'));
++    copyFileSync(join(shelf, 'juno.knobs.yaml'), join(root, 'shared/instruments/juno.knobs.yaml'));
++    writeFileSync(join(root, 'shared/instruments/pad.scd'), '// a voice\n');
++    createSong(root, 'creek');
++    createTrack(root, 'creek', 'keys');
++    writeFileSync(join(root, 'songs/creek/tracks/keys.yaml'), 'name: keys\ninstrument: juno\ninputs:\n  - record:\n');
++  });
++  afterEach(async () => {
++    try {
++      const client = await AudiodClient.connect(root);
++      await client.quit();
++      client.close();
++    } catch {
++      // never started
++    }
++    delete process.env['FIELD_AUDIOD_NULL'];
++    await removeTempProject(root);
++  });
++
++  const inputs = async (): Promise<string[]> => {
++    const client = await AudiodClient.connect(root);
++    try {
++      return ((await client.status()).inputs ?? []).map((i) => i.name);
++    } finally {
++      client.close();
++    }
++  };
++
++  // Runs `field sc voice` until the voice is live, hands `whileLive` the
++  // lines it printed, then quits it.
++  async function playLive(targets: string[], source: string[], whileLive: (lines: string[]) => Promise<void>): Promise<string[]> {
++    const lines: string[] = [];
++    let quit!: () => void;
++    const until = new Promise<void>((resolve) => {
++      quit = resolve;
++    });
++    const running = scVoice(targets, { source }, { cwd: root, env, until, print: (line) => lines.push(line) });
++    try {
++      for (let i = 0; i < 100 && !lines.some((l) => l.includes(' live at ')); i++) await sleep(50);
++      await whileLive(lines);
++    } finally {
++      quit();
++      await running;
++    }
++    return lines;
++  }
++
++  it('plays a track\'s voice from the source named, into a voice: input, and closes the input when it quits', { timeout: 30_000 }, async () => {
++    const lines = await playLive(['creek/track:keys'], ['Field Keys'], async () => {
++      expect(await inputs()).toEqual(['voice:creek/keys']);
++    });
++    expect(lines).toEqual([
++      'voice  keys (juno) · from Field Keys → voice:creek/keys',
++      'keys (juno) live at 48000 Hz on Test Out',
++    ]);
++    const handed = JSON.parse(readFileSync(log, 'utf8'));
++    // The voice plays from Field Keys alone, through the checked copy of
++    // its knob file, into the input's ring.
++    expect(handed.instruments).toEqual([
++      { program: join(root, 'shared/instruments/juno.scd'), knobs: expect.stringMatching(/juno\.knobs\.yaml$/), sources: ['Field Keys'] },
++    ]);
++    expect(handed.rings).toEqual([expect.any(Number)]);
++    expect(existsSync(handed.instruments[0].knobs)).toBe(false);
++    expect(await inputs()).toEqual([]);
++  });
++
++  it('plays from every source but the Field Seq ones when none is named, and an instrument by name to the device', { timeout: 30_000 }, async () => {
++    const lines = await playLive(['creek/track:keys', 'pad'], [], async () => {});
++    expect(lines.slice(0, 2)).toEqual([
++      'voice  keys (juno) · from every MIDI source but the Field Seq ones → voice:creek/keys',
++      'voice  pad · from every MIDI source but the Field Seq ones → the device',
++    ]);
++    const handed = JSON.parse(readFileSync(log, 'utf8'));
++    expect(handed.instruments.map((i: { sources?: string[] }) => i.sources)).toEqual([undefined, undefined]);
++    expect(handed.rings).toEqual([expect.any(Number), null]);
++  });
++
++  it('says why the voice host did not start, and leaves no input open', { timeout: 30_000 }, async () => {
++    await expect(
++      scVoice(['creek/track:keys'], { source: ['Nowhere'] }, { cwd: root, env: { ...env, STUB_FAIL: '1' }, print: () => {} }),
++    ).rejects.toThrow('the voice host did not start: no MIDI source named Nowhere; the sources are Field Keys');
++    expect(await inputs()).toEqual([]);
++  });
++
++  it('names itself when a target does not resolve', async () => {
++    createTrack(root, 'creek', 'drums');
++    await expect(scVoice(['creek/track:drums'], { source: [] }, { cwd: root, env, print: () => {} })).rejects.toThrow(
++      /^field sc voice creek\/track:drums: no instrument there/,
++    );
++  });
++});
++
++// With no project there is no daemon to ask for the system output, and
++// scsynth given no device opens the microphone (keyboard-instrument.md
++// §10.1), so the voice names what `field-audiod --keys` reports.
++const REFUSED_LINE = `@field ${JSON.stringify({ error: "the MIDI client did not start: Primitive '_InitMIDI' failed.\nFailed." })}`;
++
++const HELPER_STUB = `#!/usr/bin/env node
++const { writeFileSync } = require('node:fs');
++console.log(JSON.stringify({ ready: true, name: process.argv[3], output: 'Stub Out' }));
++process.stdin.resume();
++process.stdin.on('end', () => {
++  writeFileSync(process.env.STUB_HELPER_CLOSED, '');
++  process.exit(0);
++});
++`;
++
++describe.skipIf(process.platform === 'win32')('field sc voice outside a project', () => {
++  let dir: string;
++  const saved = { audiod: process.env['FIELD_AUDIOD'], closed: process.env['STUB_HELPER_CLOSED'] };
++  const restore = (name: string, value: string | undefined): void => {
++    if (value === undefined) delete process.env[name];
++    else process.env[name] = value;
++  };
++
++  beforeEach(() => {
++    dir = mkdtempSync(join(tmpdir(), 'field-sc-voice-bare-'));
++    for (const [name, text] of [['sclang', STUB], ['field-audiod', HELPER_STUB]] as const) {
++      writeFileSync(join(dir, name), text);
++      chmodSync(join(dir, name), 0o755);
++    }
++    writeFileSync(join(dir, 'pad.scd'), '// a voice\n');
++    process.env['FIELD_AUDIOD'] = join(dir, 'field-audiod');
++    process.env['STUB_HELPER_CLOSED'] = join(dir, 'helper-closed');
++  });
++  afterEach(() => {
++    restore('FIELD_AUDIOD', saved.audiod);
++    restore('STUB_HELPER_CLOSED', saved.closed);
++    rmSync(dir, { recursive: true, force: true });
++  });
++
++  async function hostHandedFor(platform: NodeJS.Platform = process.platform): Promise<{ device: string | null; helperClosed: boolean | null }> {
++    const log = join(dir, 'host.json');
++    let quit!: () => void;
++    const until = new Promise<void>((resolve) => {
++      quit = resolve;
++    });
++    const lines: string[] = [];
++    const running = scVoice(
++      ['./pad.scd'],
++      { source: [] },
++      { cwd: dir, env: { ...process.env, FIELD_SCLANG: join(dir, 'sclang'), STUB_LOG: log }, until, platform, print: (line) => lines.push(line) },
++    );
++    for (let i = 0; i < 100 && !lines.some((l) => l.includes(' live at ')); i++) await sleep(50);
++    quit();
++    await running;
++    return JSON.parse(readFileSync(log, 'utf8'));
++  }
++
++  it('names the output the helper reports, and closes the helper before the host starts', { timeout: 30_000 }, async () => {
++    expect(await hostHandedFor()).toMatchObject({ device: 'Stub Out', helperClosed: true });
++  });
++
++  // A stand-in sclang whose first `refusals` starts report a refused MIDI
++  // client and exit, and which then behaves as STUB does.
++  const refusedHost = (refusals: number): string => `#!/usr/bin/env node
++const { appendFileSync, existsSync, readFileSync } = require('node:fs');
++const starts = ${JSON.stringify(join(dir, 'host-starts'))};
++const before = existsSync(starts) ? readFileSync(starts, 'utf8').length : 0;
++appendFileSync(starts, '.');
++if (before < ${refusals}) {
++  process.stdout.write('Could not create MIDI client. error: ');
++  console.log(${JSON.stringify(REFUSED_LINE)});
++  process.exit(1);
++}
++${STUB.replace('#!/usr/bin/env node\n', '')}`;
++
++  async function voiceOn(platform: NodeJS.Platform): Promise<{ device: string | null }> {
++    const log = join(dir, 'host.json');
++    let quit!: () => void;
++    const until = new Promise<void>((resolve) => {
++      quit = resolve;
++    });
++    const lines: string[] = [];
++    const running = scVoice(
++      ['./pad.scd'],
++      { source: [], device: 'Given Out' },
++      { cwd: dir, env: { ...process.env, FIELD_SCLANG: join(dir, 'sclang'), STUB_LOG: log }, until, platform, print: (line) => lines.push(line) },
++    );
++    const settled = running.then(
++      () => true,
++      () => true,
++    );
++    for (let i = 0; i < 100 && !lines.some((l) => l.includes(' live at ')) && !(await Promise.race([settled, sleep(50).then(() => false)])); i++);
++    quit();
++    await running;
++    return JSON.parse(readFileSync(log, 'utf8'));
++  }
++
++  it('starts the host once more when macOS refuses it a MIDI client', { timeout: 30_000 }, async () => {
++    writeFileSync(join(dir, 'sclang'), refusedHost(1));
++    expect(await voiceOn('darwin')).toMatchObject({ device: 'Given Out' });
++    expect(readFileSync(join(dir, 'host-starts'), 'utf8')).toBe('..');
++  });
++
++  it('stops with the reason when macOS refuses a new host too', { timeout: 30_000 }, async () => {
++    writeFileSync(join(dir, 'sclang'), refusedHost(2));
++    const error: Error = await voiceOn('darwin').then(
++      () => new Error('it started'),
++      (reason: Error) => reason,
++    );
++    expect(error.message).toBe("the voice host did not start: the MIDI client did not start: Primitive '_InitMIDI' failed.\nFailed.");
++    expect(readFileSync(join(dir, 'host-starts'), 'utf8')).toBe('..');
++  });
++
++  it('shows no raw protocol when the host dies on a status line it cannot parse', { timeout: 30_000 }, async () => {
++    writeFileSync(join(dir, 'sclang'), `#!/usr/bin/env node\nconsole.log('Could not create MIDI client. error: @field {not json');\nprocess.exit(1);\n`);
++    const error: Error = await voiceOn('linux').then(
++      () => new Error('it started'),
++      (reason: Error) => reason,
++    );
++    expect(error.message).toBe('the voice host did not start: sclang exited with code 1 before the voice host was ready');
++  });
++
++  it('does not start the host again off macOS', { timeout: 30_000 }, async () => {
++    writeFileSync(join(dir, 'sclang'), refusedHost(1));
++    await expect(voiceOn('linux')).rejects.toThrow('the MIDI client did not start');
++    expect(readFileSync(join(dir, 'host-starts'), 'utf8')).toBe('.');
++  });
++
++  it('starts the host with no device off macOS when the helper cannot start', { timeout: 30_000 }, async () => {
++    writeFileSync(join(dir, 'field-audiod'), '#!/usr/bin/env node\nprocess.exit(1);\n');
++    expect(await hostHandedFor('linux')).toMatchObject({ device: null });
++  });
++
++  it('stops on macOS when the helper cannot start, and starts it only once', { timeout: 30_000 }, async () => {
++    const starts = join(dir, 'helper-starts');
++    writeFileSync(
++      join(dir, 'field-audiod'),
++      `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(starts)}, '.');\nprocess.exit(1);\n`,
++    );
++    await expect(
++      scVoice(['./pad.scd'], { source: [] }, { cwd: dir, env: { ...process.env, FIELD_SCLANG: join(dir, 'sclang'), STUB_LOG: join(dir, 'host.json') }, platform: 'darwin', print: () => {} }),
++    ).rejects.toThrow('To start without it, name the output with --device');
++    expect(readFileSync(starts, 'utf8')).toBe('.');
++    expect(existsSync(join(dir, 'host.json'))).toBe(false);
++  });
++
++  // What a helper prints when macOS refuses it a MIDI client, for the first
++  // `refusals` starts.
++  const refusedHelper = (refusals: number): string => `#!/usr/bin/env node
++const { appendFileSync, existsSync, readFileSync } = require('node:fs');
++const starts = ${JSON.stringify(join(dir, 'helper-starts'))};
++const before = existsSync(starts) ? readFileSync(starts, 'utf8').length : 0;
++appendFileSync(starts, '.');
++if (before < ${refusals}) {
++  console.log(JSON.stringify({ error: 'cannot create a virtual MIDI source named ' + process.argv[3] + ' on this system' }));
++  process.exit(1);
++}
++${HELPER_STUB.replace('#!/usr/bin/env node\n', '')}`;
++
++  it('starts a new helper when macOS refuses one a MIDI client, and names the output', { timeout: 30_000 }, async () => {
++    writeFileSync(join(dir, 'field-audiod'), refusedHelper(1));
++    expect(await hostHandedFor('darwin')).toMatchObject({ device: 'Stub Out', helperClosed: true });
++    expect(readFileSync(join(dir, 'helper-starts'), 'utf8')).toBe('..');
++  });
++
++  it('stops with the error and what to do rather than start the host with no device when macOS refuses a new helper too', { timeout: 30_000 }, async () => {
++    writeFileSync(join(dir, 'field-audiod'), refusedHelper(2));
++    await expect(
++      scVoice(['./pad.scd'], { source: [] }, { cwd: dir, env: { ...process.env, FIELD_SCLANG: join(dir, 'sclang'), STUB_LOG: join(dir, 'host.json') }, platform: 'darwin', print: () => {} }),
++    ).rejects.toThrow('cannot create a virtual MIDI source named Field Voice on this system: run the command again, or name the output with --device');
++    expect(existsSync(join(dir, 'host.json'))).toBe(false);
++  });
++});
++
++// `field sc notes` (sequencer.md §2.8) through real sclang.
++describe('field sc notes', () => {
++  let dir: string;
++  beforeEach(() => {
++    dir = mkdtempSync(join(tmpdir(), 'field-sc-notes-'));
++  });
++  afterEach(() => rmSync(dir, { recursive: true, force: true }));
++
++  const program = (name: string, notes: string): string => {
++    const path = join(dir, name);
++    writeFileSync(path, `if ("FIELD_MODE".getenv == "notes") {\n\t${notes}\n} {\n\t0.exit\n}\n`);
++    return path;
++  };
++
++  it('refuses a program that is not there before it starts sclang', async () => {
++    await expect(scNotes(join(dir, 'missing.scd'), { seed: 1, beats: 4 })).rejects.toThrow(`no program at ${join(dir, 'missing.scd')}`);
++  });
++
++  describe.skipIf(sclang === undefined)('through real sclang', () => {
++    it('writes the same bytes for the same seed, as a formatted part the notes schema takes', { timeout: 60_000 }, async () => {
++      const groove = program(
++        'groove.scd',
++        'Pbind(\\midinote, Pseq([36, Prand([43, 46, 48], 1)], inf), \\dur, 0.5, \\amp, Pwhite(0.5, 0.9))',
++      );
++      const first = await scNotes(groove, { seed: 4, beats: 8 });
++      expect(await scNotes(groove, { seed: 4, beats: 8 })).toBe(first);
++      expect(await scNotes(groove, { seed: 5, beats: 8 })).not.toBe(first);
++      expect(first.split('\n')[0]).toBe(`# field sc notes ${groove} --seed 4 --beats 8`);
++      const part = notesFileSchema.parse(parse(first));
++      expect(part.length).toBe(8 * 960);
++      expect(part.notes).toHaveLength(16);
++      // field check finds it formatted, so it goes into songs/<song>/notes/ as is.
++      expect(canonicalText(first, notesFileOrder)).toBe(first);
++    });
++
++    it('writes each note of a chord, its channel, its length, and its velocity from amp, and stops at the last beat', { timeout: 60_000 }, async () => {
++      const chords = program(
++        'chords.scd',
++        'Pbind(\\midinote, Pseq([60, [64, 67], Rest(), 72], 1), \\dur, Pseq([0.5, 1, 0.5, 4], 1), \\legato, 1, \\amp, Pseq([1, 0.5, 0.5, 0.25], 1), \\chan, Pseq([0, 1, 0, 0], 1))',
++      );
++      expect(await scNotes(chords, { seed: 1, beats: 3 })).toBe(
++        [
++          `# field sc notes ${chords} --seed 1 --beats 3`,
++          'length: 2880',
++          'notes:',
++          '  - {at: 0, length: 480, note: 60, velocity: 127}',
++          '  - {at: 480, length: 960, note: 64, velocity: 64, channel: 2}',
++          '  - {at: 480, length: 960, note: 67, velocity: 64, channel: 2}',
++          '  - {at: 1920, length: 3840, note: 72, velocity: 32}',
++          'controls: []',
++          'bends: []',
++          '',
++        ].join('\n'),
++      );
++    });
++
++    it('reads the pitch a pattern sounds, however it spells it', { timeout: 60_000 }, async () => {
++      const pitches = async (name: string, notes: string): Promise<number[]> => {
++        const part = notesFileSchema.parse(parse(await scNotes(program(name, notes), { seed: 1, beats: 2 })));
++        return part.notes.map((n) => n.note as number);
++      };
++      expect(await pitches('freq.scd', 'Pbind(\\freq, Pseq([440, 880], 1), \\dur, 0.5)')).toEqual([69, 81]);
++      expect(await pitches('ctranspose.scd', 'Pbind(\\note, 0, \\ctranspose, 12, \\dur, 2)')).toEqual([72]);
++      expect(await pitches('harmonic.scd', 'Pbind(\\midinote, 60, \\harmonic, 2, \\dur, 2)')).toEqual([72]);
++      expect(await pitches('chord.scd', 'Pbind(\\freq, [440, 880], \\dur, 2)')).toEqual([69, 81]);
++    });
++
++    it('says what went wrong in a pattern that fails while it plays, without waiting for the timeout', { timeout: 30_000 }, async () => {
++      await expect(
++        scNotes(program('fails.scd', 'Pbind(\\midinote, Pseq([60, Pfunc { nil.frobnicate }], 1), \\dur, 1)'), { seed: 1, beats: 4 }),
++      ).rejects.toThrow(/fails\.scd's pattern failed at beat 1\.0: ERROR: Message 'frobnicate' not understood/);
++    });
++
++    it('refuses a negative dur, which would write a note before the part starts', { timeout: 60_000 }, async () => {
++      await expect(
++        scNotes(program('backward.scd', 'Pbind(\\midinote, 60, \\dur, Pseq([-1, 1, 1], 1))'), { seed: 1, beats: 4 }),
++      ).rejects.toThrow("backward.scd's pattern has an event at beat 0 whose dur is -1");
++    });
++
++    it('says why a program that answers no pattern cannot write a part', { timeout: 60_000 }, async () => {
++      await expect(scNotes(program('flat.scd', '42'), { seed: 1, beats: 4 })).rejects.toThrow(
++        'flat.scd does not answer FIELD_MODE=notes: in notes mode its value must be a Pattern',
++      );
++      await expect(scNotes(program('high.scd', 'Pbind(\\midinote, 200)'), { seed: 1, beats: 1 })).rejects.toThrow(
++        "the pattern plays note 200 at beat 0, outside MIDI's 0 to 127",
++      );
++    });
++  });
++});
+diff --git a/src/commands/sc.ts b/src/commands/sc.ts
+new file mode 100644
+index 00000000..f1003bb1
+--- /dev/null
++++ b/src/commands/sc.ts
+@@ -0,0 +1,251 @@
++import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { basename, extname, join, resolve } from 'node:path';
++import { z } from 'zod';
++import { AudiodClient } from '../audiod/client.js';
++import { liveInputName } from '../audiod/live-inputs.js';
++import { PPQ } from '../constants.js';
++import { runScProgram, runSclang, scScript } from '../generators/supercollider.js';
++import { KeysHelper } from '../keys/helper.js';
++import { resolveKeysTargets, type ArmedInstrument } from '../keys/targets.js';
++import { findProjectRoot, loadProject } from '../model/project.js';
++import { KnobFiles, loadKnobSources } from '../sc/voice/knob-files.js';
++import { routeVoices, type Routing } from '../sc/voice/routing.js';
++import { startVoices } from '../sc/voice/start.js';
++import { formatNotesFile, type TimedNotes } from '../schema/notes.js';
++import { armedName, instrumentState, instrumentText } from './keys.js';
++
++// `field sc render`: a program straight to a WAV, uncached, for
++// iteration. A supercollider: entry is the cached form.
++export async function scRender(
++  program: string,
++  options: { seed: number; duration: number; channels: number; output?: string },
++): Promise<string> {
++  const root = findProjectRoot(process.cwd());
++  const sampleRate = (root !== undefined ? loadProject(root).manifest?.data.sample_rate : undefined) ?? 48000;
++  const output = resolve(options.output ?? `${basename(program, extname(program))}.wav`);
++  await runScProgram(resolve(program), output, {
++    seed: options.seed,
++    duration: options.duration,
++    channels: options.channels,
++    sampleRate,
++  });
++  if (!existsSync(output)) throw new Error('sc program exited without writing FIELD_OUTPUT');
++  return `rendered ${output} (seed ${options.seed}, ${options.duration}s @ ${sampleRate} Hz)`;
++}
++
++export interface ScVoiceOptions {
++  // The MIDI sources every voice plays from, by name; none means every
++  // source but the Field Seq ones (sequencer.md §2.6).
++  source: string[];
++  device?: string;
++}
++
++// What a test hands `field sc voice` in place of the process's own.
++export interface ScVoiceContext {
++  cwd?: string;
++  env?: NodeJS.ProcessEnv;
++  // Settles when it should quit; otherwise Ctrl-C, SIGTERM, or SIGHUP.
++  until?: Promise<void>;
++  print?: (line: string) => void;
++  platform?: NodeJS.Platform;
++}
++
++// `field sc voice` (sequencer.md §2.6): the targets' voices, as field keys
++// plays them, from the MIDI sources named, with no keyboard. Each track's
++// voice goes into the daemon as `voice:<song>/<track>`. It runs until it
++// is told to quit, then closes its voices and inputs.
++export async function scVoice(targets: string[], options: ScVoiceOptions, context: ScVoiceContext = {}): Promise<void> {
++  const cwd = context.cwd ?? process.cwd();
++  const env = context.env ?? process.env;
++  const print = context.print ?? ((line: string) => process.stdout.write(`${line}\n`));
++  const platform = context.platform ?? process.platform;
++  const voices = resolveKeysTargets(targets, cwd, 'field sc voice');
++  const root = findProjectRoot(cwd);
++  // Every knob file is checked before anything starts.
++  const knobFiles = new KnobFiles(loadKnobSources(voices, [], root));
++
++  let quitting = false;
++  let onSignal!: () => void;
++  const stopped = new Promise<undefined>((resolveStopped) => {
++    onSignal = () => {
++      quitting = true;
++      resolveStopped(undefined);
++    };
++  });
++  if (context.until !== undefined) void context.until.then(onSignal);
++  else for (const signal of SIGNALS) process.on(signal, onSignal);
++
++  let routing: Routing | undefined;
++  try {
++    const device = options.device !== undefined ? { device: options.device } : {};
++    const routed = root !== undefined ? await routeVoices(voices, root, { kind: 'voice', env, ...device }) : undefined;
++    routing = routed !== undefined && 'programs' in routed ? routed : undefined;
++    // Quit while the daemon answered: nothing has started yet.
++    if (quitting) return;
++    for (const voice of voices) print(voiceLine(voice, routing !== undefined, options.source));
++    const state = instrumentState(voices, routing !== undefined, routed !== undefined && 'reason' in routed ? routed.reason : undefined)!;
++    // A routed voice is heard on the daemon's device, so it is made there.
++    const output = routing !== undefined ? routing.device : (options.device ?? (await systemOutput(root, platform)));
++    const programs = routing?.programs ?? [...new Set(voices.map((v) => v.program))];
++    const run = async (): Promise<Error | undefined> => {
++      let hostStopped!: (error: Error) => void;
++      const stoppedOnItsOwn = new Promise<Error>((resolveStopped) => {
++        hostStopped = resolveStopped;
++      });
++      const host = await startVoices({
++        instruments: programs,
++        knobs: knobFiles.copies,
++        ...(options.source.length > 0 ? { sources: programs.map(() => options.source) } : {}),
++        ...(output !== undefined ? { device: output } : {}),
++        env,
++        routing,
++        state,
++        changed: () => {
++          if (!quitting) print(instrumentText(state));
++        },
++        stop: hostStopped,
++      });
++      const stopWatchingPrograms = host.reloadOnSave();
++      const stopWatchingKnobs = knobFiles.watch((path, result, reload) => {
++        if ('error' in result) print(`knobs not reloaded: ${knobFiles.errors.get(path)}`);
++        if (reload) void host.reload();
++      });
++      const error = await Promise.race([stopped, stoppedOnItsOwn]);
++      stopWatchingPrograms();
++      stopWatchingKnobs();
++      // A host still booting closes too: quitting never waits for it.
++      await host.close();
++      return error;
++    };
++    // macOS can refuse a new process its MIDI client, and a new process
++    // clears that. field keys keeps its helper's client alive beside the
++    // host, which keeps that from happening, and this command does not.
++    let error = await run();
++    if (platform === 'darwin' && !quitting && error !== undefined && /the MIDI client did not start/.test(error.message)) error = await run();
++    if (error !== undefined) throw error;
++  } finally {
++    for (const signal of SIGNALS) process.removeListener(signal, onSignal);
++    await routing?.close();
++    knobFiles.remove();
++  }
++}
++
++const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
++
++// One voice, the sources it plays from, and where it goes.
++function voiceLine(voice: ArmedInstrument, routed: boolean, sources: string[]): string {
++  const from = sources.length > 0 ? sources.join(', ') : 'every MIDI source but the Field Seq ones';
++  const [song, track] = voice.track?.split('/') ?? [];
++  const to = routed && song !== undefined && track !== undefined ? liveInputName('voice', song, track) : 'the device';
++  return `voice  ${armedName(voice)} · from ${from} → ${to}`;
++}
++
++// The system output, as the daemon lists it or, with no daemon to answer,
++// as `field-audiod --keys` reports it. scsynth given no device opens the
++// default input as well, and waits on the microphone permission
++// (keyboard-instrument.md §10.1), so a voice that plays straight to the
++// device names its output.
++async function systemOutput(root: string | undefined, platform: NodeJS.Platform): Promise<string | undefined> {
++  return (root !== undefined ? await daemonOutput(root) : undefined) ?? (await helperOutput(platform));
++}
++
++async function daemonOutput(root: string): Promise<string | undefined> {
++  try {
++    const client = await AudiodClient.connect(root);
++    try {
++      return (await client.devices()).devices.find((d) => d.default)?.name;
++    } finally {
++      client.close();
++    }
++  } catch {
++    return undefined;
++  }
++}
++
++// The helper publishes a MIDI source while it runs, so it closes before
++// the host lists the sources. Off macOS, a helper that fails leaves the
++// host with no device, because scsynth then waits on nothing. On macOS it
++// would open the default input and wait on the microphone permission, so
++// any failure stops here. macOS can refuse a new process its MIDI client,
++// and a new process clears that, so a refused helper starts once more.
++async function helperOutput(platform: NodeJS.Platform): Promise<string | undefined> {
++  const output = async (): Promise<string | undefined> => {
++    const helper = await KeysHelper.start('Field Voice');
++    await helper.close();
++    return helper.defaultOutput;
++  };
++  try {
++    return await output();
++  } catch (error) {
++    if (platform !== 'darwin') return undefined;
++    if (!/cannot create a virtual MIDI source/.test(String(error))) {
++      throw new Error(`${(error as Error).message}. To start without it, name the output with --device`);
++    }
++  }
++  try {
++    return await output();
++  } catch (error) {
++    throw new Error(`${(error as Error).message}: run the command again, or name the output with --device`);
++  }
++}
++
++// What sc/notes-render.scd writes: each note as the pattern spelled it.
++const patternNotes = z.object({
++  notes: z.array(z.tuple([z.number(), z.number(), z.number(), z.number(), z.number()])),
++});
++
++// `field sc notes` (sequencer.md §2.8): the pattern a program answers
++// under FIELD_MODE=notes, played under the seed for `beats` quarter notes
++// with no server, as a part in ticks. Its first line names the command,
++// so the same command writes the same bytes.
++export async function scNotes(program: string, options: { seed: number; beats: number }): Promise<string> {
++  const path = resolve(program);
++  if (!existsSync(path)) throw new Error(`field sc notes ${program}: no program at ${path}`);
++  const dir = mkdtempSync(join(tmpdir(), 'field-sc-notes-'));
++  try {
++    const output = join(dir, 'notes.json');
++    await runSclang(
++      scScript('notes-render.scd'),
++      {
++        ...process.env,
++        FIELD_MODE: 'notes',
++        FIELD_PROGRAM: path,
++        FIELD_SEED: String(options.seed),
++        FIELD_BEATS: String(options.beats),
++        FIELD_OUTPUT: output,
++      },
++      120_000,
++      program,
++    );
++    if (!existsSync(output)) throw new Error(`sclang exited without writing the notes of ${program}`);
++    const { notes } = patternNotes.parse(JSON.parse(readFileSync(output, 'utf8')));
++    const command = `field sc notes ${shellWord(program)} --seed ${options.seed} --beats ${options.beats}`;
++    return `# ${command}\n${formatNotesFile(partFrom(notes, options.beats, program))}`;
++  } finally {
++    rmSync(dir, { recursive: true, force: true });
++  }
++}
++
++// A pattern counts in quarter notes and its `chan` from 0. A note's
++// velocity is its `amp` times 127, as the voice host plays a velocity at
++// `amp` velocity / 127, so a part plays back at the pattern's level.
++function partFrom(rows: z.infer<typeof patternNotes>['notes'], beats: number, program: string): TimedNotes {
++  const ticks = (beat: number): number => Math.round(beat * PPQ);
++  const notes = rows.map(([beat, sustain, midinote, amp, chan]) => {
++    const note = Math.round(midinote);
++    const channel = Math.round(chan) + 1;
++    if (note < 0 || note > 127) throw new Error(`${program}: the pattern plays note ${note} at beat ${beat}, outside MIDI's 0 to 127`);
++    if (channel < 1 || channel > 16) throw new Error(`${program}: the pattern plays on chan ${chan} at beat ${beat}, outside MIDI's 0 to 15`);
++    const at = ticks(beat);
++    const velocity = Math.min(127, Math.max(1, Math.round(amp * 127)));
++    return { at, length: Math.max(0, ticks(beat + sustain) - at), note, velocity, ...(channel !== 1 ? { channel } : {}) };
++  });
++  notes.sort((a, b) => a.at - b.at || a.note - b.note || (a.channel ?? 1) - (b.channel ?? 1));
++  return { length: ticks(beats), notes, controls: [], bends: [] };
++}
++
++// A word as a shell reads it back: quoted only when it has to be.
++function shellWord(word: string): string {
++  return /^[\w./-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`;
++}
+diff --git a/src/generators/supercollider.ts b/src/generators/supercollider.ts
+index d5944935..8fc5964a 100644
+--- a/src/generators/supercollider.ts
++++ b/src/generators/supercollider.ts
+@@ -188,14 +188,20 @@ export async function runScProgram(
+   // but the schema admits hour-long renders, and the ceiling exists to catch
+   // hangs, not to race legitimate work.
+   const timeout = params.timeoutMs ?? Math.max(180_000, 60_000 + params.duration * 10_000);
++  await runSclang(programPath, env, timeout);
++}
++
++// Runs sclang on `script`, and throws with what it printed when it fails
++// or outlives `timeoutMs`, naming `program`, the user's program, which
++// may be one that `script` runs.
++export async function runSclang(script: string, env: NodeJS.ProcessEnv, timeoutMs: number, program = script): Promise<void> {
+   // scsynth prints a line per score bundle in NRT, about 20 bytes, so a
+   // long take's render outgrows Node's 1 MiB default and is killed.
+-  const options = { env, timeout, maxBuffer: 64 * 1024 * 1024 };
+-  const sclang = sclangCommand();
++  const options = { env, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 };
+   try {
+-    await execFileAsync(sclang, [programPath], options);
++    await execFileAsync(sclangCommand(), [script], options);
+   } catch (err) {
+-    throw formatScError(err as ExecError, programPath, timeout);
++    throw formatScError(err as ExecError, program, timeoutMs);
+   }
+ }
+ 
+diff --git a/src/graph/live.ts b/src/graph/live.ts
+index 16fdb274..0a3f3c91 100644
+--- a/src/graph/live.ts
++++ b/src/graph/live.ts
+@@ -42,6 +42,7 @@ import { wavFrameCount } from '../audio/wav.js';
+ import { SESSION_VERSION, insertGrowth, insertLatency, type Session, type SessionInsert, type SessionTrack } from '../audiod/session.js';
+ import { formatLabel } from '../labels.js';
+ import { formatDiagnostic, loadProject, projectPath } from '../model/project.js';
++import { leaveOutNotes } from '../model/live-notes.js';
+ import { applySolo } from '../model/solo.js';
+ import type { SpecInsert } from '../generators/stem.js';
+ import { toPluginWire } from '../audio/plugins.js';
+@@ -123,7 +124,8 @@ export interface CompiledSession {
+ }
+ 
+ // A live input to attach (live-supercollider.md §2): the window named
+-// `input` goes on `track`, and the daemon feeds it.
++// `input` goes on `track`, and the daemon feeds it. A `seq:` input also
++// leaves out the track's notes renders (model/live-notes.ts).
+ export interface SessionInput {
+   track: string;
+   input: string;
+@@ -152,6 +154,10 @@ export async function compileSession(
+   // above on the real project, so a red project refuses identically
+   // soloed or not.
+   if (options.solo !== undefined) applySolo(song, options.solo);
++  // An input named `seq:<song>/<track>` (audiod/live-inputs.ts) says the
++  // track's notes play live through it.
++  const liveNotes = (options.inputs ?? []).filter(({ input }) => input.startsWith('seq:')).map(({ track }) => track);
++  leaveOutNotes(song, new Set(liveNotes));
+   const graph: Graph = buildGraph(project);
+ 
+   // The song's track nodes, keyed by name; their deps aligned to sources.
+diff --git a/src/keys/helper.ts b/src/keys/helper.ts
+index d709c13e..7eb10b9c 100644
+--- a/src/keys/helper.ts
++++ b/src/keys/helper.ts
+@@ -95,7 +95,7 @@ export class KeysHelper {
+ function requireDaemon(): string {
+   const binary = daemonBinary();
+   if (binary === undefined) {
+-    throw new Error(`field keys needs field-audiod, which is not built (${BUILD_DAEMON}, or set FIELD_AUDIOD)`);
++    throw new Error(`field-audiod is not built (${BUILD_DAEMON}, or set FIELD_AUDIOD)`);
+   }
+   return binary;
+ }
+diff --git a/src/keys/routing-voice.test.ts b/src/keys/routing-voice.test.ts
+deleted file mode 100644
+index c971c2b0..00000000
+--- a/src/keys/routing-voice.test.ts
++++ /dev/null
+@@ -1,113 +0,0 @@
+-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+-import { copyFileSync, mkdtempSync, writeFileSync } from 'node:fs';
+-import { tmpdir } from 'node:os';
+-import { dirname, join } from 'node:path';
+-import { createInterface } from 'node:readline';
+-import { fileURLToPath } from 'node:url';
+-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+-import { AudiodClient, daemonBinary } from '../audiod/client.js';
+-import { createSong, createTrack } from '../commands/create.js';
+-import { init } from '../commands/init.js';
+-import { sclangCommand } from '../generators/supercollider.js';
+-import { removeTempProject } from '../testing/temp.js';
+-import { routeArmed, type Routing } from './routing.js';
+-import { fieldOutPluginDir, VoiceHost } from './voice-host.js';
+-
+-// The whole path of live-supercollider.md chunk 3 through real programs:
+-// a track routed into the daemon, the voice host on sclang and scsynth
+-// with FieldOut, and a note from a published MIDI source. The daemon must
+-// hear the note on the track's input. It needs SuperCollider, the built
+-// plugin, and an output device for scsynth, so it runs on a workstation.
+-
+-const binary = (() => {
+-  try {
+-    return daemonBinary();
+-  } catch {
+-    return undefined;
+-  }
+-})();
+-const sclang = (() => {
+-  try {
+-    return sclangCommand();
+-  } catch {
+-    return undefined;
+-  }
+-})();
+-const fieldOut = fieldOutPluginDir();
+-const bloomPad = join(dirname(fileURLToPath(import.meta.url)), '../../examples/bloom/shared/instruments/pad.scd');
+-
+-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+-
+-describe.skipIf(!binary || !sclang || !fieldOut || process.platform === 'win32')(
+-  'field keys through the effects, end to end',
+-  () => {
+-    let root: string;
+-    let routing: Routing | undefined;
+-    let host: VoiceHost | undefined;
+-    let keys: ChildProcessWithoutNullStreams | undefined;
+-
+-    beforeEach(() => {
+-      root = mkdtempSync(join(tmpdir(), 'field-routing-voice-'));
+-      process.env['FIELD_AUDIOD_NULL'] = '1';
+-      init({ dir: root, name: 'routing-voice' });
+-      copyFileSync(bloomPad, join(root, 'shared/instruments/pad.scd'));
+-      createSong(root, 'creek');
+-      createTrack(root, 'creek', 'bass');
+-      writeFileSync(join(root, 'songs/creek/tracks/bass.yaml'), 'name: bass\ninstrument: pad\ninputs:\n  - record:\n');
+-      writeFileSync(join(root, 'songs/creek/tracks/main.yaml'), 'name: main\ninputs:\n  - track: bass\n');
+-    });
+-    afterEach(async () => {
+-      keys?.kill('SIGKILL');
+-      await host?.close();
+-      await routing?.close();
+-      try {
+-        const client = await AudiodClient.connect(root);
+-        await client.quit();
+-        client.close();
+-      } catch {
+-        // never started
+-      }
+-      delete process.env['FIELD_AUDIOD_NULL'];
+-      await removeTempProject(root);
+-    });
+-
+-    it('carries a note from the voice host into the track\'s input in the daemon', { timeout: 90_000 }, async () => {
+-      // A MIDI source first, so the host connects it as it boots.
+-      const source = `Field Keys Routing ${process.pid}`;
+-      keys = spawn(binary!, ['--keys', source], { stdio: 'pipe' });
+-      await new Promise<void>((resolve, reject) => {
+-        const timer = setTimeout(() => reject(new Error('--keys was not ready in 5 s')), 5000);
+-        createInterface({ input: keys!.stdout }).on('line', (text) => {
+-          const line = JSON.parse(text) as Record<string, unknown>;
+-          if ('keyboard' in line) return;
+-          clearTimeout(timer);
+-          if ('error' in line) reject(new Error(String(line['error'])));
+-          else resolve();
+-        });
+-      });
+-
+-      const program = join(root, 'shared/instruments/pad.scd');
+-      routing = (await routeArmed([{ program, track: 'creek/bass', unheardEffects: [] }], root)) as Routing;
+-      expect(routing.rings[0]).toBeGreaterThan(0);
+-      host = await VoiceHost.start({ instruments: routing.programs, rings: routing.rings, fieldOut: routing.fieldOut });
+-      await host.ready;
+-
+-      const client = await AudiodClient.connect(root);
+-      try {
+-        // Stopped, so the idle path plays the input.
+-        expect((await client.status()).state).toBe('stopped');
+-        await client.status(); // clears the peak
+-        keys.stdin.write(`${JSON.stringify({ midi: [0x90, 60, 100] })}\n`);
+-        let loudest = 0;
+-        for (let i = 0; i < 30 && loudest < 0.01; i++) {
+-          await sleep(100);
+-          loudest = Math.max(loudest, (await client.status()).inputs![0]!.peak);
+-        }
+-        keys.stdin.write(`${JSON.stringify({ midi: [0x80, 60, 0] })}\n`);
+-        expect(loudest).toBeGreaterThan(0.01);
+-      } finally {
+-        client.close();
+-      }
+-    });
+-  },
+-);
+diff --git a/src/keys/targets.ts b/src/keys/targets.ts
+index fc97405a..4fdf8e2b 100644
+--- a/src/keys/targets.ts
++++ b/src/keys/targets.ts
+@@ -2,23 +2,23 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
+ import { extname, join } from 'node:path';
+ import { resolveRecordTarget } from '../commands/record.js';
+ import { findProjectRoot, loadProject, type LoadedSong } from '../model/project.js';
+-import { instrumentPath } from './voice-host.js';
++import { instrumentPath } from '../sc/voice/host.js';
+ 
+ // A bare instrument name resolves on the project's instruments shelf, as a
+ // supercollider: entry's source does; a path resolves from the project
+ // root, or from here outside a project (keyboard-instrument.md §2.1).
+-export function resolveInstrument(spec: string, cwd = process.cwd()): string {
++export function resolveInstrument(spec: string, cwd = process.cwd(), command = 'field keys'): string {
+   const root = findProjectRoot(cwd);
+   if (root === undefined && !spec.includes('/')) {
+     throw new Error(
+-      `field keys ${spec}: a bare instrument name resolves in a project's shared/instruments/, ` +
++      `${command} ${spec}: a bare instrument name resolves in a project's shared/instruments/, ` +
+         'and this is not inside a Field project; give the program by path instead',
+     );
+   }
+   const path = instrumentPath(spec, root ?? cwd);
+   if (!existsSync(path)) {
+     const shelf = root !== undefined ? `\n${describeShelf(root)}` : '';
+-    throw new Error(`field keys ${spec}: no instrument program at ${path}${shelf}`);
++    throw new Error(`${command} ${spec}: no instrument program at ${path}${shelf}`);
+   }
+   return path;
+ }
+@@ -56,9 +56,9 @@ function describeShelf(root: string): string {
+   return lines.join('\n');
+ }
+ 
+-// What `field keys` plays (arming.md §2.1): each instrument it was given
+-// by program, and each track with an instrument it was given or found
+-// under a track it was given, all at once.
++// What `field keys` and `field sc voice` play (arming.md §2.1): each
++// instrument given by program, and each track with an instrument given
++// or found under a track given, all at once.
+ export interface ArmedInstrument {
+   program: string; // absolute path to the instrument's program
+   track?: string; // the track it plays for, `song/track`
+@@ -74,8 +74,9 @@ export function isTrackTarget(target: string): boolean {
+ 
+ // A target with `track:` in it is a track; anything else is an
+ // instrument, by name or path, as keyboard-instrument.md §2.1 resolves
+-// one. Tracks need a project; instruments by path do not.
+-export function resolveKeysTargets(targets: string[], cwd = process.cwd()): ArmedInstrument[] {
++// one. Tracks need a project; instruments by path do not. Each error
++// starts with `command` and the target it is about.
++export function resolveKeysTargets(targets: string[], cwd = process.cwd(), command = 'field keys'): ArmedInstrument[] {
+   // One entry per track, or per program given as an instrument; a track
+   // reached through several targets keeps the effects of every one.
+   const armed = new Map<string, ArmedInstrument>();
+@@ -87,24 +88,24 @@ export function resolveKeysTargets(targets: string[], cwd = process.cwd()): Arme
+   };
+   for (const target of targets) {
+     if (!isTrackTarget(target)) {
+-      add({ program: resolveInstrument(target, cwd), unheardEffects: [] });
++      add({ program: resolveInstrument(target, cwd, command), unheardEffects: [] });
+       continue;
+     }
+     const root = findProjectRoot(cwd);
+-    if (root === undefined) throw new Error(`field keys ${target}: a track resolves inside a Field project`);
++    if (root === undefined) throw new Error(`${command} ${target}: a track resolves inside a Field project`);
+     const { song: songName, track } = resolveRecordTarget(root, target);
+     const project = loadProject(root);
+     const song = project.songs.find((s) => s.name === songName)!;
+     const found = instrumentTracksUnder(song, track);
+     if (found.length === 0) {
+       throw new Error(
+-        `field keys ${target}: no instrument there — give the track one with \`instrument: <name>\`, ` +
++        `${command} ${target}: no instrument there — give the track one with \`instrument: <name>\`, ` +
+           'or name a track under it that has one',
+       );
+     }
+     if (found.length > 1) {
+       throw new Error(
+-        `field keys ${target}: ${found.length} tracks with instruments are under ${track}, and field keys ` +
++        `${command} ${target}: ${found.length} tracks with instruments are under ${track}, and ${command} ` +
+           `plays the ones you name: ${found.map((f) => `${songName}/track:${f.track}`).join(', ')}`,
+       );
+     }
+diff --git a/src/model/live-notes.test.ts b/src/model/live-notes.test.ts
+new file mode 100644
+index 00000000..c4dd5514
+--- /dev/null
++++ b/src/model/live-notes.test.ts
+@@ -0,0 +1,148 @@
++import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { afterEach, beforeEach, describe, expect, it } from 'vitest';
++import { writeWavFloat32 } from '../audio/wav.js';
++import type { MidiTake } from '../audiod/protocol.js';
++import { createSong, createTrack } from '../commands/create.js';
++import { importAsset } from '../commands/import.js';
++import { init } from '../commands/init.js';
++import { landMidiTake } from '../commands/land.js';
++import { compileSession } from '../graph/live.js';
++
++// The `seq:` claim (sequencer.md §3.6): compiled with `seq:creek/keys`
++// open, the session plays keys' notes live through the input, so it
++// leaves out the renders of its part and its MIDI take and keeps its
++// audio. A `keys:` input plays beside the renders.
++
++// A stand-in for sclang in the voice-render contract: a short silent WAV
++// at FIELD_OUTPUT, and a line in STUB_RUNS for each render.
++const STUB = `#!/usr/bin/env node
++const { appendFileSync, writeFileSync } = require('node:fs');
++appendFileSync(process.env.STUB_RUNS, process.env.FIELD_OUTPUT + '\\n');
++const rate = Number(process.env.FIELD_SAMPLE_RATE);
++const channels = Number(process.env.FIELD_CHANNELS);
++const data = Buffer.alloc(Math.round(Number(process.env.FIELD_DURATION) * rate) * channels * 2);
++const header = Buffer.alloc(44);
++header.write('RIFF', 0);
++header.writeUInt32LE(36 + data.length, 4);
++header.write('WAVEfmt ', 8);
++header.writeUInt32LE(16, 16);
++header.writeUInt16LE(1, 20);
++header.writeUInt16LE(channels, 22);
++header.writeUInt32LE(rate, 24);
++header.writeUInt32LE(rate * channels * 2, 28);
++header.writeUInt16LE(channels * 2, 32);
++header.writeUInt16LE(16, 34);
++header.write('data', 36);
++header.writeUInt32LE(data.length, 40);
++writeFileSync(process.env.FIELD_OUTPUT, Buffer.concat([header, data]));
++`;
++
++let root: string;
++let runs: string;
++const saved = { sclang: process.env['FIELD_SCLANG'], runs: process.env['STUB_RUNS'] };
++
++beforeEach(async () => {
++  root = mkdtempSync(join(tmpdir(), 'field-live-notes-'));
++  runs = join(root, 'runs.log');
++  const stub = join(root, 'sclang');
++  writeFileSync(stub, STUB);
++  chmodSync(stub, 0o755);
++  process.env['FIELD_SCLANG'] = stub;
++  process.env['STUB_RUNS'] = runs;
++
++  init({ dir: root, name: 'live-notes' });
++  createSong(root, 'creek');
++  createTrack(root, 'creek', 'keys');
++  writeFileSync(join(root, 'shared/instruments/pad.scd'), '// a voice\n');
++  mkdirSync(join(root, 'songs/creek/notes'));
++  writeFileSync(join(root, 'songs/creek/notes/riff.yaml'), 'notes:\n  - {at: [1], length: [0, 1], note: C3}\ncontrols: []\nbends: []\n');
++  const hit = join(root, 'hit.wav');
++  const tone = Float32Array.from({ length: 4800 }, (_, i) => 0.3 * Math.sin((2 * Math.PI * 220 * i) / 48000));
++  writeWavFloat32(hit, 48000, [tone, tone]);
++  await importAsset(root, 'creek', hit, 'hit');
++
++  writeFileSync(
++    join(root, 'songs/creek/tracks/keys.yaml'),
++    [
++      'name: keys',
++      'instrument: pad',
++      'inputs:',
++      '  - audio: hit',
++      '    at: [1]',
++      '  - id: verse',
++      '    notes: riff',
++      '    at: [2]',
++      '  - record:',
++      '',
++    ].join('\n'),
++  );
++  // A MIDI take on keys' record entry, chosen as it lands.
++  const id = 'take-20261016-101500';
++  const dir = join(root, '.field', 'recording', id);
++  mkdirSync(dir, { recursive: true });
++  writeFileSync(join(dir, 'take.midi.ndjson'), [{ at: 0, midi: [144, 60, 100] }, { at: 24000, midi: [128, 60, 0] }].map((l) => `${JSON.stringify(l)}\n`).join(''));
++  const take: MidiTake = {
++    id,
++    file: `.field/recording/${id}/take.midi.ndjson`,
++    track: '//songs/creek/track:keys',
++    song: 'creek',
++    kind: 'midi',
++    sources: ['Field Keys'],
++    sample_rate: 48000,
++    timeline_rate: 48000,
++    output_latency: 0,
++    started_at_samples: 96000,
++    started_wall: '2026-10-16T10:15:00.000-06:00',
++    daemon: '0.14.0',
++    complete: true,
++    frames: 48000,
++    events: 2,
++  };
++  await landMidiTake(root, take);
++});
++
++afterEach(() => {
++  for (const [name, value] of [['FIELD_SCLANG', saved.sclang], ['STUB_RUNS', saved.runs]] as const) {
++    if (value === undefined) delete process.env[name];
++    else process.env[name] = value;
++  }
++  rmSync(root, { recursive: true, force: true });
++});
++
++const renders = (): number => (existsSync(runs) ? readFileSync(runs, 'utf8').trim().split('\n').length : 0);
++
++async function keysInputs(input: string) {
++  const { session } = await compileSession(root, 'creek', { inputs: [{ track: 'keys', input }] });
++  return session.tracks.find((t) => t.name === 'keys')!.inputs;
++}
++
++// The stand-in is an extensionless script with a #! line, which Windows
++// cannot start, so sclangCommand refuses it there.
++describe.skipIf(process.platform === 'win32')('a seq: input at session compile', () => {
++  it("leaves out the track's notes renders and keeps its audio, where a keys: input keeps them all", async () => {
++    const live = await keysInputs('seq:creek/keys');
++    expect(renders()).toBe(0);
++    expect(live).toEqual([
++      expect.objectContaining({ file: expect.stringMatching(/^songs\/creek\/audio\/hit/) }),
++      { input: 'seq:creek/keys', gain_db: 0 },
++    ]);
++
++    const played = await keysInputs('keys:creek/keys');
++    // The part and the take, each rendered through pad.
++    expect(renders()).toBe(2);
++    expect(played).toHaveLength(4);
++    expect(played[0]).toEqual(live[0]);
++    expect(played.filter((i) => 'file' in i && !i.file.startsWith('songs/creek/audio/'))).toHaveLength(2);
++    expect(played.at(-1)).toEqual({ input: 'keys:creek/keys', gain_db: 0 });
++  });
++
++  it('claims only the track its input names', async () => {
++    createTrack(root, 'creek', 'bass');
++    writeFileSync(join(root, 'songs/creek/tracks/bass.yaml'), 'name: bass\ninstrument: pad\ninputs:\n  - notes: riff\n    at: [1]\n');
++    const { session } = await compileSession(root, 'creek', { inputs: [{ track: 'keys', input: 'seq:creek/keys' }] });
++    expect(session.tracks.find((t) => t.name === 'bass')!.inputs).toEqual([expect.objectContaining({ file: expect.any(String) })]);
++    expect(renders()).toBe(1);
++  });
++});
+diff --git a/src/model/live-notes.ts b/src/model/live-notes.ts
+new file mode 100644
+index 00000000..ff7a8665
+--- /dev/null
++++ b/src/model/live-notes.ts
+@@ -0,0 +1,21 @@
++import type { LoadedSong } from './project.js';
++
++// The `seq:` claim (sequencer.md §3.6): a track whose notes `field seq`
++// plays live, through a voice into the track's input, would play them
++// twice if its renders stayed. So the session leaves out each entry that
++// renders notes on the track, its parts and its record entry, and keeps
++// its audio. Like solo (model/solo.ts) it is a session-only change made
++// at compile, on a freshly loaded copy, and the files never change.
++//
++// A record entry on a track with an instrument records MIDI
++// (sequencer.md §3.4), and validation refuses an audio take there, so
++// every take it can choose renders notes.
++export function leaveOutNotes(song: LoadedSong, tracks: ReadonlySet<string>): void {
++  for (const track of song.tracks) {
++    if (!tracks.has(track.data.name)) continue;
++    const instrument = track.data.instrument;
++    track.data.inputs = track.data.inputs.filter(
++      (entry) => entry.notes === undefined && (entry.record === undefined || instrument === undefined),
++    );
++  }
++}
+diff --git a/src/keys/voice-host.test.ts b/src/sc/voice/host.test.ts
+similarity index 85%
+rename from src/keys/voice-host.test.ts
+rename to src/sc/voice/host.test.ts
+index 1af99a9a..b9bd91a2 100644
+--- a/src/keys/voice-host.test.ts
++++ b/src/sc/voice/host.test.ts
+@@ -2,8 +2,9 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
+ import { tmpdir } from 'node:os';
+ import { join, resolve } from 'node:path';
+ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+-import { resolveInstrument } from './targets.js';
+-import { freeUdpPort, instrumentPath, oscMessage, parseHostLine, VoiceHost, type VoiceHostStatus } from './voice-host.js';
++import { sclangCommand } from '../../generators/supercollider.js';
++import { resolveInstrument } from '../../keys/targets.js';
++import { freeUdpPort, instrumentPath, oscMessage, parseHostLine, VoiceHost, type VoiceHostStatus } from './host.js';
+ 
+ // A stand-in for sclang running the voice host: it records its
+ // environment, listens on the scsynth port it was given, records an OSC
+@@ -155,9 +156,14 @@ describe('the voice host protocol', () => {
+       device: 'Out',
+       sample_rate: 44100,
+     });
+-    expect(parseHostLine('@field {"voice_on":60}')).toEqual({ voice_on: 60 });
++    expect(parseHostLine('@field {"voice_on":60,"voice":1}')).toEqual({ voice_on: 60, voice: 1 });
+     expect(parseHostLine('Booting server on 127.0.0.1')).toBeUndefined();
+     expect(parseHostLine('@field {not json')).toBeUndefined();
++    // What real sclang prints when macOS refuses its MIDI client: the
++    // primitive ends no line, and the message has a newline in it.
++    expect(
++      parseHostLine('Could not create MIDI client. error: @field {"error":"the MIDI client did not start: Primitive \'_InitMIDI\' failed.\\nFailed."}'),
++    ).toEqual({ error: "the MIDI client did not start: Primitive '_InitMIDI' failed.\nFailed." });
+     expect(parseHostLine('@field {"surprise":1}')).toBeUndefined();
+   });
+ 
+@@ -247,6 +253,20 @@ describe('the voice host process', () => {
+     await host.close();
+   });
+ 
++  itStartsTheStub('hands each voice the MIDI sources it plays from, and a voice with none no list', async () => {
++    const host = await VoiceHost.start({
++      instruments: ['/p/juno.scd', '/p/pad.scd'],
++      sources: [['Field Keys', 'KeyStep 37'], null],
++      env: env('ready'),
++    });
++    await host.ready;
++    expect(JSON.parse(JSON.parse(readFileSync(`${log}.env`, 'utf8')).instruments)).toEqual([
++      { program: '/p/juno.scd', sources: ['Field Keys', 'KeyStep 37'] },
++      { program: '/p/pad.scd' },
++    ]);
++    await host.close();
++  });
++
+   itStartsTheStub('routes nothing when no instrument has a ring', async () => {
+     const host = await VoiceHost.start({ instruments: ['/p/pad.scd'], rings: [null], fieldOut: '/opt/fieldout', env: env('ready') });
+     await host.ready;
+@@ -334,3 +354,40 @@ describe('the voice host process', () => {
+     ).rejects.toThrow('FIELD_SCLANG points at a missing binary');
+   });
+ });
++
++const realSclang = (() => {
++  try {
++    return sclangCommand();
++  } catch {
++    return undefined;
++  }
++})();
++
++describe.skipIf(realSclang === undefined)('a voice host through real sclang', () => {
++  // The reason a host gives for a program that fails as it loads, starting
++  // again past a refused MIDI client, as field sc voice does.
++  async function reasonFor(text: string): Promise<string> {
++    const program = join(dir, 'failing.scd');
++    writeFileSync(program, text);
++    for (let attempt = 0; ; attempt++) {
++      const host = await VoiceHost.start({ instruments: [program], env: process.env });
++      const reason = await host.ready.then(
++        () => 'it went live',
++        (error: Error) => error.message,
++      );
++      await host.close();
++      if (attempt >= 8 || !/the MIDI client did not start/.test(reason)) return reason;
++    }
++  }
++
++  it.each([
++    ['a tab', 'Error("a\\tb").throw;\n', 'a\tb'],
++    ['a newline', 'Error("a\\nb").throw;\n', 'a\nb'],
++    ['a carriage return', 'Error("a\\rb").throw;\n', 'a\rb'],
++    ['a quote and a backslash', 'Error("a\\"b\\\\c").throw;\n', 'a"b\\c'],
++  ])('keeps the reason of a failure with %s in it', { timeout: 60_000 }, async (_what, text, kept) => {
++    const reason = await reasonFor(text);
++    expect(reason).toContain(`failed with ERROR: ${kept}`);
++    expect(reason).not.toContain('@field');
++  });
++});
+diff --git a/src/keys/voice-host.ts b/src/sc/voice/host.ts
+similarity index 82%
+rename from src/keys/voice-host.ts
+rename to src/sc/voice/host.ts
+index 7c70e773..766bea7b 100644
+--- a/src/keys/voice-host.ts
++++ b/src/sc/voice/host.ts
+@@ -6,7 +6,8 @@ import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
+ import { fileURLToPath } from 'node:url';
+ import { createInterface } from 'node:readline';
+ import { z } from 'zod';
+-import { instrumentProgram, sclangCommand, scScript } from '../generators/supercollider.js';
++import { instrumentProgram, sclangCommand, scScript } from '../../generators/supercollider.js';
++import { watchText } from '../../keys/watch.js';
+ import { oscMessage, routeSynthDef } from './synthdef.js';
+ 
+ export function voiceHostScript(): string {
+@@ -21,7 +22,7 @@ export function fieldOutPluginDir(env: NodeJS.ProcessEnv = process.env): string
+   const holds = (dir: string): boolean => ['FieldOut.scx', 'FieldOut.so'].some((name) => existsSync(join(dir, name)));
+   const override = env['FIELD_FIELDOUT'];
+   if (override !== undefined && override !== '') return holds(override) ? override : undefined;
+-  const built = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'native', 'sc-fieldout', 'build', 'plugins');
++  const built = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'native', 'sc-fieldout', 'build', 'plugins');
+   return holds(built) ? built : undefined;
+ }
+ 
+@@ -34,7 +35,7 @@ export function instrumentPath(spec: string, root: string): string {
+ }
+ 
+ // Field chooses scsynth's port so that it can send /quit itself, even
+-// after sclang has died (§2.6).
++// after sclang has died (keyboard-instrument.md §2.6).
+ export function freeUdpPort(): Promise<number> {
+   return new Promise((resolvePort, reject) => {
+     const socket = createSocket('udp4');
+@@ -79,34 +80,47 @@ const hostLine = z.union([
+   z.object({ restarting: z.literal(true) }),
+   z.object({ server_pid: z.number().int().positive() }),
+   z.object({ error: z.string() }),
+-  z.object({ voice_on: z.number() }),
+-  z.object({ voice_off: z.number() }),
++  z.object({ voice_on: z.number(), voice: z.number().int() }),
++  z.object({ voice_off: z.number(), voice: z.number().int() }),
+   z.object({ reloaded: z.literal(true) }),
+   z.object({ reload_error: z.string() }),
+ ]);
+ 
++const HOST_LINE = '@field ';
++
+ export type VoiceHostStatus =
+   | { state: 'live'; device: string; sampleRate: number }
+   | { state: 'restarting' }
+-  | { state: 'voice'; note: number; on: boolean }
+-  // The program was loaded again after its file changed (§14): the next
+-  // note plays the new voice, or, when it failed, still the last good one.
++  // A note started or ended on a voice, by its index in `instruments`.
++  | { state: 'voice'; voice: number; note: number; on: boolean }
++  // The program was loaded again after its file changed
++  // (keyboard-instrument.md §14): the next note plays the new voice, or,
++  // when it failed, still the last good one.
+   | { state: 'reloaded' }
+   | { state: 'reload-failed'; reason: string };
+ 
++// A primitive can fail without ending its line, as `_InitMIDI` does with
++// `Could not create MIDI client. error: `, so a status can start partway
++// through a line.
+ export function parseHostLine(line: string): z.infer<typeof hostLine> | undefined {
+-  if (!line.startsWith('@field ')) return undefined;
++  const at = line.indexOf(HOST_LINE);
++  if (at < 0) return undefined;
+   try {
+-    return hostLine.parse(JSON.parse(line.slice('@field '.length)));
++    return hostLine.parse(JSON.parse(line.slice(at + HOST_LINE.length)));
+   } catch {
+     return undefined;
+   }
+ }
+ 
+ export interface VoiceHostOptions {
+-  // The programs to play, in unison: each note sounds a voice from each
+-  // (arming.md §2.1).
++  // The programs to play: each note sounds a voice from each program
++  // that plays from the note's source (arming.md §2.1).
+   instruments: string[];
++  // For each program, the names of the MIDI sources it plays from, or
++  // null to play from every source but the `Field Seq` ones
++  // (sequencer.md §2.6). Each named source must exist when the host
++  // starts. Omitted, every program plays from every source but those.
++  sources?: (readonly string[] | null)[];
+   // For each program with a knob file, the checked copy its voice reads
+   // through FIELD_KNOBS (instrument-knobs.md §2.4).
+   knobs?: ReadonlyMap<string, string>;
+@@ -142,7 +156,7 @@ export class VoiceHost {
+     private readonly child: ChildProcessWithoutNullStreams,
+     private readonly port: number,
+     private readonly langPort: number,
+-    options: VoiceHostOptions,
++    private readonly options: VoiceHostOptions,
+   ) {
+     // sclang reports compile and runtime errors on stdout, so the tail of
+     // it is what explains a host that never became ready.
+@@ -156,7 +170,7 @@ export class VoiceHost {
+         const banner = tail.findLastIndex((l) => l.includes('*** Welcome to SuperCollider'));
+         const detail = tail
+           .slice(banner + 1)
+-          .filter((l) => !l.startsWith('@field ') && l.trim() !== '')
++          .filter((l) => !l.includes(HOST_LINE) && l.trim() !== '')
+           .slice(-OUTPUT_TAIL)
+           .join('\n');
+         const cause = lastError ?? `sclang exited with code ${code} before the voice host was ready`;
+@@ -185,8 +199,8 @@ export class VoiceHost {
+             resolveReady();
+           }
+         } else if ('restarting' in parsed) options.onStatus?.({ state: 'restarting' });
+-        else if ('voice_on' in parsed) options.onStatus?.({ state: 'voice', note: parsed.voice_on, on: true });
+-        else if ('voice_off' in parsed) options.onStatus?.({ state: 'voice', note: parsed.voice_off, on: false });
++        else if ('voice_on' in parsed) options.onStatus?.({ state: 'voice', voice: parsed.voice, note: parsed.voice_on, on: true });
++        else if ('voice_off' in parsed) options.onStatus?.({ state: 'voice', voice: parsed.voice, note: parsed.voice_off, on: false });
+         else if ('reloaded' in parsed) options.onStatus?.({ state: 'reloaded' });
+         else {
+           const detail = this.reloadError;
+@@ -234,9 +248,10 @@ export class VoiceHost {
+         ...env,
+         FIELD_MODE: 'voice',
+         FIELD_INSTRUMENTS: JSON.stringify(
+-          options.instruments.map((program) => {
++          options.instruments.map((program, i) => {
+             const knobs = options.knobs?.get(program);
+-            return knobs !== undefined ? { program, knobs } : { program };
++            const sources = options.sources?.[i] ?? null;
++            return { program, ...(knobs !== undefined ? { knobs } : {}), ...(sources !== null ? { sources } : {}) };
+           }),
+         ),
+         FIELD_SC_PORT: String(port),
+@@ -259,6 +274,14 @@ export class VoiceHost {
+     return sendOsc('/field/reload', this.langPort);
+   }
+ 
++  // Saving a program reloads the host (keyboard-instrument.md §14). Each
++  // program is watched once, however many voices play it, so one save is
++  // one reload. Answers what stops the watching.
++  reloadOnSave(): () => void {
++    const stops = [...new Set(this.options.instruments)].map((program) => watchText(program, () => void this.reload()));
++    return () => stops.forEach((stop) => stop());
++  }
++
+   // /quit, then the server's process if it lingers, then sclang: SIGTERM,
+   // and SIGKILL if it lingers too.
+   async close(timeoutMs = 3000): Promise<void> {
+diff --git a/src/sc/voice/knob-files.test.ts b/src/sc/voice/knob-files.test.ts
+new file mode 100644
+index 00000000..be703770
+--- /dev/null
++++ b/src/sc/voice/knob-files.test.ts
+@@ -0,0 +1,73 @@
++import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { afterEach, beforeEach, describe, expect, it } from 'vitest';
++import { KnobsError, loadKnobs, parseKnobs } from '../../keys/knobs.js';
++import { KnobFiles, loadKnobSources } from './knob-files.js';
++
++const shelf = join(import.meta.dirname, '..', '..', '..', 'examples', 'bloom', 'shared', 'instruments');
++const juno = loadKnobs(join(shelf, 'juno.knobs.yaml'));
++
++describe('knob files in a session', () => {
++  let dir: string;
++  beforeEach(() => {
++    dir = mkdtempSync(join(tmpdir(), 'field-keys-knobs-'));
++  });
++  afterEach(() => rmSync(dir, { recursive: true, force: true }));
++
++  it('reads a voice’s knob file beside its program, and each named file', () => {
++    writeFileSync(join(dir, 'juno.scd'), '');
++    writeFileSync(join(dir, 'juno.knobs.yaml'), readFileSync(join(shelf, 'juno.knobs.yaml')));
++    writeFileSync(join(dir, 'pad.scd'), '');
++    writeFileSync(join(dir, 'ju-06a.yaml'), 'knobs:\n  - { name: cutoff, cc: 74 }\n');
++    const sources = loadKnobSources(
++      [{ program: join(dir, 'juno.scd'), track: 'creek/keys' }, { program: join(dir, 'pad.scd') }],
++      [join(dir, 'ju-06a.yaml')],
++      undefined,
++    );
++    expect(sources.map(({ name, program }) => ({ name, program }))).toEqual([
++      { name: 'keys', program: join(dir, 'juno.scd') },
++      { name: 'ju-06a', program: undefined },
++    ]);
++    expect(sources[0]!.knobs).toEqual(juno);
++    expect(() => loadKnobSources([], [join(dir, 'missing.yaml')], undefined)).toThrow(/no such file/);
++    writeFileSync(join(dir, 'juno.knobs.yaml'), 'knobs:\n  - { name: cutoff, cc: 1 }\n');
++    expect(() => loadKnobSources([{ program: join(dir, 'juno.scd') }], [], undefined)).toThrow(KnobsError);
++  });
++
++  it('keeps the voice’s copy after a save that fails and asks for no reload, and rewrites it before one that passes', () => {
++    const path = join(dir, 'juno.knobs.yaml');
++    const files = new KnobFiles([
++      { name: 'juno', path, program: '/p/juno.scd', knobs: juno },
++      { name: 'ju-06a', path: join(dir, 'ju-06a.yaml'), knobs: juno.slice(0, 1) },
++    ]);
++    try {
++      const copy = files.copies.get('/p/juno.scd')!;
++      expect(parseKnobs(readFileSync(copy, 'utf8'), copy)).toEqual(juno);
++      expect([...files.copies.keys()]).toEqual(['/p/juno.scd']);
++
++      let failed: KnobsError | undefined;
++      try {
++        parseKnobs('knobs:\n  - { name: res, cc: 1 }\n', path);
++      } catch (err) {
++        failed = err as KnobsError;
++      }
++      expect(files.saved(path, { error: failed! })).toBe(false);
++      expect(files.errors.get(path)).toBe('juno.knobs.yaml: knobs.0.cc: res: cc 1 is the modulation wheel, which is the knob mod');
++      expect(parseKnobs(readFileSync(copy, 'utf8'), copy)).toEqual(juno);
++      expect(files.list().map((k) => k.label)).toContain('juno.release');
++
++      expect(files.saved(path, { knobs: juno.slice(0, 2) })).toBe(true);
++      expect(files.errors.size).toBe(0);
++      expect(parseKnobs(readFileSync(copy, 'utf8'), copy)).toEqual(juno.slice(0, 2));
++      expect(files.list().map((k) => k.label)).toEqual(['mod', 'juno.cutoff', 'juno.res', 'ju-06a.cutoff']);
++
++      // A --knobs file reaches no voice, so its save reloads none.
++      expect(files.saved(join(dir, 'ju-06a.yaml'), { knobs: juno.slice(1, 2) })).toBe(false);
++      expect(files.list().map((k) => k.label)).toEqual(['mod', 'juno.cutoff', 'juno.res', 'ju-06a.res']);
++    } finally {
++      files.remove();
++    }
++    expect(existsSync(files.copies.get('/p/juno.scd')!)).toBe(false);
++  });
++});
+diff --git a/src/sc/voice/knob-files.ts b/src/sc/voice/knob-files.ts
+new file mode 100644
+index 00000000..b85d67ed
+--- /dev/null
++++ b/src/sc/voice/knob-files.ts
+@@ -0,0 +1,100 @@
++import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { basename, join } from 'node:path';
++import {
++  knobFileFor,
++  knobFileName,
++  knobList,
++  knobsCopy,
++  loadKnobs,
++  resolveKnobsPath,
++  watchKnobs,
++  type KnobsReload,
++  type ShownKnob,
++} from '../../keys/knobs.js';
++import type { Knob } from '../../schema/knobs.js';
++import type { Voice } from './routing.js';
++
++// A knob file a session reads (instrument-knobs.md §2.2): a voice's, which
++// the voice maps through, or one `field keys --knobs` names, for whatever
++// else listens to Field Keys.
++export interface KnobSource {
++  name: string; // what the knob line puts before its knobs' names
++  path: string;
++  program?: string; // the instrument whose voice reads it
++  knobs: Knob[];
++}
++
++// A session's knob files, and the copies its voices read: each voice
++// reads the copy of its knob file that passed the schema, never the file
++// itself, so a save that fails cannot reach it (instrument-knobs.md §2.4).
++// The copies live in a directory of their own for the session.
++export class KnobFiles {
++  // Each program with a knob file, and the copy its voice reads.
++  readonly copies = new Map<string, string>();
++  // Why the last save of each file did not load, by path.
++  readonly errors = new Map<string, string>();
++  private dir: string | undefined;
++
++  constructor(private readonly sources: KnobSource[]) {
++    sources.forEach((source) => this.write(source));
++  }
++
++  paths(): string[] {
++    return [...new Set(this.sources.map((s) => s.path))];
++  }
++
++  list(): ShownKnob[] {
++    return knobList(this.sources);
++  }
++
++  // A save that passes takes the file's new knobs and rewrites the copy
++  // of each voice that reads it; one that fails changes nothing but its
++  // error. Answers whether a voice reads the file, and so must reload.
++  saved(path: string, result: KnobsReload): boolean {
++    if ('error' in result) {
++      this.errors.set(path, `${basename(path)}: ${result.error.problems[0]}`);
++      return false;
++    }
++    this.errors.delete(path);
++    const changed = this.sources.filter((s) => s.path === path);
++    for (const source of changed) {
++      source.knobs = result.knobs;
++      this.write(source);
++    }
++    return changed.some((s) => s.program !== undefined);
++  }
++
++  watch(onSave: (path: string, result: KnobsReload, reload: boolean) => void): () => void {
++    const stops = this.paths().map((path) => watchKnobs(path, (result) => onSave(path, result, this.saved(path, result))));
++    return () => stops.forEach((stop) => stop());
++  }
++
++  remove(): void {
++    if (this.dir !== undefined) rmSync(this.dir, { recursive: true, force: true });
++  }
++
++  private write({ program, path, knobs }: KnobSource): void {
++    if (program === undefined) return;
++    this.dir ??= mkdtempSync(join(tmpdir(), 'field-knobs-'));
++    const copy = this.copies.get(program) ?? join(this.dir, `${this.copies.size}-${basename(path)}`);
++    writeFileSync(copy, knobsCopy(knobs));
++    this.copies.set(program, copy);
++  }
++}
++
++// The knob file beside each voice's program, where it has one, then each
++// file `specs` names.
++export function loadKnobSources(voices: readonly Voice[], specs: string[], root: string | undefined): KnobSource[] {
++  const sources: KnobSource[] = [];
++  for (const { program, track } of voices) {
++    const path = knobFileFor(program);
++    if (!existsSync(path)) continue;
++    sources.push({ name: track?.split('/').pop() ?? basename(program, '.scd'), path, program, knobs: loadKnobs(path) });
++  }
++  for (const spec of specs) {
++    const path = resolveKnobsPath(spec, root);
++    sources.push({ name: knobFileName(path), path, knobs: loadKnobs(path) });
++  }
++  return sources;
++}
+diff --git a/src/sc/voice/routing-voice.test.ts b/src/sc/voice/routing-voice.test.ts
+new file mode 100644
+index 00000000..4d048ac4
+--- /dev/null
++++ b/src/sc/voice/routing-voice.test.ts
+@@ -0,0 +1,175 @@
++import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
++import { copyFileSync, mkdtempSync, writeFileSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { dirname, join } from 'node:path';
++import { createInterface } from 'node:readline';
++import { fileURLToPath } from 'node:url';
++import { afterEach, beforeEach, describe, expect, it } from 'vitest';
++import { AudiodClient, daemonBinary } from '../../audiod/client.js';
++import { createSong, createTrack } from '../../commands/create.js';
++import { init } from '../../commands/init.js';
++import { sclangCommand } from '../../generators/supercollider.js';
++import { removeTempProject } from '../../testing/temp.js';
++import { routeVoices, type Routing } from './routing.js';
++import { fieldOutPluginDir, VoiceHost } from './host.js';
++
++// The whole path of live-supercollider.md chunk 3 through real programs:
++// a track routed into the daemon, the voice host on sclang and scsynth
++// with FieldOut, and a note from a published MIDI source. The daemon must
++// hear the note on the track's input, and only on the inputs of the
++// voices that play from that source. It needs SuperCollider, the built
++// plugin, and an output device for scsynth, so it runs on a workstation.
++
++const binary = (() => {
++  try {
++    return daemonBinary();
++  } catch {
++    return undefined;
++  }
++})();
++const sclang = (() => {
++  try {
++    return sclangCommand();
++  } catch {
++    return undefined;
++  }
++})();
++const fieldOut = fieldOutPluginDir();
++const bloomPad = join(dirname(fileURLToPath(import.meta.url)), '../../../examples/bloom/shared/instruments/pad.scd');
++
++const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
++
++describe.skipIf(!binary || !sclang || !fieldOut || process.platform === 'win32')(
++  'voices through the effects, end to end',
++  () => {
++    let root: string;
++    let routing: Routing | undefined;
++    let host: VoiceHost | undefined;
++    let published: ChildProcessWithoutNullStreams[] = [];
++
++    // A virtual MIDI source under `name`, published before the host
++    // starts, so the host connects it as it boots.
++    const publish = async (name: string): Promise<ChildProcessWithoutNullStreams> => {
++      const source = spawn(binary!, ['--keys', name], { stdio: 'pipe' });
++      published.push(source);
++      await new Promise<void>((resolve, reject) => {
++        const timer = setTimeout(() => reject(new Error('--keys was not ready in 5 s')), 5000);
++        createInterface({ input: source.stdout }).on('line', (text) => {
++          const line = JSON.parse(text) as Record<string, unknown>;
++          if ('keyboard' in line) return;
++          clearTimeout(timer);
++          if ('error' in line) reject(new Error(String(line['error'])));
++          else resolve();
++        });
++      });
++      return source;
++    };
++    const send = (source: ChildProcessWithoutNullStreams, midi: number[]): void => {
++      source.stdin.write(`${JSON.stringify({ midi })}\n`);
++    };
++
++    beforeEach(() => {
++      root = mkdtempSync(join(tmpdir(), 'field-routing-voice-'));
++      process.env['FIELD_AUDIOD_NULL'] = '1';
++      init({ dir: root, name: 'routing-voice' });
++      copyFileSync(bloomPad, join(root, 'shared/instruments/pad.scd'));
++      createSong(root, 'creek');
++      createTrack(root, 'creek', 'bass');
++      writeFileSync(join(root, 'songs/creek/tracks/bass.yaml'), 'name: bass\ninstrument: pad\ninputs:\n  - record:\n');
++      writeFileSync(join(root, 'songs/creek/tracks/main.yaml'), 'name: main\ninputs:\n  - track: bass\n');
++    });
++    afterEach(async () => {
++      for (const source of published.splice(0)) source.kill('SIGKILL');
++      await host?.close();
++      await routing?.close();
++      try {
++        const client = await AudiodClient.connect(root);
++        await client.quit();
++        client.close();
++      } catch {
++        // never started
++      }
++      delete process.env['FIELD_AUDIOD_NULL'];
++      await removeTempProject(root);
++    });
++
++    // The loudest each input read over about three seconds, or until
++    // `until` says to stop looking.
++    const loudest = async (client: AudiodClient, until: (peaks: Map<string, number>) => boolean): Promise<Map<string, number>> => {
++      const peaks = new Map<string, number>();
++      await client.status(); // clears the peaks
++      for (let i = 0; i < 30 && !until(peaks); i++) {
++        await sleep(100);
++        for (const { name, peak } of (await client.status()).inputs ?? []) peaks.set(name, Math.max(peaks.get(name) ?? 0, peak));
++      }
++      return peaks;
++    };
++
++    it('carries a note from the voice host into the track\'s input in the daemon', { timeout: 90_000 }, async () => {
++      const keys = await publish(`Field Keys Routing ${process.pid}`);
++      const program = join(root, 'shared/instruments/pad.scd');
++      routing = (await routeVoices([{ program, track: 'creek/bass' }], root, { kind: 'keys' })) as Routing;
++      expect(routing.rings[0]).toBeGreaterThan(0);
++      host = await VoiceHost.start({ instruments: routing.programs, rings: routing.rings, fieldOut: routing.fieldOut });
++      await host.ready;
++
++      const client = await AudiodClient.connect(root);
++      try {
++        // Stopped, so the idle path plays the input.
++        expect((await client.status()).state).toBe('stopped');
++        send(keys, [0x90, 60, 100]);
++        const peaks = await loudest(client, (p) => (p.get('keys:creek/bass') ?? 0) > 0.01);
++        send(keys, [0x80, 60, 0]);
++        expect(peaks.get('keys:creek/bass')).toBeGreaterThan(0.01);
++      } finally {
++        client.close();
++      }
++    });
++
++    // sequencer.md §2.6: each voice plays from its own sources. Two
++    // sources, named apart from Field's own, each play one track's voice.
++    it('plays each voice from the sources it names alone', { timeout: 90_000 }, async () => {
++      const [first, second] = [`Voice Source One ${process.pid}`, `Voice Source Two ${process.pid}`];
++      const one = await publish(first);
++      const two = await publish(second);
++      createTrack(root, 'creek', 'lead');
++      writeFileSync(join(root, 'songs/creek/tracks/lead.yaml'), 'name: lead\ninstrument: pad\ninputs:\n  - record:\n');
++      writeFileSync(join(root, 'songs/creek/tracks/main.yaml'), 'name: main\ninputs:\n  - track: bass\n  - track: lead\n');
++
++      const program = join(root, 'shared/instruments/pad.scd');
++      routing = (await routeVoices(
++        [
++          { program, track: 'creek/bass' },
++          { program, track: 'creek/lead' },
++        ],
++        root,
++        { kind: 'voice' },
++      )) as Routing;
++      host = await VoiceHost.start({
++        instruments: routing.programs,
++        sources: [[first], [second]],
++        rings: routing.rings,
++        fieldOut: routing.fieldOut,
++      });
++      await host.ready;
++
++      const client = await AudiodClient.connect(root);
++      try {
++        for (const [source, heard, unheard] of [
++          [one, 'voice:creek/bass', 'voice:creek/lead'],
++          [two, 'voice:creek/lead', 'voice:creek/bass'],
++        ] as const) {
++          send(source, [0x90, 60, 100]);
++          const peaks = await loudest(client, (p) => (p.get(heard) ?? 0) > 0.01);
++          send(source, [0x80, 60, 0]);
++          expect(peaks.get(heard)).toBeGreaterThan(0.01);
++          expect(peaks.get(unheard)).toBeLessThan(0.001);
++          // The released note's tail dies before the next source plays.
++          await sleep(3000);
++        }
++      } finally {
++        client.close();
++      }
++    });
++  },
++);
+diff --git a/src/keys/routing.test.ts b/src/sc/voice/routing.test.ts
+similarity index 75%
+rename from src/keys/routing.test.ts
+rename to src/sc/voice/routing.test.ts
+index 1fcdad4e..3fca3119 100644
+--- a/src/keys/routing.test.ts
++++ b/src/sc/voice/routing.test.ts
+@@ -1,17 +1,17 @@
+ import { execFile } from 'node:child_process';
+ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+ import { promisify } from 'node:util';
+-import { writeWavFloat32 } from '../audio/wav.js';
++import { writeWavFloat32 } from '../../audio/wav.js';
+ import { tmpdir } from 'node:os';
+ import { join } from 'node:path';
+ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+-import { AudiodClient, daemonBinary } from '../audiod/client.js';
+-import { createSong, createTrack } from '../commands/create.js';
+-import { init } from '../commands/init.js';
+-import { removeTempProject } from '../testing/temp.js';
+-import { compileSession } from '../graph/live.js';
+-import { liveInputsFor } from '../audiod/live-inputs.js';
+-import { routeArmed, type Routing } from './routing.js';
++import { AudiodClient, daemonBinary } from '../../audiod/client.js';
++import { createSong, createTrack } from '../../commands/create.js';
++import { init } from '../../commands/init.js';
++import { removeTempProject } from '../../testing/temp.js';
++import { compileSession } from '../../graph/live.js';
++import { liveInputsFor } from '../../audiod/live-inputs.js';
++import { routeVoices, type Routing } from './routing.js';
+ 
+ // Playing through the effects (live-supercollider.md chunk 3): an input
+ // per armed track in the daemon, and the song's session loaded with them.
+@@ -68,13 +68,13 @@ describe.skipIf(!binary || process.platform === 'win32')('routing armed tracks t
+   const pad = () => join(root, 'shared/instruments/pad.scd');
+ 
+   it("opens an input for each armed track, loads the song with them, and puts the song back on close", async () => {
+-    const routed = (await routeArmed(
++    const routed = (await routeVoices(
+       [
+-        { program: pad(), track: 'creek/bass', unheardEffects: [] },
+-        { program: pad(), unheardEffects: [] },
++        { program: pad(), track: 'creek/bass' },
++        { program: pad() },
+       ],
+       root,
+-      { env },
++      { kind: 'keys', env },
+     )) as Routing;
+     expect(routed.programs).toEqual([pad(), pad()]);
+     expect(routed.rings[0]).toBeGreaterThan(0);
+@@ -103,23 +103,39 @@ describe.skipIf(!binary || process.platform === 'win32')('routing armed tracks t
+     }
+   });
+ 
++  it('names each input for the command that plays the voice, and every reload keeps it', async () => {
++    const client = await AudiodClient.connect(root);
++    try {
++      for (const kind of ['seq', 'voice'] as const) {
++        const routed = (await routeVoices([{ program: pad(), track: 'creek/bass' }], root, { kind, env })) as Routing;
++        expect((await client.status()).inputs).toEqual([expect.objectContaining({ name: `${kind}:creek/bass` })]);
++        expect(await liveInputsFor(client, 'creek')).toEqual([{ track: 'bass', input: `${kind}:creek/bass` }]);
++        await routed.close();
++        expect((await client.status()).inputs).toBeUndefined();
++      }
++    } finally {
++      client.close();
++    }
++  });
++
+   it('says why it cannot route: tracks in two songs, FieldOut not built, or nothing but instruments', async () => {
+     expect(
+-      await routeArmed(
++      await routeVoices(
+         [
+-          { program: pad(), track: 'creek/bass', unheardEffects: [] },
+-          { program: pad(), track: 'tall-grass/bass', unheardEffects: [] },
++          { program: pad(), track: 'creek/bass' },
++          { program: pad(), track: 'tall-grass/bass' },
+         ],
+         root,
+-        { env },
++        { kind: 'keys', env },
+       ),
+     ).toEqual({ reason: 'the tracks are in creek and tall-grass, and one session plays one song' });
+     expect(
+-      await routeArmed([{ program: pad(), track: 'creek/bass', unheardEffects: [] }], root, {
++      await routeVoices([{ program: pad(), track: 'creek/bass' }], root, {
++        kind: 'keys',
+         env: { ...process.env, FIELD_FIELDOUT: join(root, 'songs') },
+       }),
+     ).toEqual({ reason: `FIELD_FIELDOUT names ${join(root, 'songs')}, which holds no FieldOut plugin` });
+-    expect(await routeArmed([{ program: pad(), unheardEffects: [] }], root, { env })).toBeUndefined();
++    expect(await routeVoices([{ program: pad() }], root, { kind: 'keys', env })).toBeUndefined();
+   });
+ 
+   it("keeps the loop and solo another terminal's session was loaded with", async () => {
+@@ -127,7 +143,7 @@ describe.skipIf(!binary || process.platform === 'win32')('routing armed tracks t
+     try {
+       const { session } = await compileSession(root, 'creek', { loop: true, solo: 'bass' });
+       await client.session(session);
+-      const routed = (await routeArmed([{ program: pad(), track: 'creek/bass', unheardEffects: [] }], root, { env })) as Routing;
++      const routed = (await routeVoices([{ program: pad(), track: 'creek/bass' }], root, { kind: 'keys', env })) as Routing;
+       expect(await client.status()).toMatchObject({ looping: true, solo: 'bass', song: 'creek' });
+       await routed.close();
+       expect(await client.status()).toMatchObject({ looping: true, solo: 'bass', song: 'creek' });
+@@ -144,7 +160,7 @@ describe.skipIf(!binary || process.platform === 'win32')('routing armed tracks t
+       join(root, 'songs/creek/tracks/main.yaml'),
+       'name: main\ninserts:\n  - effect: limit\n    ceiling_db: -1\ninputs:\n  - track: bass\n',
+     );
+-    const routed = (await routeArmed([{ program: pad(), track: 'creek/bass', unheardEffects: [] }], root, { env })) as Routing;
++    const routed = (await routeVoices([{ program: pad(), track: 'creek/bass' }], root, { kind: 'keys', env })) as Routing;
+     const client = await AudiodClient.connect(root);
+     try {
+       for (const halt of [() => client.stop(), () => client.pause(), () => client.stop()]) {
+@@ -159,7 +175,7 @@ describe.skipIf(!binary || process.platform === 'win32')('routing armed tracks t
+   });
+ 
+   it('leaves a song another terminal loaded meanwhile when it closes', async () => {
+-    const routed = (await routeArmed([{ program: pad(), track: 'creek/bass', unheardEffects: [] }], root, { env })) as Routing;
++    const routed = (await routeVoices([{ program: pad(), track: 'creek/bass' }], root, { kind: 'keys', env })) as Routing;
+     const client = await AudiodClient.connect(root);
+     try {
+       await client.session((await compileSession(root, 'tall-grass')).session);
+@@ -171,7 +187,7 @@ describe.skipIf(!binary || process.platform === 'win32')('routing armed tracks t
+   });
+ 
+   it('says whether FieldOut is writing the ring', async () => {
+-    const routed = (await routeArmed([{ program: pad(), track: 'creek/bass', unheardEffects: [] }], root, { env })) as Routing;
++    const routed = (await routeVoices([{ program: pad(), track: 'creek/bass' }], root, { kind: 'keys', env })) as Routing;
+     try {
+       // Nothing writes it: no voice host here.
+       expect(await routed.flowing(300)).toBe(false);
+@@ -185,7 +201,7 @@ describe.skipIf(!binary || process.platform === 'win32')('routing armed tracks t
+   });
+ 
+   it('plays dry when the daemon converts the song to the device, and leaves no input open', async () => {
+-    expect(await routeArmed([{ program: pad(), track: 'fast/bass', unheardEffects: [] }], root, { env })).toEqual({
++    expect(await routeVoices([{ program: pad(), track: 'fast/bass' }], root, { kind: 'keys', env })).toEqual({
+       reason: "the device does not run at the song's 44100 Hz, so the daemon converts it",
+     });
+     const client = await AudiodClient.connect(root);
+diff --git a/src/keys/routing.ts b/src/sc/voice/routing.ts
+similarity index 76%
+rename from src/keys/routing.ts
+rename to src/sc/voice/routing.ts
+index 0a7f1434..36c85ca6 100644
+--- a/src/keys/routing.ts
++++ b/src/sc/voice/routing.ts
+@@ -1,18 +1,30 @@
+-import { AudiodClient } from '../audiod/client.js';
+-import { reloadIfPlaying, reloadWithInputs } from '../audiod/live-inputs.js';
+-import { BUILD_DAEMON } from '../remedies.js';
+-import type { ArmedInstrument } from './targets.js';
+-import { fieldOutPluginDir } from './voice-host.js';
++import { AudiodClient } from '../../audiod/client.js';
++import { liveInputName, reloadIfPlaying, reloadWithInputs, type LiveInputKind } from '../../audiod/live-inputs.js';
++import { BUILD_DAEMON } from '../../remedies.js';
++import { fieldOutPluginDir } from './host.js';
+ 
+-// Playing through the effects (live-supercollider.md chunk 3): each armed
+-// track gets an input in the daemon, the song's live session is loaded
+-// with those inputs, and the voice host writes each track's voice into
+-// its input's ring through FieldOut. An instrument armed by name, with no
+-// track, still plays straight to the device.
++// A voice to play: its program, and the track it plays for, `song/track`,
++// or none for an instrument named by program.
++export interface Voice {
++  program: string;
++  track?: string | undefined;
++}
++
++// The commands that host voices, by the kind of input each opens for a
++// track's voice (sequencer.md §2.6).
++export type VoiceInputKind = Exclude<LiveInputKind, 'capture'>;
++const COMMAND: Record<VoiceInputKind, string> = { keys: 'field keys', seq: 'field seq', voice: 'field sc voice' };
++
++// Playing through the effects (live-supercollider.md chunk 3): each
++// track gets an input in the daemon, named for the command that plays
++// it, the song's live session is loaded with those inputs, and the voice
++// host writes each track's voice into its input's ring through FieldOut.
++// An instrument named by program, with no track, still plays straight to
++// the device.
+ export interface Routing {
+-  // One program per armed entry, in order: a track gets its own voice,
+-  // even when it shares a program with another, because its voice goes to
+-  // its own ring.
++  // One program per voice, in order: a track gets its own voice, even
++  // when it shares a program with another, because its voice goes to its
++  // own ring.
+   programs: string[];
+   // Each entry's ring, or null for one that plays straight to the device.
+   rings: (number | null)[];
+@@ -35,10 +47,10 @@ export interface Unrouted {
+   reason: string;
+ }
+ 
+-export async function routeArmed(
+-  armed: ArmedInstrument[],
++export async function routeVoices(
++  armed: readonly Voice[],
+   root: string,
+-  options: { device?: string; env?: NodeJS.ProcessEnv } = {},
++  options: { kind: VoiceInputKind; device?: string; env?: NodeJS.ProcessEnv },
+ ): Promise<Routing | Unrouted | undefined> {
+   const tracks = armed.filter((a) => a.track !== undefined);
+   if (tracks.length === 0) return undefined;
+@@ -67,8 +79,8 @@ export async function routeArmed(
+   const closeOpened = async (): Promise<void> => {
+     for (const name of opened.splice(0)) await client.closeInput(name).catch(() => {});
+   };
+-  // The song with whatever inputs are open now, others' included; a
+-  // field keys load changes only the inputs.
++  // The song with whatever inputs are open now, others' included; this
++  // load changes only the inputs.
+   const reload = (): Promise<void> => reloadWithInputs(client, root, song);
+   const unrouted = async (reason: string): Promise<Unrouted> => {
+     if (opened.length > 0) {
+@@ -84,7 +96,7 @@ export async function routeArmed(
+     // records.
+     if ((await client.status()).record?.state === 'recording') {
+       client.close();
+-      return { reason: 'a take is recording: start field keys again once it stops' };
++      return { reason: `a take is recording: start ${COMMAND[options.kind]} again once it stops` };
+     }
+     if (!client.supports('live-input')) {
+       return await unrouted(`field-audiod ${client.daemonVersion} predates live inputs: run field transport quit, then play again`);
+@@ -101,7 +113,7 @@ export async function routeArmed(
+         rings.push(null);
+         continue;
+       }
+-      const name = `keys:${entry.track}`;
++      const name = liveInputName(options.kind, song, entry.track.slice(song.length + 1));
+       const { ring } = await client.openInput(name);
+       opened.push(name);
+       rings.push(ring);
+diff --git a/src/sc/voice/sources.test.ts b/src/sc/voice/sources.test.ts
+new file mode 100644
+index 00000000..efdc76f9
+--- /dev/null
++++ b/src/sc/voice/sources.test.ts
+@@ -0,0 +1,86 @@
++import { spawnSync } from 'node:child_process';
++import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { describe, expect, it } from 'vitest';
++import { sclangCommand, scScript } from '../../generators/supercollider.js';
++
++// sc/voice-sources.scd through real sclang (sequencer.md §2.6): which
++// voices hear each MIDI source. The sources are made up here, endpoints
++// as MIDIClient.sources lists them, so the test publishes no MIDI.
++
++const sclang = (() => {
++  try {
++    return sclangCommand();
++  } catch {
++    return undefined;
++  }
++})();
++
++// The machine's sources in these tests: Field Keys, a track's Field Seq
++// source, and a controller whose port is named apart from its device.
++const ENDPOINTS = [
++  ['Field Keys', 'Field Keys', 11],
++  ['Field Seq creek/keys', 'Field Seq creek/keys', 22],
++  ['Arturia KeyStep 37', 'KeyStep 37', 33],
++] as const;
++
++// Which voices hear each source, by uid, and the problem, for the voices
++// as FIELD_INSTRUMENTS spells them.
++function hearing(voices: object[], endpoints: readonly (readonly [string, string, number])[] = ENDPOINTS): string[] {
++  const dir = mkdtempSync(join(tmpdir(), 'field-voice-sources-'));
++  try {
++    const script = join(dir, 'sources-probe.scd');
++    writeFileSync(
++      script,
++      [
++        '(',
++        `var playsFrom = thisProcess.interpreter.executeFile(${JSON.stringify(scScript('voice-sources.scd'))});`,
++        `var endpoints = [${endpoints.map(([device, name, uid]) => `MIDIEndPoint(${JSON.stringify(device)}, ${JSON.stringify(name)}, ${uid})`).join(', ')}];`,
++        `var voices = ${JSON.stringify(JSON.stringify(voices))}.parseJSON;`,
++        'var hearing, problem;',
++        '# hearing, problem = playsFrom.(voices, endpoints);',
++        'endpoints.do { |e| ("hears " ++ e.uid ++ " " ++ (hearing[e.uid] ? []).join(",")).postln };',
++        '("problem " ++ problem).postln;',
++        '0.exit;',
++        ')',
++        '',
++      ].join('\n'),
++    );
++    const run = spawnSync(sclang!, [script], { encoding: 'utf8', timeout: 60_000 });
++    return run.stdout.split('\n').filter((line) => /^(hears|problem) /.test(line));
++  } finally {
++    rmSync(dir, { recursive: true, force: true });
++  }
++}
++
++describe.skipIf(sclang === undefined)('the sources each voice plays from, through real sclang', () => {
++  it('plays a voice with no sources named, as field keys gives, from every source but the Field Seq ones', { timeout: 60_000 }, () => {
++    expect(hearing([{ program: '/p/juno.scd' }, { program: '/p/pad.scd' }])).toEqual([
++      'hears 11 0,1',
++      'hears 22 ',
++      'hears 33 0,1',
++      'problem nil',
++    ]);
++  });
++
++  it('plays a voice with sources named from those alone, by name or by device', { timeout: 60_000 }, () => {
++    expect(
++      hearing([
++        { program: '/p/juno.scd', sources: ['Field Keys'] },
++        { program: '/p/pad.scd', sources: ['Field Seq creek/keys'] },
++        { program: '/p/bass.scd', sources: ['Arturia KeyStep 37'] },
++        { program: '/p/organ.scd' },
++      ]),
++    ).toEqual(['hears 11 0,3', 'hears 22 1', 'hears 33 2,3', 'problem nil']);
++  });
++
++  it('names a source a voice names that is not there, and the sources that are', { timeout: 60_000 }, () => {
++    expect(hearing([{ program: '/p/juno.scd', sources: ['Minilogue XD'] }]).at(-1)).toBe(
++      'problem no MIDI source named Minilogue XD; the sources are Field Keys, Field Seq creek/keys, KeyStep 37',
++    );
++    expect(hearing([{ program: '/p/juno.scd', sources: ['Field Keys'] }], [])).toEqual([
++      'problem no MIDI source named Field Keys; the sources are none',
++    ]);
++  });
++});
+diff --git a/src/sc/voice/start.ts b/src/sc/voice/start.ts
+new file mode 100644
+index 00000000..6dfec63d
+--- /dev/null
++++ b/src/sc/voice/start.ts
+@@ -0,0 +1,48 @@
++import { VoiceHost, type VoiceHostOptions, type VoiceHostStatus } from './host.js';
++import type { Routing } from './routing.js';
++
++// What a command shows about its voices, which `startVoices` keeps current.
++export interface VoiceState {
++  status: Extract<VoiceHostStatus, { state: 'live' | 'restarting' }> | { state: 'starting' };
++  // What the last save of the program did (keyboard-instrument.md §14).
++  reload?: { loaded: true } | { failed: string };
++  // Why nothing is heard at all: routed, but scsynth never ran the route.
++  silent?: string;
++}
++
++export interface StartVoicesOptions extends Omit<VoiceHostOptions, 'onStatus' | 'onExit' | 'rings' | 'fieldOut'> {
++  routing: Routing | undefined;
++  state: VoiceState;
++  changed: () => void;
++  // Called when the host cannot start, or stops on its own.
++  stop: (error: Error) => void;
++}
++
++export async function startVoices({ routing, state, changed, stop, ...options }: StartVoicesOptions): Promise<VoiceHost> {
++  const host = await VoiceHost.start({
++    ...options,
++    ...(routing !== undefined ? { rings: routing.rings, fieldOut: routing.fieldOut } : {}),
++    onStatus: (status) => {
++      if (status.state === 'voice') return;
++      if (status.state === 'reloaded') state.reload = { loaded: true };
++      else if (status.state === 'reload-failed') state.reload = { failed: status.reason };
++      else state.status = status;
++      changed();
++    },
++    onExit: (reason) => stop(new Error(`the voice host stopped: ${reason}`)),
++  });
++  host.ready.catch((err: Error) => stop(new Error(`the voice host did not start: ${err.message}`)));
++  // A route scsynth never ran, because FieldOut did not load in it, leaves
++  // its ring empty: the voices play into a bus nothing reads.
++  if (routing !== undefined) {
++    void host.ready
++      .then(() => routing.flowing())
++      .then((flowing) => {
++        if (flowing) return;
++        state.silent = 'FieldOut did not load in scsynth, so nothing reaches the daemon';
++        changed();
++      })
++      .catch(() => {});
++  }
++  return host;
++}
+diff --git a/src/keys/synthdef.ts b/src/sc/voice/synthdef.ts
+similarity index 100%
+rename from src/keys/synthdef.ts
+rename to src/sc/voice/synthdef.ts
