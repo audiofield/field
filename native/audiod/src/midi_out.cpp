@@ -52,14 +52,21 @@ bool isNumber (const juce::var& v) { return v.isInt() || v.isInt64() || v.isDoub
 bool isWhole (const juce::var& v) { return isNumber (v) && (double) v == std::floor ((double) v); }
 
 // How far the bed moved from `from` to `to`, along the wrap in force, or
-// -1 when it could only have got there by a jump.
-juce::int64 distance (juce::int64 from, juce::int64 to, const MidiBlock& block)
+// -1 when it could only have got there by a jump. A wrapped position does
+// not say how many whole laps lie between, so this counts as many as come
+// nearest `expected`.
+juce::int64 distance (juce::int64 from, juce::int64 to, juce::int64 expected, const MidiBlock& block)
 {
-    if (to >= from)
-        return to - from;
-    if (block.wrapTo > block.wrapFrom && from < block.wrapTo && to >= block.wrapFrom)
-        return (block.wrapTo - from) + (to - block.wrapFrom);
-    return -1;
+    const bool inLoop = block.wrapTo > block.wrapFrom && from < block.wrapTo && to >= block.wrapFrom;
+    if (to < from && ! inLoop)
+        return -1;
+    auto moved = to >= from ? to - from : (block.wrapTo - from) + (to - block.wrapFrom);
+    if (inLoop)
+    {
+        const auto loop = block.wrapTo - block.wrapFrom;
+        moved += std::max<juce::int64> (0, (expected - moved + loop / 2) / loop) * loop;
+    }
+    return moved;
 }
 } // namespace
 
@@ -468,7 +475,7 @@ void MidiOutputs::play (Output& output, const MidiBlock& block) noexcept
         if (schedule.clock)
             resumeClock (output, block.position, block.startMs, false);
     }
-    else if (const auto moved = distance (output.lastPosition, block.position, block);
+    else if (const auto moved = distance (output.lastPosition, block.position, output.lastAdvance, block);
              ! output.pulsesMoved && ! located && moved >= 0 && std::abs (moved - output.lastAdvance) <= block.slack)
     {
         // Negative when the position landed past the last window's end.
@@ -501,9 +508,15 @@ void MidiOutputs::take (Output& output, const MidiBlock& block, juce::int64 from
     const bool wraps = block.wrapTo > block.wrapFrom;
     juce::int64 offset = std::min<juce::int64> (0, from); // how far ahead of the block's position this stretch starts
     juce::int64 segment = block.position + offset; // where this stretch of the timeline starts
-    // A window behind the position starts before the wrap the bed crossed.
-    if (from < 0 && wraps && block.position < output.lastPosition && segment < block.wrapFrom)
-        segment += block.wrapTo - block.wrapFrom;
+    // A window behind the position starts where the last window ended,
+    // which can be laps behind it along the loop.
+    if (from < 0)
+    {
+        segment = output.lastPosition + output.takenAhead;
+        if (wraps && output.lastPosition < block.wrapTo)
+            while (segment >= block.wrapTo)
+                segment -= block.wrapTo - block.wrapFrom;
+    }
     for (int lap = 0; lap < maxLaps; ++lap)
     {
         const juce::int64 end = wraps && segment < block.wrapTo ? block.wrapTo : unbounded;
@@ -1419,6 +1432,62 @@ std::string checkClock()
     return {};
 }
 
+std::string checkShortLoops()
+{
+    const Bytes onOff { { 0x9f, 60, 100 }, { 0x8f, 60, 0 } };
+    const auto loopOf = [] (juce::int64 length, int lead)
+    {
+        Harness h;
+        h.open (heldNote.replace ("\"lead\":0", "\"lead\":" + juce::String (lead)));
+        juce::int64 position = 0;
+        for (int i = 0; i < 4; ++i)
+        {
+            h.block (position, msOf (i * testBlock), true, 0, length);
+            position = (position + testBlock) % length;
+        }
+        h.serve (1.0e9);
+        return h.sent();
+    };
+    // A loop one block long has the same position every block, a whole lap
+    // on. Each wrap ends the note once, and the loop's start begins it.
+    if (loopOf (testBlock, 0) != Bytes { onOff[0], onOff[1], onOff[0], onOff[1], onOff[0], onOff[1], onOff[0], onOff[1] })
+        return "short loops: a loop one block long at lead 0 did not end and begin the note once a lap";
+    if (loopOf (testBlock, 192) != Bytes { onOff[0], onOff[1], onOff[0], onOff[1], onOff[0], onOff[1], onOff[0], onOff[1], onOff[0] })
+        return "short loops: a loop one block long with a lead did not end and begin the note once a lap";
+
+    // A loop shorter than a block wraps within it, and no block is a jump.
+    {
+        const auto sent = loopOf (300, 0);
+        int ons = 0, offs = 0;
+        for (const auto& bytes : sent)
+            (bytes[0] == 0x9f ? ons : offs) += 1;
+        // 2048 samples of a 300-sample loop start 7 laps, and 6 wraps end all but the last.
+        if (ons != 7 || offs != 6)
+            return "short loops: a loop shorter than a block sent " + std::to_string (ons) + " note-ons and " + std::to_string (offs) + " note-offs, not 7 and 6";
+    }
+
+    // The clock moves once a lap, with no second group from a jump.
+    juce::String pulses;
+    for (int i = 0; i < 20; ++i)
+        pulses << (i > 0 ? "," : "") << juce::String (i * 100);
+    Harness h;
+    h.open (R"({"name":"clock","source":"Clock","rate":48000,"lead":0,"events":[],"clock":{"pulses":[)" + pulses + "]}}");
+    for (int i = 0; i < 3; ++i)
+        h.block (0, msOf (i * testBlock), true, 0, testBlock);
+    h.serve (1.0e9);
+    Bytes transport;
+    for (const auto& line : h.log)
+        if (line.bytes != std::vector<juce::uint8> { clockPulse })
+            transport.push_back (line.bytes);
+    const Bytes group { { clockStop }, { songPosition, 0, 0 }, { clockContinue } };
+    Bytes wanted { { clockStart } };
+    for (int i = 0; i < 3; ++i)
+        wanted.insert (wanted.end(), group.begin(), group.end());
+    if (transport != wanted)
+        return "short loops: a loop one block long moved the clock other than once a lap";
+    return {};
+}
+
 std::string checkShortLocate()
 {
     // A locate inside a converted bed's slack is still a locate, and the
@@ -1618,7 +1687,7 @@ std::string checkRequests()
 
 std::string runMidiOutSelfTest()
 {
-    for (auto* check : { checkLead, checkFlush, checkHeld, checkClock, checkShortLocate, checkReplacedClock, checkSteps, checkRequests })
+    for (auto* check : { checkLead, checkFlush, checkHeld, checkClock, checkShortLoops, checkShortLocate, checkReplacedClock, checkSteps, checkRequests })
         if (auto error = check(); ! error.empty())
             return error;
     return {};

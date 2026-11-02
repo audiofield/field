@@ -907,7 +907,10 @@ points, each measured on macOS 27 with JUCE 8.0.4:
   skipped, because the bed did not move in it. A window holds a wrap at
   its end and not one at its start, so a wrap exactly where one block's
   window meets the next, as in a loop a whole number of blocks long with
-  no lead, ends the notes and moves the clock once.
+  no lead, ends the notes and moves the clock once. A wrapped position
+  does not say how many whole laps a block crossed, so the comparison
+  counts as many as come nearest its advance, and a loop one block long
+  or shorter continues.
 - **A position past the last window's end sends the stretch between
   them.** Converted delivery steps the bed by 512 samples, so a block's
   position can land past where the last window ended, and at lead 0 a
