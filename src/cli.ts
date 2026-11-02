@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { basename, extname, resolve } from 'node:path';
 import { Command } from 'commander';
 import {
   drawSeed,
   formatSeeds,
   parseBars,
+  parseBeats,
   parseGenTarget,
   parseBpm,
   parseChannels,
@@ -32,7 +31,6 @@ import {
   transportStatusLines,
 } from './commands/transport.js';
 import { check } from './commands/check.js';
-import { runScProgram } from './generators/supercollider.js';
 import { createSong, createTrack } from './commands/create.js';
 import { fmt } from './commands/fmt.js';
 import { importAsset } from './commands/import.js';
@@ -229,20 +227,40 @@ sc.command('render <program>')
   .option('--output <path>', 'output WAV path (defaults to <program>.wav in the current directory)')
   .action(async (programPath: string, opts: { seed: number; duration: number; channels: number; output?: string }) => {
     try {
-      const root = findProjectRoot(process.cwd());
-      const project = root ? loadProject(root) : undefined;
-      const sampleRate = project?.manifest?.data.sample_rate ?? 48000;
-      const output = resolve(opts.output ?? `${basename(programPath, extname(programPath))}.wav`);
-      await runScProgram(resolve(programPath), output, {
-        seed: opts.seed,
-        duration: opts.duration,
-        channels: opts.channels,
-        sampleRate,
-      });
-      if (!existsSync(output)) {
-        throw new Error('sc program exited without writing FIELD_OUTPUT');
-      }
-      process.stdout.write(`rendered ${output} (seed ${opts.seed}, ${opts.duration}s @ ${sampleRate} Hz)\n`);
+      const { scRender } = await import('./commands/sc.js');
+      process.stdout.write(`${await scRender(programPath, opts)}\n`);
+    } catch (err) {
+      fail(err);
+    }
+  });
+sc.command('voice <targets...>')
+  .description(
+    'play instruments, or tracks (creek/track:keys) through their effects, from MIDI sources with no keyboard ' +
+      '(Ctrl-C quits)',
+  )
+  .option(
+    '--source <name>',
+    'a MIDI source to play from, by its name or its device (repeatable; default: every source but the Field Seq ones)',
+    (value: string, previous: string[]) => [...previous, value],
+    [] as string[],
+  )
+  .option('--device <name>', 'output device for an instrument named without a track (field devices lists them)')
+  .action(async (targets: string[], opts: { source: string[]; device?: string }) => {
+    try {
+      const { scVoice } = await import('./commands/sc.js');
+      await scVoice(targets, opts);
+    } catch (err) {
+      fail(err);
+    }
+  });
+sc.command('notes <program>')
+  .description('write a part from the pattern a program answers under FIELD_MODE=notes, to stdout')
+  .requiredOption('--seed <n>', 'random seed', parseSeed)
+  .requiredOption('--beats <n>', 'how many quarter notes to play the pattern for', parseBeats)
+  .action(async (programPath: string, opts: { seed: number; beats: number }) => {
+    try {
+      const { scNotes } = await import('./commands/sc.js');
+      process.stdout.write(await scNotes(programPath, opts));
     } catch (err) {
       fail(err);
     }

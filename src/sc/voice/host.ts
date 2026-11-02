@@ -6,7 +6,8 @@ import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { z } from 'zod';
-import { instrumentProgram, sclangCommand, scScript } from '../generators/supercollider.js';
+import { instrumentProgram, sclangCommand, scScript } from '../../generators/supercollider.js';
+import { watchText } from '../../keys/watch.js';
 import { oscMessage, routeSynthDef } from './synthdef.js';
 
 export function voiceHostScript(): string {
@@ -21,7 +22,7 @@ export function fieldOutPluginDir(env: NodeJS.ProcessEnv = process.env): string 
   const holds = (dir: string): boolean => ['FieldOut.scx', 'FieldOut.so'].some((name) => existsSync(join(dir, name)));
   const override = env['FIELD_FIELDOUT'];
   if (override !== undefined && override !== '') return holds(override) ? override : undefined;
-  const built = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'native', 'sc-fieldout', 'build', 'plugins');
+  const built = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'native', 'sc-fieldout', 'build', 'plugins');
   return holds(built) ? built : undefined;
 }
 
@@ -34,7 +35,7 @@ export function instrumentPath(spec: string, root: string): string {
 }
 
 // Field chooses scsynth's port so that it can send /quit itself, even
-// after sclang has died (§2.6).
+// after sclang has died (keyboard-instrument.md §2.6).
 export function freeUdpPort(): Promise<number> {
   return new Promise((resolvePort, reject) => {
     const socket = createSocket('udp4');
@@ -79,34 +80,47 @@ const hostLine = z.union([
   z.object({ restarting: z.literal(true) }),
   z.object({ server_pid: z.number().int().positive() }),
   z.object({ error: z.string() }),
-  z.object({ voice_on: z.number() }),
-  z.object({ voice_off: z.number() }),
+  z.object({ voice_on: z.number(), voice: z.number().int() }),
+  z.object({ voice_off: z.number(), voice: z.number().int() }),
   z.object({ reloaded: z.literal(true) }),
   z.object({ reload_error: z.string() }),
 ]);
 
+const HOST_LINE = '@field ';
+
 export type VoiceHostStatus =
   | { state: 'live'; device: string; sampleRate: number }
   | { state: 'restarting' }
-  | { state: 'voice'; note: number; on: boolean }
-  // The program was loaded again after its file changed (§14): the next
-  // note plays the new voice, or, when it failed, still the last good one.
+  // A note started or ended on a voice, by its index in `instruments`.
+  | { state: 'voice'; voice: number; note: number; on: boolean }
+  // The program was loaded again after its file changed
+  // (keyboard-instrument.md §14): the next note plays the new voice, or,
+  // when it failed, still the last good one.
   | { state: 'reloaded' }
   | { state: 'reload-failed'; reason: string };
 
+// A primitive can fail without ending its line, as `_InitMIDI` does with
+// `Could not create MIDI client. error: `, so a status can start partway
+// through a line.
 export function parseHostLine(line: string): z.infer<typeof hostLine> | undefined {
-  if (!line.startsWith('@field ')) return undefined;
+  const at = line.indexOf(HOST_LINE);
+  if (at < 0) return undefined;
   try {
-    return hostLine.parse(JSON.parse(line.slice('@field '.length)));
+    return hostLine.parse(JSON.parse(line.slice(at + HOST_LINE.length)));
   } catch {
     return undefined;
   }
 }
 
 export interface VoiceHostOptions {
-  // The programs to play, in unison: each note sounds a voice from each
-  // (arming.md §2.1).
+  // The programs to play: each note sounds a voice from each program
+  // that plays from the note's source (arming.md §2.1).
   instruments: string[];
+  // For each program, the names of the MIDI sources it plays from, or
+  // null to play from every source but the `Field Seq` ones
+  // (sequencer.md §2.6). Each named source must exist when the host
+  // starts. Omitted, every program plays from every source but those.
+  sources?: (readonly string[] | null)[];
   // For each program with a knob file, the checked copy its voice reads
   // through FIELD_KNOBS (instrument-knobs.md §2.4).
   knobs?: ReadonlyMap<string, string>;
@@ -142,7 +156,7 @@ export class VoiceHost {
     private readonly child: ChildProcessWithoutNullStreams,
     private readonly port: number,
     private readonly langPort: number,
-    options: VoiceHostOptions,
+    private readonly options: VoiceHostOptions,
   ) {
     // sclang reports compile and runtime errors on stdout, so the tail of
     // it is what explains a host that never became ready.
@@ -156,7 +170,7 @@ export class VoiceHost {
         const banner = tail.findLastIndex((l) => l.includes('*** Welcome to SuperCollider'));
         const detail = tail
           .slice(banner + 1)
-          .filter((l) => !l.startsWith('@field ') && l.trim() !== '')
+          .filter((l) => !l.includes(HOST_LINE) && l.trim() !== '')
           .slice(-OUTPUT_TAIL)
           .join('\n');
         const cause = lastError ?? `sclang exited with code ${code} before the voice host was ready`;
@@ -185,8 +199,8 @@ export class VoiceHost {
             resolveReady();
           }
         } else if ('restarting' in parsed) options.onStatus?.({ state: 'restarting' });
-        else if ('voice_on' in parsed) options.onStatus?.({ state: 'voice', note: parsed.voice_on, on: true });
-        else if ('voice_off' in parsed) options.onStatus?.({ state: 'voice', note: parsed.voice_off, on: false });
+        else if ('voice_on' in parsed) options.onStatus?.({ state: 'voice', voice: parsed.voice, note: parsed.voice_on, on: true });
+        else if ('voice_off' in parsed) options.onStatus?.({ state: 'voice', voice: parsed.voice, note: parsed.voice_off, on: false });
         else if ('reloaded' in parsed) options.onStatus?.({ state: 'reloaded' });
         else {
           const detail = this.reloadError;
@@ -234,9 +248,10 @@ export class VoiceHost {
         ...env,
         FIELD_MODE: 'voice',
         FIELD_INSTRUMENTS: JSON.stringify(
-          options.instruments.map((program) => {
+          options.instruments.map((program, i) => {
             const knobs = options.knobs?.get(program);
-            return knobs !== undefined ? { program, knobs } : { program };
+            const sources = options.sources?.[i] ?? null;
+            return { program, ...(knobs !== undefined ? { knobs } : {}), ...(sources !== null ? { sources } : {}) };
           }),
         ),
         FIELD_SC_PORT: String(port),
@@ -257,6 +272,14 @@ export class VoiceHost {
   reload(): Promise<void> {
     this.reloadError = undefined;
     return sendOsc('/field/reload', this.langPort);
+  }
+
+  // Saving a program reloads the host (keyboard-instrument.md §14). Each
+  // program is watched once, however many voices play it, so one save is
+  // one reload. Answers what stops the watching.
+  reloadOnSave(): () => void {
+    const stops = [...new Set(this.options.instruments)].map((program) => watchText(program, () => void this.reload()));
+    return () => stops.forEach((stop) => stop());
   }
 
   // /quit, then the server's process if it lingers, then sclang: SIGTERM,

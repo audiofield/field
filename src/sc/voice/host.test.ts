@@ -2,8 +2,10 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { resolveInstrument } from './targets.js';
-import { freeUdpPort, instrumentPath, oscMessage, parseHostLine, VoiceHost, type VoiceHostStatus } from './voice-host.js';
+import { sclangCommand } from '../../generators/supercollider.js';
+import { KeysHelper } from '../../keys/helper.js';
+import { resolveInstrument } from '../../keys/targets.js';
+import { freeUdpPort, instrumentPath, oscMessage, parseHostLine, VoiceHost, type VoiceHostStatus } from './host.js';
 
 // A stand-in for sclang running the voice host: it records its
 // environment, listens on the scsynth port it was given, records an OSC
@@ -155,9 +157,14 @@ describe('the voice host protocol', () => {
       device: 'Out',
       sample_rate: 44100,
     });
-    expect(parseHostLine('@field {"voice_on":60}')).toEqual({ voice_on: 60 });
+    expect(parseHostLine('@field {"voice_on":60,"voice":1}')).toEqual({ voice_on: 60, voice: 1 });
     expect(parseHostLine('Booting server on 127.0.0.1')).toBeUndefined();
     expect(parseHostLine('@field {not json')).toBeUndefined();
+    // What real sclang prints when macOS refuses its MIDI client: the
+    // primitive ends no line, and the message has a newline in it.
+    expect(
+      parseHostLine('Could not create MIDI client. error: @field {"error":"the MIDI client did not start: Primitive \'_InitMIDI\' failed.\\nFailed."}'),
+    ).toEqual({ error: "the MIDI client did not start: Primitive '_InitMIDI' failed.\nFailed." });
     expect(parseHostLine('@field {"surprise":1}')).toBeUndefined();
   });
 
@@ -242,6 +249,20 @@ describe('the voice host process', () => {
     const seen = JSON.parse(readFileSync(`${log}.env`, 'utf8'));
     expect(JSON.parse(seen.instruments)).toEqual([
       { program: '/p/juno.scd', knobs: '/tmp/field-knobs-x/0-juno.knobs.yaml' },
+      { program: '/p/pad.scd' },
+    ]);
+    await host.close();
+  });
+
+  itStartsTheStub('hands each voice the MIDI sources it plays from, and a voice with none no list', async () => {
+    const host = await VoiceHost.start({
+      instruments: ['/p/juno.scd', '/p/pad.scd'],
+      sources: [['Field Keys', 'KeyStep 37'], null],
+      env: env('ready'),
+    });
+    await host.ready;
+    expect(JSON.parse(JSON.parse(readFileSync(`${log}.env`, 'utf8')).instruments)).toEqual([
+      { program: '/p/juno.scd', sources: ['Field Keys', 'KeyStep 37'] },
       { program: '/p/pad.scd' },
     ]);
     await host.close();
@@ -332,5 +353,63 @@ describe('the voice host process', () => {
     await expect(
       VoiceHost.start({ instruments: ['/p/x.scd'], env: { ...process.env, FIELD_SCLANG: join(dir, 'missing') } }),
     ).rejects.toThrow('FIELD_SCLANG points at a missing binary');
+  });
+});
+
+const realSclang = (() => {
+  try {
+    return sclangCommand();
+  } catch {
+    return undefined;
+  }
+})();
+
+describe.skipIf(realSclang === undefined)('a voice host through real sclang', () => {
+  // The reason a host gives for a program that fails as it loads, starting
+  // again past a refused MIDI client, as field sc voice does.
+  async function reasonFor(text: string, device?: string): Promise<string> {
+    const program = join(dir, 'failing.scd');
+    writeFileSync(program, text);
+    for (let attempt = 0; ; attempt++) {
+      const host = await VoiceHost.start({ instruments: [program], ...(device !== undefined ? { device } : {}), env: process.env });
+      const reason = await host.ready.then(
+        () => 'it went live',
+        (error: Error) => error.message,
+      );
+      await host.close();
+      if (attempt >= 8 || !/the MIDI client did not start/.test(reason)) return reason;
+    }
+  }
+
+  it.each([
+    ['a tab', 'Error("a\\tb").throw;\n', 'a\tb'],
+    ['a newline', 'Error("a\\nb").throw;\n', 'a\nb'],
+    ['a carriage return', 'Error("a\\rb").throw;\n', 'a\rb'],
+    ['a quote and a backslash', 'Error("a\\"b\\\\c").throw;\n', 'a"b\\c'],
+  ])('keeps the reason of a failure with %s in it', { timeout: 60_000 }, async (_what, text, kept) => {
+    const reason = await reasonFor(text);
+    expect(reason).toContain(`failed with ERROR: ${kept}`);
+    expect(reason).not.toContain('@field');
+  });
+
+  // Booting a real scsynth needs an output to name, which the helper reports.
+  it('ends the host with the reason when a voice throws as the server takes it', { timeout: 60_000 }, async (ctx) => {
+    let output: string | undefined;
+    try {
+      const helper = await KeysHelper.start('Field Voice Host Test');
+      await helper.close();
+      output = helper.defaultOutput;
+    } catch (error) {
+      ctx.skip(`no output to name: ${String(error)}`);
+    }
+    if (output === undefined) ctx.skip('the helper reports no output');
+    const started = Date.now();
+    const reason = await reasonFor(
+      'var def = SynthDef(\\pad, { |gate = 1, out = 0| Out.ar(out, SinOsc.ar * EnvGen.kr(Env.asr, gate, doneAction: 2)) });\ndef.children = [1];\ndef;\n',
+      output,
+    );
+    expect(reason).toContain('could not write def');
+    expect(reason).not.toContain('@field');
+    expect(Date.now() - started).toBeLessThan(30_000);
   });
 });

@@ -625,6 +625,53 @@ rendered /path/to/creek-kit.wav (seed 7801, 3.182s @ 48000 Hz)
 `--channels <n>` takes 1 or 2 (default 2), and `--output <path>` writes
 somewhere other than `<program>.wav` in the current directory.
 
+## Play a voice from MIDI sources
+
+`field sc voice <targets...>` plays instruments or tracks from MIDI
+sources with no keyboard, so a hardware controller or another
+application can play them with no `field keys` running. It takes the
+targets `field keys` takes: an instrument by name or path, or a track
+such as `creek/track:keys`. Each program must answer
+`FIELD_MODE=voice` ([keys.md](keys.md) "Make an instrument playable").
+
+```console
+$ field sc voice creek/track:keys --source "Field Keys"
+voice  keys (juno) · from Field Keys → voice:creek/keys
+keys (juno) live at 48000 Hz on MacBook Pro Speakers
+```
+
+Each `--source <name>` names a MIDI source to play from, by its name or
+its device, and every voice plays from all of them. With no `--source`,
+the voices play from every source except the `Field Seq <song>/<track>`
+ones, each of which carries one track's parts for that track's own
+voice. A source you name must exist when the command starts; otherwise
+the command stops and lists the sources there are.
+
+A track's voice plays through the track's effects, through an input in
+`field-audiod` named `voice:<song>/<track>`. When it cannot, it plays
+straight to the device, and its line says why ([keys.md](keys.md) "Play
+a track"). An instrument you name without a track plays straight to the
+device you give with `--device`, or to the system output. Saving a
+program or its knob file loads it again. Press Ctrl-C to quit, which
+closes the voices and the inputs.
+
+## Write a part from a pattern
+
+`field sc notes <program> --seed <n> --beats <n>` plays the pattern a
+SuperCollider program answers under `FIELD_MODE=notes`, with no server,
+and prints the part it makes to stdout. The same program, seed, and
+beats print the same bytes, and the first line is a comment naming the
+command.
+
+```console
+$ field sc notes shared/instruments/creek-groove.scd --seed 4 --beats 16 > songs/creek/notes/groove.yaml
+```
+
+`--beats` counts quarter notes. It sets the part's `length`, and a part
+keeps each note that starts before then, even one that rings past it.
+[keys.md](keys.md) "Write parts from a pattern" says what a program
+answers and how an event becomes a note.
+
 ## Environment variables
 
 | Variable | Does |
@@ -703,5 +750,7 @@ amended. Porting the rest is tracked there and in
 | `field choose <song>/<name> --variant <n>` | repoint which generated take plays |
 | `field choose <song>/<name> --take <name>` | repoint which recorded take plays |
 | `field sc render <program>` | render an SC program directly, uncached |
+| `field sc voice <targets...>` | play instruments or tracks from MIDI sources, with no keyboard |
+| `field sc notes <program>` | write a part from a program's pattern, to stdout |
 
 Every command takes `--help`.

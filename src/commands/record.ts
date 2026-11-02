@@ -1,5 +1,5 @@
 import { AudiodClient } from '../audiod/client.js';
-import { captureInputName, compileWithInputs, reloadIfPlaying, reloadWithInputs } from '../audiod/live-inputs.js';
+import { compileWithInputs, liveInputName, reloadIfPlaying, reloadWithInputs } from '../audiod/live-inputs.js';
 import { anyTakeSchema, type AnyTake, type AudiodEvent, type RecordingEntry } from '../audiod/protocol.js';
 import { DEFAULT_SAMPLE_RATE } from '../constants.js';
 import { expandPattern } from '../graph/graph.js';
@@ -306,7 +306,7 @@ async function captureTakes(
           client,
           root,
           resolved.song,
-          monitored.map((t) => ({ track: t.node.trackName, input: captureInputName(t.resolved.song, t.node.trackName) })),
+          monitored.map((t) => ({ track: t.node.trackName, input: liveInputName('capture', t.resolved.song, t.node.trackName) })),
         );
       } catch (err) {
         throw new Error(`host monitoring cannot play the input through ${resolved.song}: ${(err as Error).message}`);
@@ -330,7 +330,7 @@ async function captureTakes(
                 track: t.resolved.label,
                 kind: 'audio' as const,
                 input: t.input!,
-                ...(monitored.includes(t) ? { monitor: captureInputName(t.resolved.song, t.node.trackName) } : {}),
+                ...(monitored.includes(t) ? { monitor: liveInputName('capture', t.resolved.song, t.node.trackName) } : {}),
               },
         ),
         options.device,

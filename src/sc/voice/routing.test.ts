@@ -1,17 +1,17 @@
 import { execFile } from 'node:child_process';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { promisify } from 'node:util';
-import { writeWavFloat32 } from '../audio/wav.js';
+import { writeWavFloat32 } from '../../audio/wav.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { AudiodClient, daemonBinary } from '../audiod/client.js';
-import { createSong, createTrack } from '../commands/create.js';
-import { init } from '../commands/init.js';
-import { removeTempProject } from '../testing/temp.js';
-import { compileSession } from '../graph/live.js';
-import { liveInputsFor } from '../audiod/live-inputs.js';
-import { routeArmed, type Routing } from './routing.js';
+import { AudiodClient, daemonBinary } from '../../audiod/client.js';
+import { createSong, createTrack } from '../../commands/create.js';
+import { init } from '../../commands/init.js';
+import { removeTempProject } from '../../testing/temp.js';
+import { compileSession } from '../../graph/live.js';
+import { liveInputsFor } from '../../audiod/live-inputs.js';
+import { routeVoices, type Routing } from './routing.js';
 
 // Playing through the effects (live-supercollider.md chunk 3): an input
 // per armed track in the daemon, and the song's session loaded with them.
@@ -68,13 +68,13 @@ describe.skipIf(!binary || process.platform === 'win32')('routing armed tracks t
   const pad = () => join(root, 'shared/instruments/pad.scd');
 
   it("opens an input for each armed track, loads the song with them, and puts the song back on close", async () => {
-    const routed = (await routeArmed(
+    const routed = (await routeVoices(
       [
-        { program: pad(), track: 'creek/bass', unheardEffects: [] },
-        { program: pad(), unheardEffects: [] },
+        { program: pad(), track: 'creek/bass' },
+        { program: pad() },
       ],
       root,
-      { env },
+      { kind: 'keys', env },
     )) as Routing;
     expect(routed.programs).toEqual([pad(), pad()]);
     expect(routed.rings[0]).toBeGreaterThan(0);
@@ -103,23 +103,39 @@ describe.skipIf(!binary || process.platform === 'win32')('routing armed tracks t
     }
   });
 
+  it('names each input for the command that plays the voice, and every reload keeps it', async () => {
+    const client = await AudiodClient.connect(root);
+    try {
+      for (const kind of ['seq', 'voice'] as const) {
+        const routed = (await routeVoices([{ program: pad(), track: 'creek/bass' }], root, { kind, env })) as Routing;
+        expect((await client.status()).inputs).toEqual([expect.objectContaining({ name: `${kind}:creek/bass` })]);
+        expect(await liveInputsFor(client, 'creek')).toEqual([{ track: 'bass', input: `${kind}:creek/bass` }]);
+        await routed.close();
+        expect((await client.status()).inputs).toBeUndefined();
+      }
+    } finally {
+      client.close();
+    }
+  });
+
   it('says why it cannot route: tracks in two songs, FieldOut not built, or nothing but instruments', async () => {
     expect(
-      await routeArmed(
+      await routeVoices(
         [
-          { program: pad(), track: 'creek/bass', unheardEffects: [] },
-          { program: pad(), track: 'tall-grass/bass', unheardEffects: [] },
+          { program: pad(), track: 'creek/bass' },
+          { program: pad(), track: 'tall-grass/bass' },
         ],
         root,
-        { env },
+        { kind: 'keys', env },
       ),
     ).toEqual({ reason: 'the tracks are in creek and tall-grass, and one session plays one song' });
     expect(
-      await routeArmed([{ program: pad(), track: 'creek/bass', unheardEffects: [] }], root, {
+      await routeVoices([{ program: pad(), track: 'creek/bass' }], root, {
+        kind: 'keys',
         env: { ...process.env, FIELD_FIELDOUT: join(root, 'songs') },
       }),
     ).toEqual({ reason: `FIELD_FIELDOUT names ${join(root, 'songs')}, which holds no FieldOut plugin` });
-    expect(await routeArmed([{ program: pad(), unheardEffects: [] }], root, { env })).toBeUndefined();
+    expect(await routeVoices([{ program: pad() }], root, { kind: 'keys', env })).toBeUndefined();
   });
 
   it("keeps the loop and solo another terminal's session was loaded with", async () => {
@@ -127,7 +143,7 @@ describe.skipIf(!binary || process.platform === 'win32')('routing armed tracks t
     try {
       const { session } = await compileSession(root, 'creek', { loop: true, solo: 'bass' });
       await client.session(session);
-      const routed = (await routeArmed([{ program: pad(), track: 'creek/bass', unheardEffects: [] }], root, { env })) as Routing;
+      const routed = (await routeVoices([{ program: pad(), track: 'creek/bass' }], root, { kind: 'keys', env })) as Routing;
       expect(await client.status()).toMatchObject({ looping: true, solo: 'bass', song: 'creek' });
       await routed.close();
       expect(await client.status()).toMatchObject({ looping: true, solo: 'bass', song: 'creek' });
@@ -144,7 +160,7 @@ describe.skipIf(!binary || process.platform === 'win32')('routing armed tracks t
       join(root, 'songs/creek/tracks/main.yaml'),
       'name: main\ninserts:\n  - effect: limit\n    ceiling_db: -1\ninputs:\n  - track: bass\n',
     );
-    const routed = (await routeArmed([{ program: pad(), track: 'creek/bass', unheardEffects: [] }], root, { env })) as Routing;
+    const routed = (await routeVoices([{ program: pad(), track: 'creek/bass' }], root, { kind: 'keys', env })) as Routing;
     const client = await AudiodClient.connect(root);
     try {
       for (const halt of [() => client.stop(), () => client.pause(), () => client.stop()]) {
@@ -159,7 +175,7 @@ describe.skipIf(!binary || process.platform === 'win32')('routing armed tracks t
   });
 
   it('leaves a song another terminal loaded meanwhile when it closes', async () => {
-    const routed = (await routeArmed([{ program: pad(), track: 'creek/bass', unheardEffects: [] }], root, { env })) as Routing;
+    const routed = (await routeVoices([{ program: pad(), track: 'creek/bass' }], root, { kind: 'keys', env })) as Routing;
     const client = await AudiodClient.connect(root);
     try {
       await client.session((await compileSession(root, 'tall-grass')).session);
@@ -171,7 +187,7 @@ describe.skipIf(!binary || process.platform === 'win32')('routing armed tracks t
   });
 
   it('says whether FieldOut is writing the ring', async () => {
-    const routed = (await routeArmed([{ program: pad(), track: 'creek/bass', unheardEffects: [] }], root, { env })) as Routing;
+    const routed = (await routeVoices([{ program: pad(), track: 'creek/bass' }], root, { kind: 'keys', env })) as Routing;
     try {
       // Nothing writes it: no voice host here.
       expect(await routed.flowing(300)).toBe(false);
@@ -185,7 +201,7 @@ describe.skipIf(!binary || process.platform === 'win32')('routing armed tracks t
   });
 
   it('plays dry when the daemon converts the song to the device, and leaves no input open', async () => {
-    expect(await routeArmed([{ program: pad(), track: 'fast/bass', unheardEffects: [] }], root, { env })).toEqual({
+    expect(await routeVoices([{ program: pad(), track: 'fast/bass' }], root, { kind: 'keys', env })).toEqual({
       reason: "the device does not run at the song's 44100 Hz, so the daemon converts it",
     });
     const client = await AudiodClient.connect(root);

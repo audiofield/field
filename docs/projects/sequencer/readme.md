@@ -95,7 +95,8 @@ drive voices the same way.
    sources. It opens the daemon input `seq:creek/keys` for the voice
    and reloads the session. A session compiled with a `seq:` input open
    on a track leaves out that track's notes renders, so you hear the
-   part once, live.
+   part once, live. It keeps the length those renders give the song, so
+   the transport plays the part out.
 7. While the transport plays, the daemon's callback finds the events
    due in each block, early by the output's lead, and a sender thread
    sends each one at its exact time on the virtual source
@@ -975,3 +976,70 @@ early, no event handed over early reaching the destination after a
 stop with a fake CoreMIDI, and the clock's transport messages through
 `--midi-monitor`. Only macOS ran them. Linux and Windows were not built
 here; CI builds and tests them. The clock's projection row is chunk 5's.
+
+## 11 Voices and `field sc notes`, as built
+
+Chunks 3 and 6 built §2.6 and §2.8 in `src/sc/voice/`,
+`src/commands/sc.ts`, `sc/voice-sources.scd`, and
+`sc/notes-render.scd`. They landed in one pull request rather than the
+two §6 asks for. keys.md and cli.md describe them as they run. Building
+them settled these points:
+
+- **A voice's sources match by name or by device.** So `--source` can
+  name a hardware device with several ports. A source named that is not
+  there when the host starts stops the host, which lists the sources
+  there are.
+- **`--source` applies to every voice a command starts.** Each voice has
+  its own list in `FIELD_INSTRUMENTS`, because `field seq` needs one per
+  voice, but `field sc voice` gives them all the same one.
+- **The `Field Seq` rule is a name prefix.** A voice with no list plays
+  from every source except those whose name starts `Field Seq `.
+- **`seq:` leaves out a track's `notes:` entries and its record entry
+  when the track has an instrument, and keeps its audio.** Validation
+  refuses an audio take on such a track, so every take its record entry
+  can choose renders notes.
+- **A voice that plays straight to the device names its output.**
+  `field sc voice` asks the daemon for the system output, and with no
+  daemon to answer, asks `field-audiod --keys`, as `field keys` does.
+  That helper publishes a MIDI source, so it closes before the host
+  lists the sources. macOS can refuse a new process its MIDI client, so
+  a refused helper starts once more, and a second refusal stops with the
+  error, because with no device `scsynth` on macOS would open the
+  default input and wait on the microphone permission.
+- **On macOS, `field sc voice` never starts a host with no device
+  unless you ask.** Any helper failure there stops the command, not only a
+  refusal, as `field keys` stops: `scsynth` with no device would open the
+  default input and wait on the microphone permission, whatever kept the
+  helper from answering. `--device` gets past it. Linux and Windows keep
+  the no-device path, where a helper that cannot run costs nothing.
+- **The host escapes every control character in a status line.** JSON
+  takes none raw, and a status that does not parse loses its reason, as
+  a program's error with a tab in it did.
+- **A voice host that macOS refuses a MIDI client fails, and
+  `field sc voice` starts it once more.** `MIDIClient.init` throws in a
+  refused `sclang`, and nothing else ends the host then. `field keys`
+  keeps its helper's client alive beside the host, and a review measured
+  no refusal that way, so it does not start the host again.
+- **A note's pitch comes from `~freq`, rounded to a MIDI note.** Every
+  spelling of pitch reaches `~freq`, and `~midinote` misses `\freq`,
+  `\ctranspose`, and `\harmonic`.
+- **A note's velocity comes from `amp`.** It is `amp` times 127, from 1
+  to 127, because the voice host plays a velocity at `amp` velocity /
+  127. So a part plays back at the pattern's level.
+- **A part's `length` comes from `--beats`.** The part keeps each note
+  that starts before then, and a note may ring past it, which project
+  validation accepts.
+- **The harness writes its notes to a file, not to stdout.** sclang
+  prints its own lines to stdout, so `sc/notes-render.scd` writes JSON
+  to `FIELD_OUTPUT`, and Field prints the part from that.
+- **A pattern refuses what would write a bad part.** An error as it
+  plays, a negative or non-numeric `dur`, and 100,000 events without
+  reaching the last beat each stop `field sc notes` with the reason.
+
+The tests are `src/commands/sc.test.ts`, `src/sc/voice/sources.test.ts`,
+`src/sc/voice/routing-voice.test.ts`, `src/sc/voice/knob-files.test.ts`,
+and `src/model/live-notes.test.ts`. `field sc notes` and the sources
+rule run through real sclang, and `routing-voice.test.ts` runs a real
+voice host and daemon. `field sc voice` itself runs against a stand-in
+for sclang. Nobody has run it by hand with a hardware controller, which
+is still owed.

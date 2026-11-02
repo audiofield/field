@@ -9,7 +9,7 @@ import { createSong, createTrack } from '../commands/create.js';
 import { init } from '../commands/init.js';
 import { compileSession } from '../graph/live.js';
 import { writeWavFloat32 } from '../audio/wav.js';
-import { nrtScore, oscBundle, oscMessage, routeSynthDef, synthDefFile } from '../keys/synthdef.js';
+import { nrtScore, oscBundle, oscMessage, routeSynthDef, synthDefFile } from '../sc/voice/synthdef.js';
 import { removeTempProject } from '../testing/temp.js';
 import { AudiodClient, daemonBinary } from './client.js';
 

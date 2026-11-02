@@ -1,18 +1,30 @@
-import { AudiodClient } from '../audiod/client.js';
-import { reloadIfPlaying, reloadWithInputs } from '../audiod/live-inputs.js';
-import { BUILD_DAEMON } from '../remedies.js';
-import type { ArmedInstrument } from './targets.js';
-import { fieldOutPluginDir } from './voice-host.js';
+import { AudiodClient } from '../../audiod/client.js';
+import { liveInputName, reloadIfPlaying, reloadWithInputs, type LiveInputKind } from '../../audiod/live-inputs.js';
+import { BUILD_DAEMON } from '../../remedies.js';
+import { fieldOutPluginDir } from './host.js';
 
-// Playing through the effects (live-supercollider.md chunk 3): each armed
-// track gets an input in the daemon, the song's live session is loaded
-// with those inputs, and the voice host writes each track's voice into
-// its input's ring through FieldOut. An instrument armed by name, with no
-// track, still plays straight to the device.
+// A voice to play: its program, and the track it plays for, `song/track`,
+// or none for an instrument named by program.
+export interface Voice {
+  program: string;
+  track?: string | undefined;
+}
+
+// The commands that host voices, by the kind of input each opens for a
+// track's voice (sequencer.md §2.6).
+export type VoiceInputKind = Exclude<LiveInputKind, 'capture'>;
+const COMMAND: Record<VoiceInputKind, string> = { keys: 'field keys', seq: 'field seq', voice: 'field sc voice' };
+
+// Playing through the effects (live-supercollider.md chunk 3): each
+// track gets an input in the daemon, named for the command that plays
+// it, the song's live session is loaded with those inputs, and the voice
+// host writes each track's voice into its input's ring through FieldOut.
+// An instrument named by program, with no track, still plays straight to
+// the device.
 export interface Routing {
-  // One program per armed entry, in order: a track gets its own voice,
-  // even when it shares a program with another, because its voice goes to
-  // its own ring.
+  // One program per voice, in order: a track gets its own voice, even
+  // when it shares a program with another, because its voice goes to its
+  // own ring.
   programs: string[];
   // Each entry's ring, or null for one that plays straight to the device.
   rings: (number | null)[];
@@ -35,10 +47,10 @@ export interface Unrouted {
   reason: string;
 }
 
-export async function routeArmed(
-  armed: ArmedInstrument[],
+export async function routeVoices(
+  armed: readonly Voice[],
   root: string,
-  options: { device?: string; env?: NodeJS.ProcessEnv } = {},
+  options: { kind: VoiceInputKind; device?: string; env?: NodeJS.ProcessEnv },
 ): Promise<Routing | Unrouted | undefined> {
   const tracks = armed.filter((a) => a.track !== undefined);
   if (tracks.length === 0) return undefined;
@@ -67,8 +79,8 @@ export async function routeArmed(
   const closeOpened = async (): Promise<void> => {
     for (const name of opened.splice(0)) await client.closeInput(name).catch(() => {});
   };
-  // The song with whatever inputs are open now, others' included; a
-  // field keys load changes only the inputs.
+  // The song with whatever inputs are open now, others' included; this
+  // load changes only the inputs.
   const reload = (): Promise<void> => reloadWithInputs(client, root, song);
   const unrouted = async (reason: string): Promise<Unrouted> => {
     if (opened.length > 0) {
@@ -84,7 +96,7 @@ export async function routeArmed(
     // records.
     if ((await client.status()).record?.state === 'recording') {
       client.close();
-      return { reason: 'a take is recording: start field keys again once it stops' };
+      return { reason: `a take is recording: start ${COMMAND[options.kind]} again once it stops` };
     }
     if (!client.supports('live-input')) {
       return await unrouted(`field-audiod ${client.daemonVersion} predates live inputs: run field transport quit, then play again`);
@@ -101,7 +113,7 @@ export async function routeArmed(
         rings.push(null);
         continue;
       }
-      const name = `keys:${entry.track}`;
+      const name = liveInputName(options.kind, song, entry.track.slice(song.length + 1));
       const { ring } = await client.openInput(name);
       opened.push(name);
       rings.push(ring);

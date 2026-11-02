@@ -278,6 +278,11 @@ reading them. A `supercollider:` entry never runs in voice mode, so
 voice mode changes its renders only through the program's own content
 hash. See [keys.md](keys.md).
 
+A program can also write parts. When `FIELD_MODE` is `notes`, its value
+is a Pattern, which `field sc notes` plays with no server and prints as
+a part. The graph never runs this mode, so a part reaches a render only
+as a file ([keys.md](keys.md) "Write parts from a pattern").
+
 ### `voice-render` — notes, rendered through an instrument
 
 The graph mints one for each `notes:` entry, and for each record entry

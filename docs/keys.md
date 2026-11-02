@@ -66,7 +66,17 @@ You do not need to be inside a Field project.
 
 If `field keys` says it cannot create a virtual MIDI source on macOS,
 run it again. CoreMIDI has refused the first source a new process asked
-for, once, and a new process gets a new MIDI client.
+for, once, and a new process gets a new MIDI client. `field sc voice`,
+which starts the same helper to name the system output when no daemon
+can answer, tries once more by itself, and then stops with that error.
+It does the same when macOS refuses `sclang` its MIDI client as the voice
+host starts. On macOS, `field sc voice` also stops when the helper cannot
+run at all, such as when `field-audiod` is not built, because `scsynth`
+with no device would wait on the microphone permission. Name the output
+with `--device` to get past a helper failure. It does not help a refused
+`sclang`, which needs a new process with or without it. On Linux and
+Windows, `field sc voice` starts with no device when the helper cannot
+run.
 
 ## Play
 
@@ -319,8 +329,10 @@ instrument, and it resolves from where you are.
    output. It runs at the device's current sample rate and never
    changes it, so `field play` and `field keys` can share a device.
 3. The host loads the instrument's voice and plays it from every MIDI
-   source, so a USB controller plays it too. The instrument's line
-   shows it live, with its device and rate.
+   source except the `Field Seq <song>/<track>` ones, each of which
+   carries one track's parts for that track's own voice, so a USB
+   controller plays it too. The instrument's line shows it live, with
+   its device and rate.
 
 The voice's sound goes straight to the device, beside `field play`'s
 rather than through the song's inserts and master chain. If something
@@ -442,6 +454,41 @@ The next save that loads puts `· reloaded` on the line instead.
   note, and no chorus. The modulation wheel opens the filter, up to four
   times its cutoff, and its knobs are `juno`'s four. It plays at true
   pitch, so in `musical` press `Z` to drop an octave.
+
+### Write parts from a pattern
+
+A program can also write parts. When `FIELD_MODE` is `notes`, its value,
+the file's last expression, must be a Pattern of note events, and it
+must not render or exit. `field sc notes` plays that pattern with no
+server and prints a part ([cli.md](cli.md) "Write a part from a
+pattern"). The render variables are absent in notes mode, as they are in
+voice mode, so check `FIELD_MODE` before you read them:
+
+```supercollider
+(
+if ("FIELD_MODE".getenv == "notes") {
+	Pbind(\midinote, Pseq([36, Prand([43, 46, 48], 1)], inf), \dur, 0.5, \amp, Pwhite(0.5, 0.9))
+} {
+	// voice and render modes: the program as it reads today
+}
+)
+```
+
+Each event that is not a rest writes one note for each pitch it sounds:
+
+| Part field | What the event gives it |
+| --- | --- |
+| `at` | Where the event starts, the sum of the `dur` values before it |
+| `length` | Its `sustain` |
+| `note` | The pitch it sounds, rounded to a MIDI note, however the pattern spells it: `\midinote`, `\note`, `\degree`, `\freq`, `\ctranspose`, or `\harmonic` |
+| `velocity` | Its `amp` times 127, from 1 to 127, because the voice host plays a velocity at `amp` velocity / 127 |
+| `channel` | Its `chan` plus 1, because a pattern counts channels from 0 |
+
+`field sc notes` stops with the reason when a program's value is not a
+Pattern, when the pattern fails as it plays, when an event's `dur` is
+negative or not a number, when a note falls outside MIDI's 0 to 127 or a
+`chan` outside 0 to 15, or when 100,000 events go by without reaching
+the last beat.
 
 ## Play a track
 
