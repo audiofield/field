@@ -1,0 +1,3797 @@
+diff --git a/docs/README.md b/docs/README.md
+index b04c5a35..61374137 100644
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -57,6 +57,11 @@ the same files.
+ - **Take** — one performance of something. Recorded takes and renders of
+   nondeterministic nodes use the same machinery: numbered, auditioned,
+   one active, none destroyed.
++- **Part** — notes you write, in bars and beats, in a file under the
++  song's `notes/`. A track's `notes:` entry places it, and the build
++  renders it through the track's instrument. A MIDI take is in the same
++  format, so you edit one by copying it into a part. See
++  [project-model.md](project-model.md) "Parts".
+ - **Recipe** — a committed, seeded description of how a generated asset
+   was produced (a SuperCollider program plus a seed, an ACE prompt plus
+   model plus seed), with provenance. Recipes are reproducible; the
+diff --git a/docs/audio-engine.md b/docs/audio-engine.md
+index af334c24..b29c7beb 100644
+--- a/docs/audio-engine.md
++++ b/docs/audio-engine.md
+@@ -425,5 +425,12 @@ placement path from the output track — and then the record entry's own
+ window start, so the row counts from the entry's `at` the way the graph
+ reads it back; the device's declared round trip, input plus output
+ latency, is recorded beside it, and both are converted into the track's
+-rate. `field record --recover <id>` lands what it recovers, and
+-`field record --land <id>` lands a finalized transaction nothing landed.
++rate. A MIDI take lands as a notes file instead,
++`audio/<node>/<take>.notes.yaml`, in ticks from where the take started
++on the track, with the output latency taken off its notes. Its row's
++`started_at_ticks` counts that start in ticks from the record entry's
++`at`, which is where the take plays from, and `musical_position` says
++where it was in the track's own time
++([project-model.md](project-model.md) "MIDI takes"). `field record
++--recover <id>` lands what it recovers, and `field record --land <id>`
++lands a finalized transaction nothing landed.
+diff --git a/docs/build-graph.md b/docs/build-graph.md
+index 8b5e1d7b..4bb2db06 100644
+--- a/docs/build-graph.md
++++ b/docs/build-graph.md
+@@ -183,7 +183,9 @@ replaces the entry with a window over its chosen take's ledger asset,
+ placed where the take's row says it was sung, or with nothing when no
+ take is chosen (`withTakes` in `src/graph/graph.ts`). Nothing after
+ that point knows recording exists. An entry that records MIDI places
+-its take's render instead, a `voice-render` node (below).
++its take's render instead, a `voice-render` node (below). A `notes:`
++entry mints a `voice-render` node too, which the stem places like any
++generator's.
+ 
+ ### `stem` — every track, implicitly
+ 
+@@ -276,29 +278,45 @@ reading them. A `supercollider:` entry never runs in voice mode, so
+ voice mode changes its renders only through the program's own content
+ hash. See [keys.md](keys.md).
+ 
+-### `voice-render` — a recorded MIDI take, rendered
++### `voice-render` — notes, rendered through an instrument
+ 
+-The graph mints one for a record entry with an instrument whose chosen
+-take is a MIDI take, at `//songs/<song>/gen:<name>` where `<name>` is
+-the record node's, and the entry places it where the take was played
+-(keyboard-instrument.md §12.3). Nobody declares it.
++The graph mints one for each `notes:` entry, and for each record entry
++whose chosen take is a MIDI take, at `//songs/<song>/gen:<name>` where
++`<name>` is the entry's generator name (keyboard-instrument.md §12.3,
++sequencer.md §2.3). It plays through the track's `instrument:`. Nobody
++declares it. The track places a part's render in the entry's window, as
++any generator's, and a take's render where the take starts. A looping
++part resolves each repetition where the repetition starts, and a
++repetition that resolves differently from every one before it, after a
++tempo or meter change, gets a node of its own, `gen:<name>-<n>`, named
++for its number `<n>`. Repetitions that resolve alike play one node
++(`partRenders` in `src/generators/stem.ts`).
+ 
+ It runs `sc/voice-render.scd` through `sclang`, which loads the
+ instrument in voice mode with `sc/voice-load.scd`, as `field keys` loads
+-it, and drives its voice from the take's notes file with
+-`sc/voicer.scd`, the voicing `field keys` plays with. Sustain,
+-all-notes-off, pitch bend (±2 semitones), the modulation wheel, and
+-every other controller act as they did live. The render is stereo at the
+-track's rate and runs 4 seconds past the take, so the last notes'
+-release is heard; scsynth rounds it up to a whole control block, as it
+-does every NRT render. Its cache inputs are the notes file, the
+-instrument's content hash, its knob file's when it has one, and the
+-three harness files, so editing any of them renders the take again. The
+-render checks the knob file as `field keys` does, so `field check` and
+-the build name a file that fails before anything renders, and it hands
+-the voice the checked copy in `FIELD_KNOBS`. The harness adds nothing
+-random, so an instrument that renders reproducibly renders its takes
+-reproducibly, bit for bit.
++it, and drives its voice from the notes with `sc/voicer.scd`, the
++voicing `field keys` plays with. Sustain, all-notes-off, pitch bend (±2
++semitones), the modulation wheel, and every other controller act as
++they did live. The render is stereo at the track's rate and runs 4
++seconds past the part's `length`, which is the last note's end when the
++part declares none, so the last notes' release is heard; scsynth rounds
++it up to a whole control block, as it does every NRT render.
++
++Its parameters are the instrument and `events`: the notes resolved
++through the track's tempo and meter maps from where they are placed, in
++samples from that point (`src/time/notes.ts`). Its cache inputs are the
++notes file, the instrument's content hash, its knob file's when it has
++one, and the three harness files. So editing a note, the tempo map, or
++any input renders it again, and a second placement that resolves alike
++is a cache hit, because the events count from the placement rather than
++from the song's start. A take is a source node, so the build refuses
++one whose pinned bytes changed; a part is hashed in place. A take
++copied into a part and placed where the take starts has the take's
++action key. The render checks the knob file as `field keys` does, so
++`field check` and the build name a file that fails before anything
++renders, and it hands the voice the checked copy in `FIELD_KNOBS`. The
++harness adds nothing random, so an instrument that renders reproducibly
++renders its notes reproducibly, bit for bit.
+ 
+ ### `eq` / `limit` / `reverb` / `plate` / `hall` — the offline effects
+ 
+diff --git a/docs/cli.md b/docs/cli.md
+index 11a99b92..2dbfc35a 100644
+--- a/docs/cli.md
++++ b/docs/cli.md
+@@ -431,10 +431,10 @@ and you monitor in your interface's mixer.
+ 
+ Name several tracks to record them in one pass, audio, MIDI, or both:
+ every take starts on the same sample and lands on its own track. A
+-track whose record entry names an instrument records MIDI
+-([keys.md](keys.md#record-what-you-play)). The audio tracks take
+-`--input` channels in the order you name them, 1, 2, and on when you
+-give none; `--loop` records one track only:
++track with an `instrument:` records MIDI
++([keys.md](keys.md#record-what-you-play)), and lands it in ticks. The
++audio tracks take `--input` channels in the order you name them, 1, 2,
++and on when you give none; `--loop` records one track only:
+ 
+ ```sh
+ field record tall-grass/track:vocal tall-grass/track:guitar tall-grass/track:keys --input 1,2
+@@ -685,7 +685,7 @@ amended. Porting the rest is tracked there and in
+ | `field transport <op>` | drive the running daemon |
+ | `field ui <song>` | open a song in the UI window, served on `127.0.0.1` |
+ | `field record <tracks...>` | record a take onto each track's `record:` entry, in one pass |
+-| `field keys [targets...]` | play the keyboard as a MIDI source, and instruments or MIDI tracks from it |
++| `field keys [targets...]` | play the keyboard as a MIDI source, and instruments or the tracks that have them from it |
+ | `field login` | log in to a remote and store the token |
+ | `field logout` | forget the stored token |
+ | `field clone <owner>/<project> [dir]` | clone a project and warm the build cache |
+diff --git a/docs/keys.md b/docs/keys.md
+index 48965ac6..6e606c89 100644
+--- a/docs/keys.md
++++ b/docs/keys.md
+@@ -430,8 +430,8 @@ The next save that loads puts `· reloaded` on the line instead.
+ ## Play a track
+ 
+ Name a track instead of an instrument, and `field keys` plays the
+-instrument the track's record entry names, whether or not the track has
+-any takes yet. Name several, and every key plays all of them at once:
++track's `instrument:`, whether or not the track has any takes or parts
++yet. Name several, and every key plays all of them at once:
+ 
+ ```console
+ $ field keys creek/track:keys creek/track:bass
+@@ -441,9 +441,9 @@ Field Keys · musical · transpose 0 · velocity 100 · bend +0 · C3
+ ```
+ 
+ A target with `track:` in it is a track; anything else is an
+-instrument, so you can mix the two. A track whose record entry names no
+-instrument plays the MIDI track under it, down its `track:` inputs, so
+-naming a bus plays the part it carries. If more than one MIDI track is
++instrument, so you can mix the two. A track with no instrument plays
++the track with one under it, down its `track:` inputs, so naming a bus
++plays the part it carries. If more than one track with an instrument is
+ under it, `field keys` lists them and stops, and you name the ones you
+ mean.
+ 
+@@ -489,19 +489,19 @@ says so within two seconds of the voice going live.
+ 
+ ## Record what you play
+ 
+-A track records what you play when its `record:` entry names an
++A track's `record:` entry records what you play when the track has an
+ instrument. The take keeps the notes, not the sound, and the build
+ renders them through the instrument, so changing the instrument
+ changes every take recorded for it.
+ 
+-1. Give the track a record entry with the instrument:
++1. Give the track an instrument and a record entry:
+ 
+    ```yaml
+    # songs/creek/tracks/keys.yaml
+    name: keys
++   instrument: pad
+    inputs:
+      - record:
+-         instrument: pad
+    ```
+ 
+ 2. In one terminal, play the instrument so you hear it while you
+@@ -526,14 +526,16 @@ A MIDI take listens to every MIDI source on the machine when
+ and connect controllers first: a source that appears after the arm is
+ not heard. `--at`, `--until`, `--click`, and `--count-in`
+ work as they do for audio; `--input`, `--device`, and `--loop` are for
+-audio takes only. The take is placed by the output latency alone,
+-because you play in time with what you hear. `field choose` picks
+-among takes as it does for audio. For the files a take leaves, see
+-[project-model.md](project-model.md) "MIDI takes".
+-
+-Name several tracks to record them in one pass: every MIDI track you
+-name records the same notes, and an audio track records its own input,
+-so you can sing and play at once:
++audio takes only. The take lands in ticks, with the output latency
++alone taken off its notes, because you play in time with what you hear,
++so it stays on the beats you played after a tempo edit. `field choose`
++picks among takes as it does for audio. For the files a take leaves,
++and how to copy one into a part you can edit, see
++[project-model.md](project-model.md) "MIDI takes" and "Parts".
++
++Name several tracks to record them in one pass: every track with an
++instrument that you name records the same notes, and an audio track
++records its own input, so you can sing and play at once:
+ 
+ ```console
+ $ field record creek/track:vox creek/track:keys --at 17
+diff --git a/docs/project-model.md b/docs/project-model.md
+index 9e5f7d00..32d70c49 100644
+--- a/docs/project-model.md
++++ b/docs/project-model.md
+@@ -31,6 +31,7 @@ project/
+ │   └── <song>/
+ │       ├── song.yaml     # name, time (tempo + meter), rate, length, loop
+ │       ├── tracks/       # one file per track: inserts and its inputs
++│       ├── notes/        # one file per part: notes in bars and beats
+ │       ├── audio/        # ALL committed song sound (LFS): recorded,
+ │       │                 # imported, generated — a directory per item
+ │       │                 # (audio/<name>/), takes and their pins
+@@ -82,7 +83,8 @@ file per track — every definition is a track: an effect is an insert on
+ one, a render or a generative request is an entry in one (see
+ [tracks.md](tracks.md)) — while `audio/` holds *all* of a song's
+ committed sound: recorded, imported, or generated, the producer is
+-irrelevant.
++irrelevant. `notes/` holds the song's parts, notes you write, which a
++track's `notes:` entries place (see "Parts" below).
+ 
+ Where a file lives declares who may see it (project-layout.md §1.5): an
+ entry references its own song's names plus `//shared/asset:` pins, and
+@@ -121,7 +123,9 @@ musical, resolved through the song's meter map.
+ 
+ Arrays are resolved to ticks at load: either spelling produces the same
+ build, and `field fmt` preserves whichever notation the author wrote,
+-keeping arrays single-line.
++keeping arrays single-line. A part's times are the exception: they
++count from wherever an entry places the part, so they resolve for each
++placement (see "Parts").
+ 
+ The arrangement is derived, not authored (nested-tracks.md §11): a
+ song's structure *is* its output track's placements, and
+@@ -285,10 +289,11 @@ beside the audio say which performances exist and which one plays.
+ 
+ The entry carries no device or input — bare `- record:` — because the
+ device and input you record through are facts about your machine, not
+-the song (recording.md §4). The one thing it may name is an instrument,
+-which makes it record MIDI instead of audio (see "MIDI takes" below).
+-It places like every other entry: `at`, `duration`, `gain_db`, and the
+-rest apply to the window the takes fill. It never loops.
++the song (recording.md §4). The track's `instrument:` decides the kind
++of take: with one, the entry records MIDI instead of audio (see "MIDI
++takes" below). It places like every other entry: `at`, `duration`,
++`gain_db`, and the rest apply to the window the takes fill. It never
++loops.
+ 
+ ```yaml
+ # songs/creek/tracks/lead-vocal.yaml
+@@ -347,37 +352,49 @@ is on disk only; the loader merges them.
+ 
+ ### MIDI takes
+ 
+-A record entry that names an instrument records what you play on
+-`field keys` or a controller, and you hear it through that instrument
+-([projects/keyboard-instrument/readme.md](projects/keyboard-instrument/readme.md)
+-§12). The instrument resolves as `field keys` resolves one: `.scd` is
+-added to a name with no extension, and a name without a `/` is under
+-`shared/instruments/`. Its program must answer `FIELD_MODE=voice`.
++A record entry on a track that has an instrument records what you play
++on `field keys` or a controller, and you hear it through that
++instrument ([projects/keyboard-instrument/readme.md](projects/keyboard-instrument/readme.md)
++§12, [projects/sequencer/readme.md](projects/sequencer/readme.md) §2.4).
++The instrument is the track's `instrument:` ([tracks.md](tracks.md)
++"A track file"). Its program must answer `FIELD_MODE=voice`.
+ 
+ ```yaml
+ # songs/creek/tracks/keys.yaml
+ name: keys
++instrument: pad
+ inputs:
+   - record:
+-      instrument: pad
+ ```
+ 
+ A MIDI take is a notes file, `audio/<name>/<take>.notes.yaml`, pinned
+-in the ledger like any take, with one flow row per note, controller
+-change, and pitch bend, in samples at the capture's rate:
++in the ledger like any take, in the format a part has (see "Parts"
++below): one flow row per note, controller change, and pitch bend, in
++scalar ticks from the take's start.
+ 
+ ```yaml
+ # songs/creek/audio/keys/take-20261010-143012.notes.yaml
+-sample_rate: 48000
+-length: 96000
++length: 3840
+ notes:
+-  - { at: 0, length: 24000, note: 60, velocity: 100 }
+-  - { at: 12000, length: 84000, note: 64, velocity: 90 }
++  - {at: 0, length: 960, note: 60, velocity: 100}
++  - {at: 480, length: 3360, note: 64, velocity: 90}
+ controls:
+-  - { at: 6000, cc: 64, value: 127 }
++  - {at: 240, cc: 64, value: 127}
+ bends: []
+ ```
+ 
++`field record` turns each captured time into ticks through the track's
++tempo map, after it takes off the output latency: you play in time with
++what you hear, which runs behind the playhead by that much. A note you
++press that early in the take's first moments starts with the take. The
++row's `started_at_ticks` is where the take starts, in ticks after the
++record entry's `at`, and the take plays from there. So moving the
++entry's `at` moves the take by the same musical distance, as it moves
++an audio take, and the take follows a tempo edit as a part does.
++`started_at_samples`, `latency`, and `musical_position`, where the take
++started on its track in the track's own time, stay in the row as the
++record of where the take was captured.
++
+ A take starts where your knobs were: its first `controls` rows, at
+ `at: 0`, are each controller's value when the take started, which the
+ daemon chased from `field keys` and from every control change after the
+@@ -385,19 +402,23 @@ arm ([audio-engine.md](audio-engine.md) "MIDI capture"). The render
+ applies them before a note at 0. A note still held when the take
+ stopped lasts to its end, and `channel` appears only when it is not 1.
+ Its row carries `sources`, the MIDI inputs the take listened to, where
+-an audio row carries `device` and `input`, and its `latency` is the
+-output latency alone: you play in time with what you hear, which runs
+-behind the playhead by that much.
+-
+-The build renders the chosen take through the instrument as a `gen:`
+-node named like the record node, and the entry places that render. A
+-take of the other kind than its entry records is an error in `field
+-check`, as is an instrument whose program is missing or outside the
+-project: it resolves by the rule a `supercollider:` entry's `source:`
+-does. The notes file has one
+-writer, `field record`. Editing it by hand changes its hash, and the
+-build then refuses it, as it refuses any pinned file whose bytes
+-changed.
++an audio row carries `device` and `input`.
++
++A notes file that carries `sample_rate:` is a take recorded before takes
++landed in ticks. Its times are samples at that rate, and it plays as it
++was recorded: at the entry's window start plus `started_at_samples`
++less `latency`, as an audio take does, wherever the tempo moves.
++
++The build renders the chosen take through the track's instrument as a
++`gen:` node named like the record node, and the entry places that
++render. A take of the other kind than its track records is an error in
++`field check`, as is an instrument whose program is missing or outside
++the project: it resolves by the rule a `supercollider:` entry's
++`source:` does. `check` also refuses `instrument:` under `record:`, and
++says to move it to the track. The notes file has one writer, `field
++record`. Editing it by hand changes its hash, and the build then
++refuses it, as it refuses any pinned file whose bytes changed. To edit
++a take, copy it into a part.
+ 
+ ### Generating and choosing
+ 
+@@ -428,3 +449,84 @@ on the gen node answers which take is chosen:
+ 
+ Every file involved is schema-validated: `field check` verifies variant
+ hashes, and `field fmt` covers them.
++
++## Parts
++
++A part is a notes file you write: `songs/<song>/notes/<name>.yaml`, by
++hand, with an agent, or by copying a take. A `- notes: <name>` entry
++places it on a track, which plays it through the track's instrument
++([projects/sequencer/readme.md](projects/sequencer/readme.md) §2.2).
++
++```yaml
++# songs/creek/notes/riff.yaml
++length: [2]
++notes:
++  - {at: [1], length: [0, 1], note: C3, velocity: 110}
++  - {at: [1, 2], length: [0, 1], note: G3}
++  - {at: [1, 3], length: 480, note: 60}
++  - {at: [2], length: [1], note: C2, velocity: 90, channel: 2}
++controls:
++  - {at: [1], cc: 74, value: 64}
++bends: []
++```
++
++| Field | Meaning |
++| --- | --- |
++| `length` | The part's span from its start. Optional: omitted, the part ends where its last note ends. A looping entry that omits `every` repeats at `length`. The render stops 4 seconds after `length`, so a note that starts later never sounds, and `field check` does not refuse it. |
++| `notes` | Each note: `at`, a position in the part; `length`, a span, which may be 0; `note`, a MIDI number from 0 to 127 or a name in scientific pitch, where `C4` is 60, with `#` or `b`; `velocity`, 1 to 127, 100 when omitted; and `channel`, 1 to 16, 1 when omitted. |
++| `controls` | Each controller change: `at`, `cc`, `value`, and `channel`. |
++| `bends` | Each pitch bend: `at`, `value` from 0 to 16383 with 8192 at rest, and `channel`. |
++
++Time fields take musical time's two spellings: a scalar is ticks, 960 to
++the quarter note, and an array is musical. A position counts from the
++part's start, so `at: [1]` is where the part is placed and `at: [2, 3]`
++is beat 3 of its second bar. Positions and spans advance through the
++placing track's meter map from the entry's `at`, as a musical
++`duration` does, so a part placed across a meter change keeps its bars
++whole. A beat or tick that the bar it lands in does not have is an
++error that `field check` reports against the entry that places the
++part.
++
++`field check` validates every part against the notes schema, a note
++name included, and every `notes:` entry against its track: the part
++exists, and the track has an instrument. `field fmt` writes one row per
++note and keeps the spelling each row has, a name or a number, ticks or
++musical time, so two versions of a part diff line by line.
++
++The build renders each placement through the track's instrument as a
++`voice-render` node, `gen:<track>` or `gen:<track>-<id>`, and the track
++places the render in the entry's window like any generator's
++([build-graph.md](build-graph.md) "`voice-render`"). The render is keyed
++on the part's events as they resolve from where the entry places them,
++counted from that point, so a second placement that resolves alike is a
++cache hit, and a tempo edit renders the part again. Each repetition of
++a looping entry resolves from where the repetition starts, as the part
++placed there by hand would. Repetitions that resolve alike play one
++render, so a loop in a steady song is one render, and the repetitions
++after a tempo change play `gen:<track>-<n>` or `gen:<track>-<id>-<n>`,
++named for the first repetition `<n>` that plays it.
++
++To edit a take, copy it into a part and place the part where the take
++plays, `started_at_ticks` after the record entry's `at`. While the
++entry has not moved since you recorded the take, that is the take's
++`musical_position`. Then mute the record entry:
++
++```console
++$ cp songs/creek/audio/keys/take-20261015-143012.notes.yaml songs/creek/notes/keys-verse.yaml
++```
++
++```yaml
++# songs/creek/tracks/keys.yaml
++name: keys
++instrument: pad
++inputs:
++  - record:
++    mute: true
++  - id: verse
++    notes: keys-verse
++    at: [10, 2]
++```
++
++The part resolves to the take's events, so its render has the take's
++action key and comes from the cache. The take stays pinned and
++choosable.
+diff --git a/docs/projects/keyboard-instrument/readme.md b/docs/projects/keyboard-instrument/readme.md
+index f3a37b97..a8bdeb3f 100644
+--- a/docs/projects/keyboard-instrument/readme.md
++++ b/docs/projects/keyboard-instrument/readme.md
+@@ -1078,6 +1078,12 @@ is an addition to `field export` alone, for when a take must open in
+ Logic as notes. Until then a take reaches Logic as audio:
+ `field export creek/gen:keys` copies its render.
+ 
++Changed on 2026-10-15 by [sequencer](../sequencer/readme.md) §3.3: a
++take lands in scalar ticks, in the notes format parts share, with the
++output latency taken off its notes as it lands, so it follows a tempo
++edit and copies into a part. A notes file with `sample_rate:` is a take
++recorded before that, and plays as recorded.
++
+ ### 12.2 The entry is `record:` with an instrument (DECIDED)
+ 
+ ```yaml
+@@ -1115,6 +1121,11 @@ with what they hear, which runs behind the playhead by the output
+ latency, and MIDI has no input latency worth the name. Placement
+ subtracts it exactly as it does an audio take's.
+ 
++Changed on 2026-10-15 by [sequencer](../sequencer/readme.md) §3.4: the
++instrument is the track's `instrument:`, and `record:` stays bare. The
++track's instrument decides the kind of take, as the entry's did, and
++`field check` refuses `instrument:` under `record:`.
++
+ ### 12.3 Field's renderer builds the score (DECIDED)
+ 
+ The build renders the chosen take through `sc/voice-render.scd`, which
+diff --git a/docs/projects/sequencer/readme.md b/docs/projects/sequencer/readme.md
+index 2d9aa47c..8e81ce59 100644
+--- a/docs/projects/sequencer/readme.md
++++ b/docs/projects/sequencer/readme.md
+@@ -1,5 +1,5 @@
+ ---
+-status: ready
++status: in-progress
+ priority: now
+ ---
+ 
+@@ -70,8 +70,12 @@ drive voices the same way.
+    `- notes: riff` with `at: [17]` to `songs/creek/tracks/keys.yaml`,
+    whose track names `instrument: pad`.
+ 2. `field check` validates the part against the notes schema and the
+-   entry against its track: the part exists, the track has an
+-   instrument, and the instrument's program answers `FIELD_MODE=voice`.
++   entry against its track: the part exists and the track has an
++   instrument. It resolves the instrument's program and checks its knob
++   file. The render and `field keys` report a program that does not
++   answer `FIELD_MODE=voice`, because only `sclang` can tell (corrected
++   2026-10-16: this step had `field check` test that the program
++   answers voice mode; §9).
+ 3. `field build creek` resolves the part from the entry's anchor
+    through the track's time into sample-timed events, renders them
+    through `pad` as the `voice-render` node `//songs/creek/gen:keys`,
+@@ -111,12 +115,12 @@ drive voices the same way.
+ # songs/creek/notes/riff.yaml
+ length: [2]
+ notes:
+-  - { at: [1], length: [0, 1], note: C3, velocity: 110 }
+-  - { at: [1, 2], length: [0, 1], note: G3 }
+-  - { at: [1, 3], length: 480, note: 60 }
+-  - { at: [2], length: [1], note: C2, velocity: 90, channel: 2 }
++  - {at: [1], length: [0, 1], note: C3, velocity: 110}
++  - {at: [1, 2], length: [0, 1], note: G3}
++  - {at: [1, 3], length: 480, note: 60}
++  - {at: [2], length: [1], note: C2, velocity: 90, channel: 2}
+ controls:
+-  - { at: [1], cc: 74, value: 64 }
++  - {at: [1], cc: 74, value: 64}
+ bends: []
+ ```
+ 
+@@ -179,12 +183,19 @@ today.
+ `field record` converts each captured time to ticks through the song's
+ tempo map, after it subtracts the output latency, and writes the take
+ in scalar ticks from the take's start. The takes row keeps
+-`started_at_samples` as the record of where the take was captured. For
+-a MIDI take, `musical_position` and the notes' ticks are authoritative,
+-so a take follows a tempo edit as a part does. A tick is 0.52 ms at
+-120 bpm, finer than the timing a player controls.
+-
+-To edit a take, copy it into a part and place the part at the take's
++`started_at_samples` as the record of where the take was captured, and
++`started_at_ticks`, where the take starts in ticks after its record
++entry's `at`. For a MIDI take, `started_at_ticks` and the notes' ticks
++are authoritative, so a take moves with its record entry by the same
++musical distance, as an audio take moves with its entry, and follows a
++tempo edit as a part does (corrected 2026-10-16, Justin: this section
++made `musical_position` authoritative, which left a take where it was
++captured when its entry moved). A tick is 0.52 ms at 120 bpm, finer
++than the timing a player controls.
++
++To edit a take, copy it into a part and place the part where the take
++plays, `started_at_ticks` after the record entry's `at`. While the
++entry has not moved since the take was recorded, that is the take's
+ `musical_position`:
+ 
+ ```console
+@@ -585,7 +596,7 @@ lifecycle of its own. Revisit it when start-up time or memory says so.
+ | Place the same part at bars 1 and 17 of a constant-tempo song. | The second placement is a cache hit. |
+ | Place a part across a meter change from 4/4 to 7/8. | The part's second bar starts at the bar line after the change, in a resolver unit test. |
+ | Run `field check` on a notes entry on a track without an instrument, a missing part, a note name that is not one, and `record: { instrument: pad }`. | Four errors. The last names the move to the track. |
+-| Record a MIDI take, then edit the tempo. | The take lands in ticks and follows the tempo edit. A take with `sample_rate:` renders as before, and its tests pass unchanged. |
++| Record a MIDI take, then edit the tempo, then move its record entry. | The take lands in ticks and follows the tempo edit. It moves with its entry by the same musical distance. A take with `sample_rate:` renders as before, and its tests pass unchanged. |
+ | Copy a take into a part and place it at the take's position (§2.4). | The part's render has the take's action key. |
+ | Load a schedule with lead 0 and record a MIDI take from its source in the same daemon. | Every captured note lies within 48 samples (1 ms at 48 kHz) of its scheduled sample, across a loop wrap too, and `status` reports 0 `late`. |
+ | Stop, pause, locate, wrap, replace the schedule, close the output, and drop its connection, each with notes sounding. | Every note-on the source sent has its note-off. |
+@@ -747,3 +758,103 @@ Read on 2026-10-15, at `566d90c`:
+   mode lets each repetition ring over the next.
+ - **Nothing overlapped this plan.** No plan under `docs/projects/` and
+   no open pull request covered sequencing.
++
++## 9 Notes and parts, as built
++
++Chunks 1 and 2 are built together, on branch `seq-notes`, as the
++bottom layer of a stack of four pull requests: chunks 1 and 2, then 3
++with 6, then 4, then 5. Each chunk alone was too small to be worth a
++review cycle. Chunks 1 and 2 are one argument, notes you write and the
++build that renders them, and chunk 6 is a small `field sc` command that
++rides with the `field sc` library of chunk 3. §6 still lists the chunks
++in the order they depend on each other.
++
++Building them settled these points, which §2 left open or stated
++loosely:
++
++- **A take starts where its capture did.** `field record` takes the
++  output latency off each note, not off the take's start, so a take
++  recorded from bar 17 has `musical_position: [17]` and counts its ticks
++  from there. A note heard before that point, because it was pressed in
++  the take's first moments, starts with the take; a note that ended
++  before it is dropped.
++- **A MIDI take starts `started_at_ticks` after its record entry.**
++  `field record` converts captured times through the recording track's
++  tempo map, which is the song's for every track without `time:` (§2.4
++  says "the song's"). It writes where the take started as
++  `started_at_ticks`, counted from the tick the record entry's window
++  starts on; an absolute entry counts from the whole tick its sample
++  falls on. The take plays from there, so moving the record entry moves
++  the take by the same musical distance, and a tempo edit keeps its
++  notes on their beats (Justin, 2026-10-16: a take that its entry could
++  not move "sounds totally wrong"). `musical_position` records where the
++  take started on its track, in the track's own time, so while the
++  entry has not moved it is the `at` that places a copy of the take as
++  a part on the same track (§2.4). An audio take's `musical_position`
++  stays what the song's map said at capture. A take in samples has no
++  `started_at_ticks`, and moves with its entry by its sample row, as an
++  audio take does.
++- **The render is keyed on events and on the notes file.** A
++  `voice-render` node's parameters are the instrument and `events`, the
++  notes resolved for the placement in samples from its start. The notes
++  file is an input by content hash as well: a take as the ledger source
++  it was, so the build still refuses a take whose pinned bytes changed,
++  and a part hashed in place, so `field explain` names the part as §4
++  asks. A byte copy of a take has the take's hash, which keeps the copy
++  on the take's action key. The cost is that an edit to a part's
++  comments or spellings alone renders it again. Justin accepted this
++  as built on 2026-10-16.
++- **Rows are written without spaces inside the braces.** `field fmt`
++  writes `{at: [1], length: [0, 1], note: C3}`, because the emitter pads
++  maps and arrays alike or neither, and track files write `[12, 2]`.
++  §2.2's example is spelled that way. A row never breaks across lines,
++  however many fields it spells out. `field record` writes takes with the
++  same formatter, so a copied take is already a formatted part. Justin
++  accepted this as built on 2026-10-16.
++- **A musical position counts within the bar it lands in.** `[2, 3]`
++  advances one bar from where the part is placed, then two beats, and
++  the beat and tick must exist in the meter of that bar. The check runs
++  per placement, because a beat that exists in one placement can be
++  missing in another, and `field check` reports it against the track
++  file whose entry places the part.
++- **An absolute entry places a part from the tick its sample falls
++  on.** Its loop's `every`, when omitted, is the part's length in
++  samples, as every absolute time is.
++- **Each repetition of a looping part resolves where it starts.**
++  Loop expansion places a render in each repetition's slot
++  (clip-looping.md decision 6), and each slot plays what the part
++  placed there by hand would: the repetitions start `every` apart in
++  the entry's anchor units (decision 3), and each resolves from its own
++  start. Repetitions that resolve alike play one render, so a loop in a
++  steady song is one render, and the repetitions after a tempo or meter
++  change play their own, `gen:<name>-<n>`, named for the first
++  repetition `<n>` that plays it. `field check` resolves every
++  repetition, so a beat that a later bar lacks is reported, and refuses
++  a generator that has a repetition's render name. `partRenders` in
++  `src/generators/stem.ts` does this for the build, and `field seq`
++  resolves a looping part with it too (§3.5).
++- **Note names** are scientific pitch with `#` or `b`, from `C-1` (0) to
++  `G9` (127). A part's file name must be a lowercase slug, the only
++  name a `notes:` entry can spell.
++- **`field check` does not test that the instrument answers voice
++  mode** (§2.1 step 2). Only `sclang` can tell, and the text test
++  `field keys` uses to sort its shelf would refuse a program whose last
++  expression is a SynthDef without reading `FIELD_MODE`. `field check`
++  resolves the program and checks its knob file, and the render and
++  `field keys` report a program that has no voice. Justin accepted this
++  as built on 2026-10-16, and §2.1 step 2 says so.
++- **Takes in samples render once more.** Their events join the action
++  key, and `voice-render` is version 3, so each takes one new render;
++  they play as they did.
++
++The first seven rows of §4 pass, each in a test:
++
++| §4 row | Test |
++| --- | --- |
++| A part placed at `[17]` on a track with `instrument: pad` | `src/graph/parts.test.ts`, "renders through the track's instrument, with the part and the instrument as inputs" |
++| A note, the tempo, then `pad` changes | `src/graph/parts.test.ts`, "renders again when a note, the tempo, or the instrument changes" |
++| One part at bars 1 and 17 of a steady song | `src/graph/parts.test.ts`, "is one render where two placements resolve alike" |
++| A part across a change from 4/4 to 7/8 | `src/time/notes.test.ts`, "starts the part's second bar at the bar line after a meter change" |
++| The four `field check` errors | `src/graph/parts.test.ts`, "refuses a notes entry with no instrument, a missing part, a note name that is not one, and an instrument on record:" |
++| A MIDI take, then a tempo edit, then its entry moved; a take in samples | `src/commands/land.test.ts`, "writes the take in ticks" and "counts started_at_ticks from the tick its record entry starts on"; `src/generators/voice-render.test.ts`, "follows a tempo edit there", "moves with its record entry by the same musical distance", and "plays a take recorded in samples as it was recorded" |
++| A take copied into a part at its position | `src/graph/parts.test.ts`, "has the take's action key when it is placed at the take's position" |
+diff --git a/docs/tracks.md b/docs/tracks.md
+index cab671da..ee7afb53 100644
+--- a/docs/tracks.md
++++ b/docs/tracks.md
+@@ -13,8 +13,8 @@ see [build-graph.md](build-graph.md).
+ ## A track file
+ 
+ A track is one file, `songs/<song>/tracks/<name>.yaml`, with at most
+-five keys besides its name: `rate:`, `time:`, `inserts:`, `sends:`, and
+-the one list every track has — `inputs:`. From
++six keys besides its name: `instrument:`, `rate:`, `time:`, `inserts:`,
++`sends:`, and the one list every track has — `inputs:`. From
+ [`examples/bloom`](../examples/bloom/README.md):
+ 
+ ```yaml
+@@ -34,6 +34,25 @@ There is no `type:` — every track is audio — and no track-level
+ `gain_db` or `pan`; levels live on the placement that consumes the track
+ (see [Levels live on placements](#levels-live-on-placements)).
+ 
++`instrument:` names the program the track's notes play through: the
++parts its `notes:` entries place, the MIDI takes its `record:` entry
++records, and `field keys` on the track. It resolves as `field keys`
++resolves an instrument: `.scd` is added to a name with no extension,
++and a name without a `/` is under `shared/instruments/`. With an
++instrument, the track's `record:` entry records MIDI; without one, it
++records audio.
++
++```yaml
++# songs/creek/tracks/keys.yaml
++name: keys
++instrument: pad
++inputs:
++  - record:
++  - id: verse
++    notes: riff
++    at: [17]
++```
++
+ ## What an entry places
+ 
+ Every entry in `inputs:` places one thing on the track's timeline, and
+@@ -50,14 +69,21 @@ the kind lives in the field name, never in a value prefix:
+   `text:` (voice) plus conditioning. Nothing in the build may run it;
+   the node resolves to the chosen committed take. See
+   [project-model.md](project-model.md) "Deliberate generation".
+-- **`record:`** — a performance to record: bare `- record:` for audio,
+-  or `record:` with `instrument: <name>` under it to record what is
+-  played on `field keys` or a controller and hear it through that
+-  instrument.
+-  `field record` fills its takes, the entry plays the chosen one at the
+-  position it was played, and an entry with no takes yet plays silence.
++- **`record:`** — a performance to record, always spelled bare
++  `- record:`. On a track with an `instrument:` it records what is
++  played on `field keys` or a controller, and you hear it through that
++  instrument; on a track without one it records audio.
++  `field record` fills its takes, the entry plays the chosen one where
++  it was played, counted from the entry's `at`, so moving the entry
++  moves its takes, and an entry with no takes yet plays silence.
+   A MIDI take sounds through a `gen:` node the build renders from it.
+-  See [project-model.md](project-model.md) "Recorded takes".
++  `check` refuses `instrument:` under `record:` and says to move it to
++  the track. See [project-model.md](project-model.md) "Recorded takes".
++- **`notes: <name>`** — a part, `songs/<song>/notes/<name>.yaml`,
++  played through the track's instrument. The build renders it as a
++  `gen:` node and places the render as the entry says. `check` refuses
++  it on a track with no instrument, and names a part that does not
++  exist. See [project-model.md](project-model.md) "Parts".
+ - **`receive: <label>`** — the receiving end of a cable. A receive
+   admits signal rather than placing it, so it carries nothing but its
+   label; `check` rejects any other key on it. See
+@@ -65,7 +91,12 @@ the kind lives in the field name, never in a value prefix:
+ 
+ A `gen:` node is named by its owning track, or `<track>-<id>` when the
+ entry carries an `id` — which is why a track holding two generators
+-needs ids on them.
++needs ids on them. A `notes:` entry and a MIDI `record:` entry are
++generators by this rule. A looping `notes:` entry can mint more than
++one: a repetition that resolves differently from every repetition
++before it, as one after a tempo change does, plays a render named for
++its number, `<name>-<n>`, and `check` refuses a generator with that
++name.
+ 
+ ## Placement fields
+ 
+@@ -107,7 +138,9 @@ Two rules about `duration`:
+ - **A looping entry must declare one**, because a loop tiles a window
+   and the source fills it. A loop on a source whose length is unknowable
+   before it builds (anything that renders, or committed audio at another
+-  rate) must declare `every` too.
++  rate) must declare `every` too. A looping `notes:` entry may omit
++  `every`: it repeats at the part's length, which is known before the
++  part renders.
+ 
+ ## Nesting: one render, many placements
+ 
+diff --git a/examples/bloom/shared/instruments/bass.scd b/examples/bloom/shared/instruments/bass.scd
+index 49f2ff8a..bef42c04 100644
+--- a/examples/bloom/shared/instruments/bass.scd
++++ b/examples/bloom/shared/instruments/bass.scd
+@@ -7,7 +7,7 @@
+ //
+ // Under FIELD_MODE=voice its value is one voice, gated, which `field keys
+ // bass` plays, with the mod wheel opening its filter (§14) and the knobs
+-// in bass.knobs.yaml, and a record entry with `instrument: bass` renders
++// in bass.knobs.yaml, and a track with `instrument: bass` renders
+ // (keyboard-instrument.md §2.6). It plays at true pitch, so press Z in
+ // musical to drop an octave. Otherwise it runs under Field's
+ // sc-render contract and renders offset's sequence from sessions/juno.scd,
+diff --git a/examples/bloom/shared/instruments/juno.scd b/examples/bloom/shared/instruments/juno.scd
+index ba1b6440..70d163dc 100644
+--- a/examples/bloom/shared/instruments/juno.scd
++++ b/examples/bloom/shared/instruments/juno.scd
+@@ -6,7 +6,7 @@
+ //
+ // Under FIELD_MODE=voice its value is one voice, gated, which `field keys
+ // juno` plays, with vibrato from the mod wheel (§14) and the knobs in
+-// juno.knobs.yaml, and a record entry with `instrument: juno` renders
++// juno.knobs.yaml, and a track with `instrument: juno` renders
+ // (keyboard-instrument.md §2.6).
+ // Otherwise it runs under Field's sc-render contract and renders a held
+ // C minor ninth chord for FIELD_DURATION.
+diff --git a/src/cli.ts b/src/cli.ts
+index e657fbf9..567be8a9 100644
+--- a/src/cli.ts
++++ b/src/cli.ts
+@@ -900,7 +900,7 @@ program
+ 
+ program
+   .command('record [targets...]')
+-  .description('record a take on a track through field-audiod: arms an input, or MIDI when the record entry names an instrument, takes against what is playing, ctrl-c stops and finalizes')
++  .description('record a take on a track through field-audiod: arms an input, or MIDI when the track has an instrument, takes against what is playing, ctrl-c stops and finalizes')
+   .option('--input <n,...>', 'input channel on the device, counting from 1, one per audio track in the order named (default 1, 2, ...); audio takes only', parseInputChannels)
+   .option('--device <name>', 'input device (field devices lists them; default: the system input); audio takes only')
+   .option('--at <position>', 'start at bar[.beat[.tick]] of the loaded song')
+@@ -1080,7 +1080,7 @@ program
+   .command('keys [targets...]')
+   .description(
+     'play the computer keyboard as the MIDI source "Field Keys", and SuperCollider instruments from it: name instruments, ' +
+-      'or tracks (creek/track:keys) to play the instrument each MIDI track names, all at once ' +
++      'or tracks (creek/track:keys) to play the instrument each track names, all at once ' +
+       '(needs a terminal with the kitty keyboard protocol; Ctrl-C quits)',
+   )
+   .option('--keymap <name or path>', 'a built-in keymap by name, or your own keymap file by path (default: $FIELD_KEYMAP, then musical)')
+diff --git a/src/commands/land.test.ts b/src/commands/land.test.ts
+index 9a66e2ad..1adc3b87 100644
+--- a/src/commands/land.test.ts
++++ b/src/commands/land.test.ts
+@@ -376,17 +376,16 @@ describe('landMidiTake', () => {
+     writeFileSync(join(root, 'shared/instruments/pad.scd'), '// a voice\n');
+   });
+ 
+-  it('writes the notes file, pins it, and places the take by the output latency alone', async () => {
++  it('writes the take in ticks from where it started on the track, pins it, and chooses it', async () => {
+     createTrack(root, 'creek', 'keys');
+     // keys sits at bar 5 (384000 samples), so a take started at song
+-    // sample 432000 begins one second into the track; only the output's
+-    // 128 samples pull it back, because the player kept time with what
+-    // they heard.
++    // sample 432000 begins one second into the track: beat 3 of keys' own
++    // bar 1, and 1920 ticks at 120 bpm.
+     writeTrack('main', ['inputs:', '  - track: keys', '    at: [5]']);
+-    writeTrack('keys', ['inputs:', '  - record:', '      instrument: pad']);
++    writeTrack('keys', ['instrument: pad', 'inputs:', '  - record:']);
+     const manifest = writeMidiTransaction(
+       'take-20261010-100000',
+-      { track: '//songs/creek/track:keys', started_at_samples: 432000, output_latency: 128 },
++      { track: '//songs/creek/track:keys', started_at_samples: 432000 },
+       [
+         { at: 0, midi: [144, 60, 100] },
+         { at: 6000, midi: [176, 64, 127] },
+@@ -399,7 +398,7 @@ describe('landMidiTake', () => {
+     expect(landed).toMatchObject({
+       node: 'keys',
+       file: 'audio/keys/take-20261010-100000.notes.yaml',
+-      placedAt: 48000 - 128,
++      placedAt: 48000,
+       frames: 48000,
+       sampleRate: 48000,
+       events: 4,
+@@ -407,21 +406,21 @@ describe('landMidiTake', () => {
+     expect(landed.row).toEqual({
+       asset: 'take-20261010-100000',
+       started_at_samples: 48000,
+-      musical_position: [5, 3],
+-      latency: 128,
++      started_at_ticks: 1920,
++      musical_position: [1, 3],
++      latency: 0,
+       sources: ['Field Keys'],
+       recorded_at: '2026-10-10T10:00:00.000-04:00',
+     });
+     expect(readFileSync(join(root, 'songs/creek/audio/keys/take-20261010-100000.notes.yaml'), 'utf8')).toBe(
+       [
+-        'sample_rate: 48000',
+-        'length: 48000',
++        'length: 1920',
+         'notes:',
+-        '  - { at: 0, length: 24000, note: 60, velocity: 100 }',
++        '  - {at: 0, length: 960, note: 60, velocity: 100}',
+         // Still held when the take stopped: it lasts to the end.
+-        '  - { at: 12000, length: 36000, note: 64, velocity: 90 }',
++        '  - {at: 480, length: 1440, note: 64, velocity: 90}',
+         'controls:',
+-        '  - { at: 6000, cc: 64, value: 127 }',
++        '  - {at: 240, cc: 64, value: 127}',
+         'bends: []',
+         '',
+       ].join('\n'),
+@@ -435,40 +434,129 @@ describe('landMidiTake', () => {
+     expect((await check(root)).diagnostics).toEqual([]);
+   });
+ 
+-  it('refuses a take of the other kind than the entry records', async () => {
++  it('counts started_at_ticks from the tick its record entry starts on', async () => {
++    createTrack(root, 'creek', 'keys');
++    writeTrack('keys', ['instrument: pad', 'inputs:', '  - record:', '    at: [3]']);
++    // Beat 3 of bar 3 is two beats after the entry's at.
++    const landed = await landAnyTake(
++      root,
++      writeMidiTransaction('take-20261010-100030', { track: '//songs/creek/track:keys', started_at_samples: 2 * 96000 + 48000 }, [
++        { at: 0, midi: [144, 60, 100] },
++        { at: 12000, midi: [128, 60, 0] },
++      ]),
++    );
++    expect(landed).toMatchObject({
++      placedAt: 2 * 96000 + 48000,
++      row: { started_at_samples: 48000, started_at_ticks: 1920, musical_position: [3, 3] },
++    });
++  });
++
++  it('takes the output latency off every note, and starts a note pressed that early with the take', async () => {
++    createTrack(root, 'creek', 'keys');
++    writeTrack('keys', ['instrument: pad', 'inputs:', '  - record:']);
++    // 600 samples of output latency is 24 ticks at 120 bpm: the player
++    // heard the playhead that late, so each note lands that much earlier.
++    const landed = await landAnyTake(
++      root,
++      writeMidiTransaction('take-20261010-100050', { track: '//songs/creek/track:keys', started_at_samples: 96000, output_latency: 600 }, [
++        { at: 0, midi: [144, 60, 100] }, // heard before the take began
++        { at: 100, midi: [144, 72, 80] }, // ended before the take began
++        { at: 500, midi: [128, 72, 0] },
++        { at: 12600, midi: [144, 64, 90] },
++        { at: 24600, midi: [128, 60, 0] },
++        { at: 36600, midi: [128, 64, 0] },
++      ]),
++    );
++    // The take starts where the capture did, at bar 2, which is where
++    // its notes count from.
++    expect(landed).toMatchObject({ placedAt: 96000, row: { musical_position: [2], latency: 600 } });
++    expect(readFileSync(join(root, 'songs/creek', landed.file), 'utf8')).toBe(
++      [
++        'length: 1896',
++        'notes:',
++        '  - {at: 0, length: 960, note: 60, velocity: 100}',
++        '  - {at: 480, length: 960, note: 64, velocity: 90}',
++        'controls: []',
++        'bends: []',
++        '',
++      ].join('\n'),
++    );
++  });
++
++  it('drops a note that ended before its track starts, and starts one still sounding there with the track', async () => {
++    createTrack(root, 'creek', 'keys');
++    // keys sits at bar 5, 384000 samples into the song, and the take starts
++    // 96000 samples before that.
++    writeTrack('main', ['inputs:', '  - track: keys', '    at: [5]']);
++    writeTrack('keys', ['instrument: pad', 'inputs:', '  - record:']);
++    const landed = await landAnyTake(
++      root,
++      writeMidiTransaction('take-20261010-100060', { track: '//songs/creek/track:keys', started_at_samples: 288000, frames: 192000 }, [
++        { at: 0, midi: [144, 60, 100] }, // over 48000 samples before the track starts
++        { at: 48000, midi: [128, 60, 0] },
++        { at: 72000, midi: [144, 62, 100] }, // over exactly as the track starts
++        { at: 96000, midi: [128, 62, 0] },
++        { at: 84000, midi: [144, 64, 90] }, // sounds across the track's start
++        { at: 120000, midi: [128, 64, 0] },
++        { at: 144000, midi: [144, 67, 80] }, // inside the track
++        { at: 168000, midi: [128, 67, 0] },
++      ]),
++    );
++    expect(readFileSync(join(root, 'songs/creek', landed.file), 'utf8')).toBe(
++      [
++        'length: 3840',
++        'notes:',
++        '  - {at: 0, length: 0, note: 62, velocity: 100}',
++        '  - {at: 0, length: 960, note: 64, velocity: 90}',
++        '  - {at: 1920, length: 960, note: 67, velocity: 80}',
++        'controls: []',
++        'bends: []',
++        '',
++      ].join('\n'),
++    );
++  });
++
++  it('refuses a take of the other kind than the track records', async () => {
+     createTrack(root, 'creek', 'keys');
+     writeTrack('keys', ['inputs:', '  - record:']);
+     const midi = writeMidiTransaction('take-20261010-100100', { track: '//songs/creek/track:keys' }, []);
+-    await expect(landAnyTake(root, midi)).rejects.toThrow('names no instrument to play it');
++    await expect(landAnyTake(root, midi)).rejects.toThrow('keys has no instrument to play it');
+ 
+-    writeTrack('keys', ['inputs:', '  - record:', '      instrument: pad']);
++    writeTrack('keys', ['instrument: pad', 'inputs:', '  - record:']);
+     const audio = writeTransaction('take-20261010-100200', { track: '//songs/creek/track:keys' });
+     await expect(landAnyTake(root, audio)).rejects.toThrow('records MIDI for pad');
+   });
+ 
+   it('check refuses a missing instrument and a take of the wrong kind', async () => {
+     createTrack(root, 'creek', 'keys');
+-    writeTrack('keys', ['inputs:', '  - record:', '      instrument: pad']);
++    writeTrack('keys', ['instrument: pad', 'inputs:', '  - record:']);
+     await landAnyTake(root, writeMidiTransaction('take-20261010-100300', { track: '//songs/creek/track:keys' }, []));
+ 
+     // The instrument resolves by the supercollider rule's path checks.
+     const instrumentProblem = async (instrument: string): Promise<string[]> => {
+-      writeTrack('keys', ['inputs:', '  - record:', `      instrument: ${instrument}`]);
+-      return (await check(root)).diagnostics.map((d) => d.message).filter((m) => m.includes(' instrument '));
++      writeTrack('keys', [`instrument: ${instrument}`, 'inputs:', '  - record:']);
++      return (await check(root)).diagnostics.map((d) => d.message).filter((m) => m.startsWith('instrument '));
+     };
+-    expect(await instrumentProblem('ghost')).toEqual([
+-      'input 1 ("record") instrument file not found: shared/instruments/ghost.scd',
+-    ]);
+-    expect(await instrumentProblem('../synths/pad')).toEqual([
+-      'input 1 ("record") instrument file path escapes the project: ../synths/pad.scd',
+-    ]);
++    expect(await instrumentProblem('ghost')).toEqual(['instrument file not found: shared/instruments/ghost.scd']);
++    expect(await instrumentProblem('../synths/pad')).toEqual(['instrument file path escapes the project: ../synths/pad.scd']);
+     mkdirSync(join(root, 'shared/instruments/folder.scd'));
+-    expect(await instrumentProblem('folder')).toEqual([
+-      'input 1 ("record") instrument file is not a regular file: shared/instruments/folder.scd',
+-    ]);
++    expect(await instrumentProblem('folder')).toEqual(['instrument file is not a regular file: shared/instruments/folder.scd']);
+     writeTrack('keys', ['inputs:', '  - record:']);
+     expect((await check(root)).diagnostics.map((d) => d.message)).toContainEqual(
+-      expect.stringContaining('take "take-20261010-100300" is a MIDI take'),
++      'take "take-20261010-100300" is a MIDI take, and keys has no instrument to play it',
++    );
++  });
++
++  it('check refuses an instrument on the record entry, naming the move to the track', async () => {
++    createTrack(root, 'creek', 'keys');
++    writeTrack('keys', ['inputs:', '  - record:', '      instrument: pad']);
++    expect((await check(root)).diagnostics).toContainEqual(
++      {
++        file: 'songs/creek/tracks/keys.yaml',
++        message:
++          "the instrument is the track's: move `instrument: pad` up beside the track's `name:`, and leave " +
++          '`- record:` bare (sequencer.md §3.4) at inputs.0.record',
++      },
+     );
+   });
+ });
+diff --git a/src/commands/land.ts b/src/commands/land.ts
+index cc330b4b..7f4a33d7 100644
+--- a/src/commands/land.ts
++++ b/src/commands/land.ts
+@@ -8,9 +8,11 @@ import { generatorName, placedWindow } from '../generators/stem.js';
+ import { sha256File } from '../hash.js';
+ import { parseLabel, SONG_OUTPUT_NAME } from '../labels.js';
+ import { takenSongNames } from '../model/namespace.js';
++import type { TrackTime } from '../graph/graph.js';
+ import { loadProject, recordTakesPath, type LoadedProject, type LoadedSong } from '../model/project.js';
+ import { recordTakesOrder, recordTakesSchema, type InputEntry, type RecordedTake } from '../schema/index.js';
+-import { formatNotesFile, notesFromMessages, type CapturedMessage } from '../schema/notes.js';
++import { formatNotesFile, notesFromMessages, type CapturedMessage, type TimedNotes } from '../schema/notes.js';
++import { entryTick } from '../time/notes.js';
+ import { MeterMap, TempoMap } from '../time/tempo.js';
+ import { canonicalizeDocument, stringifyDocument } from '../yaml/emit.js';
+ import { appendLedgerRow, openLedger } from './import.js';
+@@ -31,6 +33,8 @@ export interface RecordNode {
+   trackName: string;
+   node: string; // the record node: the track's name, or <track>-<id>
+   entry: InputEntry;
++  // The track's, which decides the kind of take (sequencer.md §3.4).
++  instrument?: string | undefined;
+ }
+ 
+ // The record entry a track carries, resolved from the label a take
+@@ -58,7 +62,13 @@ export function recordNodeFor(project: LoadedProject, trackLabel: string): Recor
+     );
+   }
+   const entry = entries[0]!;
+-  return { song, trackName: track.data.name, node: generatorName(entry, track.data.name), entry };
++  return {
++    song,
++    trackName: track.data.name,
++    node: generatorName(entry, track.data.name),
++    entry,
++    instrument: track.data.instrument,
++  };
+ }
+ 
+ // Where a track's timeline begins on the song's: the sum of the `at`s
+@@ -115,7 +125,9 @@ export interface LandedTake {
+   asset: string; // the take's ledger name
+   file: string; // song-relative
+   row: RecordedTake;
+-  placedAt: number; // track samples: the entry's window start + started_at_samples - latency
++  // Track samples: where a MIDI take's musical position falls, or the
++  // entry's window start + started_at_samples - latency for an audio take.
++  placedAt: number;
+   placements: number; // how many times the song places the track
+   frames: number;
+   sampleRate: number;
+@@ -157,6 +169,10 @@ interface Landing {
+   windowStart: number;
+   placements: number;
+   position: number[] | undefined;
++  // Where the take started on the track, in seconds, and the track's own
++  // maps: what a MIDI take's ticks count from and through.
++  startSeconds: number;
++  time: TrackTime;
+ }
+ 
+ function beginLanding(root: string, take: AnyTake): Landing {
+@@ -169,19 +185,19 @@ function beginLanding(root: string, take: AnyTake): Landing {
+     throw new Error(`project has errors (field check) — fix them before landing ${take.id}`);
+   }
+   const node = recordNodeFor(project, take.track);
+-  const { song, trackName, entry } = node;
++  const { song, trackName, entry, instrument } = node;
+   const midi = 'kind' in take;
+-  // The entry's instrument decides the kind of take it records
+-  // (keyboard-instrument.md §12.2), so a take of the other kind has no
+-  // business landing in it.
+-  if (midi && entry.record?.instrument === undefined) {
++  // The track's instrument decides the kind of take it records
++  // (sequencer.md §3.4), so a take of the other kind has no business
++  // landing in it.
++  if (midi && instrument === undefined) {
+     throw new Error(
+-      `${take.id} is a MIDI take, and ${trackName}'s record entry names no instrument to play it — ` +
+-        'give it one with `instrument: <name>` under `record:`',
++      `${take.id} is a MIDI take, and ${trackName} has no instrument to play it — ` +
++        'give the track one with `instrument: <name>`',
+     );
+   }
+-  if (!midi && entry.record?.instrument !== undefined) {
+-    throw new Error(`${take.id} is an audio take, and ${trackName}'s record entry records MIDI for ${entry.record.instrument}`);
++  if (!midi && instrument !== undefined) {
++    throw new Error(`${take.id} is an audio take, and ${trackName} records MIDI for ${instrument}`);
+   }
+   const songDir = join(root, song.dir);
+   const track = song.tracks.find((t) => t.data.name === trackName)!.data;
+@@ -209,13 +225,12 @@ function beginLanding(root: string, take: AnyTake): Landing {
+   // The entry's window under the track's own map, as the graph projects
+   // it (nested-tracks.md §13): a track's `time:` when it has one, else
+   // the song's at the track's rate.
+-  const tempoEvents = track.time?.tempo ?? song.time?.tempo;
+-  const windowStart =
+-    tempoEvents !== undefined
+-      ? placedWindow(entry, new TempoMap(tempoEvents, trackRate)).start
+-      : entry.anchor === 'absolute'
+-        ? entry.at
+-        : 0;
++  // A project without errors has the song's `time:`.
++  const time: TrackTime = {
++    tempo: new TempoMap(track.time?.tempo ?? song.time!.tempo, trackRate),
++    meter: new MeterMap(track.time?.meter ?? song.time!.meter),
++  };
++  const windowStart = placedWindow(entry, time.tempo).start;
+   // What the song's map said at capture, when the bed was the song —
+   // its live session, or an artifact of it (a stem, a take) — and not
+   // when it was some other file.
+@@ -240,6 +255,8 @@ function beginLanding(root: string, take: AnyTake): Landing {
+     windowStart,
+     placements: origin.placements,
+     position,
++    startSeconds: startedOnBed / timelineRate - origin.seconds,
++    time,
+   };
+ }
+ 
+@@ -335,26 +352,53 @@ export async function landTake(root: string, take: Take, options: LandOptions =
+   return landed(landing, file, row, header.frames, header.sampleRate);
+ }
+ 
+-// A MIDI take (keyboard-instrument.md §12.1, §12.2): the captured messages
+-// pair into a notes file, written once by its one writer and pinned in the
+-// ledger by hash like any take, with no WAV facts. Its latency is the
+-// output latency alone: a player presses a key in time with what they
+-// hear, which runs behind the playhead by that much.
++// A MIDI take (keyboard-instrument.md §12.1, sequencer.md §2.4): the
++// captured messages pair into notes, and every time becomes ticks from
++// the take's start through the track's tempo map, after the output
++// latency comes off, because a player presses a key in time with what
++// they hear, which runs behind the playhead by that much. A note pressed
++// that early in the take's first moments starts with the take, and one
++// that ended before the take or its track began is dropped. Its one
++// writer writes the file once, pinned in the ledger by hash like any take,
++// with no WAV facts. The row's started_at_ticks is where the take starts, counted
++// from the tick its record entry's window starts on, which is where its
++// notes play from, so the take moves with the entry; its
++// musical_position records where that was on the track, in the track's
++// own time.
+ export async function landMidiTake(root: string, take: MidiTake): Promise<LandedTake> {
+   const landing = beginLanding(root, take);
+   const messages: CapturedMessage[] = readFileSync(join(root, take.file), 'utf8')
+     .split('\n')
+     .filter((line) => line.trim() !== '')
+     .map((line) => midiTakeLineSchema.parse(JSON.parse(line)));
+-  const notes = notesFromMessages(messages, take.frames!, take.sample_rate);
++  const { tempo, meter } = landing.time;
++  const heard = (at: number): number => landing.startSeconds + (at - take.output_latency) / take.sample_rate;
++  const tickAt = (seconds: number): number => Math.round(tempo.secondsToTicks(Math.max(0, seconds)));
++  const start = tickAt(landing.startSeconds);
++  const ticks = (at: number): number => Math.max(0, tickAt(heard(at)) - start);
++  const played = notesFromMessages(messages, take.frames!);
++  const notes: TimedNotes = {
++    length: ticks(take.frames!),
++    notes: played.notes
++      .filter((n) => heard(n.at + n.length) >= 0 && tickAt(heard(n.at + n.length)) >= start)
++      .map((n) => ({ ...n, at: ticks(n.at), length: ticks(n.at + n.length) - ticks(n.at) })),
++    controls: played.controls.map((c) => ({ ...c, at: ticks(c.at) })),
++    bends: played.bends.map((b) => ({ ...b, at: ticks(b.at) })),
++  };
+   const { file, sha256, bytes } = await placeFile(landing, '.notes.yaml', (to) => writeFileSync(to, formatNotesFile(notes)));
+ 
+   const row: RecordedTake = {
+     ...sharedRow(landing, Math.round((take.output_latency * landing.trackRate) / take.sample_rate)),
++    started_at_ticks: start - entryTick(landing.node.entry, tempo),
++    musical_position: musicalPosition(meter, start),
+     sources: take.sources,
+   };
+   finishLanding(landing, { name: take.id, file, sha256, bytes }, row);
+-  return { ...landed(landing, file, row, take.frames!, take.sample_rate), events: messages.length };
++  return {
++    ...landed(landing, file, row, take.frames!, take.sample_rate),
++    placedAt: tempo.ticksToSamples(start),
++    events: messages.length,
++  };
+ }
+ 
+ // Lands either kind of take, by what its manifest says it is.
+diff --git a/src/commands/record-midi-daemon.test.ts b/src/commands/record-midi-daemon.test.ts
+index 52b8ed75..00775265 100644
+--- a/src/commands/record-midi-daemon.test.ts
++++ b/src/commands/record-midi-daemon.test.ts
+@@ -618,7 +618,7 @@ describe.skipIf(!binary)('MIDI takes through the daemon', () => {
+   });
+ 
+   it(
+-    'field record: arms for MIDI on an entry with an instrument, and lands the take as a notes file',
++    'field record: arms for MIDI on a track with an instrument, and lands the take as a notes file',
+     { timeout: 30_000 },
+     async (ctx) => {
+       process.env['FIELD_AUDIOD_NULL'] = '1';
+@@ -634,7 +634,7 @@ describe.skipIf(!binary)('MIDI takes through the daemon', () => {
+           ['name: main', 'inputs:', '  - audio: tone', '    anchor: absolute', '    at: 0', ''].join('\n'),
+         );
+         createTrack(root, 'creek', 'keys');
+-        writeFileSync(join(root, 'songs/creek/tracks/keys.yaml'), 'name: keys\ninputs:\n  - record:\n      instrument: pad\n');
++        writeFileSync(join(root, 'songs/creek/tracks/keys.yaml'), 'name: keys\ninstrument: pad\ninputs:\n  - record:\n');
+         writeFileSync(join(root, 'shared/instruments/pad.scd'), '// a voice\n');
+         const project = loadProject(root);
+ 
+@@ -697,8 +697,8 @@ describe.skipIf(!binary)('MIDI takes through the daemon', () => {
+         expect(landed.row).toHaveProperty('sources', expect.arrayContaining([name]));
+         expect(landed.row).not.toHaveProperty('device');
+         const notes = readFileSync(join(root, 'songs/creek', landed.file), 'utf8');
+-        expect(notes).toMatch(new RegExp(`\\{ at: \\d+, length: \\d+, note: ${NOTE}, velocity: 77, channel: 16 \\}`));
+-        expect(notes).toContain('{ at: 0, cc: 113, value: 23, channel: 16 }');
++        expect(notes).toMatch(new RegExp(`\\{at: \\d+, length: \\d+, note: ${NOTE}, velocity: 77, channel: 16\\}`));
++        expect(notes).toContain('{at: 0, cc: 113, value: 23, channel: 16}');
+         expect(existsSync(join(root, '.field/recording', take.id))).toBe(false);
+         expect((await check(root)).diagnostics).toEqual([]);
+       } finally {
+diff --git a/src/commands/record-plan.test.ts b/src/commands/record-plan.test.ts
+index 12200589..5dfdc44d 100644
+--- a/src/commands/record-plan.test.ts
++++ b/src/commands/record-plan.test.ts
+@@ -28,7 +28,7 @@ beforeEach(() => {
+   createTrack(root, 'tall-grass', 'gtr');
+   writeTrack('creek', 'vox', ['inputs:', '  - record:']);
+   writeTrack('creek', 'vox2', ['inputs:', '  - record:']);
+-  writeTrack('creek', 'keys', ['inputs:', '  - record:', '      instrument: juno']);
++  writeTrack('creek', 'keys', ['instrument: juno', 'inputs:', '  - record:']);
+   writeTrack('tall-grass', 'gtr', ['inputs:', '  - record:']);
+ });
+ 
+diff --git a/src/commands/record-tracks-daemon.test.ts b/src/commands/record-tracks-daemon.test.ts
+index bb271b94..c87c0c19 100644
+--- a/src/commands/record-tracks-daemon.test.ts
++++ b/src/commands/record-tracks-daemon.test.ts
+@@ -308,7 +308,7 @@ describe.skipIf(!binary)('several armed tracks through the daemon', () => {
+       createTrack(root, 'creek', 'keys');
+       writeFileSync(join(root, 'shared/instruments/pad.scd'), '// a voice\n');
+       writeFileSync(join(root, 'songs/creek/tracks/vox.yaml'), 'name: vox\ninputs:\n  - record:\n');
+-      writeFileSync(join(root, 'songs/creek/tracks/keys.yaml'), 'name: keys\ninputs:\n  - record:\n      instrument: pad\n');
++      writeFileSync(join(root, 'songs/creek/tracks/keys.yaml'), 'name: keys\ninstrument: pad\ninputs:\n  - record:\n');
+       writeFileSync(
+         join(root, 'songs/creek/tracks/main.yaml'),
+         ['name: main', 'inputs:', '  - audio: tone', '    anchor: absolute', '    at: 0', ''].join('\n'),
+diff --git a/src/commands/record.ts b/src/commands/record.ts
+index f6dd2f38..c174963a 100644
+--- a/src/commands/record.ts
++++ b/src/commands/record.ts
+@@ -150,9 +150,8 @@ export function planArm(root: string, project: LoadedProject, targets: string[],
+     const resolved = resolveRecordTarget(root, target);
+     if (tracks.some((t) => t.resolved.label === resolved.label)) throw new Error(`${resolved.label} is named twice`);
+     const node = recordNodeFor(project, resolved.label);
+-    // A record entry with an instrument records MIDI
+-    // (keyboard-instrument.md §12.2).
+-    tracks.push({ resolved, node, kind: node.entry.record?.instrument !== undefined ? 'midi' : 'audio' });
++    // A track with an instrument records MIDI (sequencer.md §3.4).
++    tracks.push({ resolved, node, kind: node.instrument !== undefined ? 'midi' : 'audio' });
+   }
+   const songs = [...new Set(tracks.map((t) => t.resolved.song))];
+   if (songs.length > 1) {
+@@ -167,7 +166,7 @@ export function planArm(root: string, project: LoadedProject, targets: string[],
+     const only = tracks.length === 1 ? tracks[0]! : undefined;
+     throw new Error(
+       only !== undefined
+-        ? `${only.node.trackName} records MIDI for ${only.node.entry.record!.instrument}: --input, --device, and --loop are for audio takes`
++        ? `${only.node.trackName} records MIDI for ${only.node.instrument}: --input, --device, and --loop are for audio takes`
+         : 'every track named records MIDI: --input, --device, and --loop are for audio takes',
+     );
+   }
+diff --git a/src/commands/ui-timeline.ts b/src/commands/ui-timeline.ts
+index 064cefe0..f176711b 100644
+--- a/src/commands/ui-timeline.ts
++++ b/src/commands/ui-timeline.ts
+@@ -1,7 +1,7 @@
+ import { existsSync, statSync } from 'node:fs';
+ import { join } from 'node:path';
+ import { readWav, readWavHeader } from '../audio/wav.js';
+-import { generatorName, placedWindow } from '../generators/stem.js';
++import { generatorName, mintsGenerator, placedWindow } from '../generators/stem.js';
+ import type { LoadedSong } from '../model/project.js';
+ import { barTicks, MeterMap, TempoMap } from '../time/tempo.js';
+ import { sha256Text } from '../hash.js';
+@@ -224,13 +224,12 @@ export function projectTimeline(
+       entry: index,
+       file: owner.path,
+       sha256: sha256Text(owner.raw),
+-      // A generator entry (record, supercollider, generative) is named as
+-      // the graph names it, by its generator name: the track's own name,
+-      // or `<track>-<id>` when it has an id, so two in one track differ.
++      // A generator entry (record, supercollider, generative, notes) is
++      // named as the graph names it, by its generator name: the track's
++      // own name, or `<track>-<id>` when it has an id, so two in one track
++      // differ.
+       name: placedName ?? entry.audio ?? entry.receive ??
+-        (entry.record !== undefined || entry.supercollider !== undefined || entry.generative !== undefined
+-          ? generatorName(entry, owner.data.name)
+-          : `input ${index + 1}`),
++        (mintsGenerator(entry) ? generatorName(entry, owner.data.name) : `input ${index + 1}`),
+       start: startSample,
+       duration,
+       depth,
+diff --git a/src/generators/stem.ts b/src/generators/stem.ts
+index 3fadac93..f231e6e9 100644
+--- a/src/generators/stem.ts
++++ b/src/generators/stem.ts
+@@ -10,6 +10,8 @@ import { readWavHeader } from '../audio/wav.js';
+ import { convertRefName, genRef, genRefName, recordRef, tapRefName, trackRef, trackRefName } from '../labels.js';
+ import type { EffectInsert, InputEntry, Track } from '../schema/index.js';
+ import { isHostedInsert } from '../schema/index.js';
++import type { NotesFile, ResolvedNotes } from '../schema/notes.js';
++import { placementAnchor, resolveNotes, type NotesTime } from '../time/notes.js';
+ import type { TempoMap } from '../time/tempo.js';
+ import type { Generator } from './types.js';
+ 
+@@ -33,6 +35,18 @@ export function generatorName(entry: InputEntry, owner: string): string {
+   return entry.id !== undefined ? `${owner}-${entry.id}` : owner;
+ }
+ 
++// The entries that mint a gen node, and so take a generator name: a
++// render, a request, a record entry, and a part, which renders through
++// the track's instrument.
++export function mintsGenerator(entry: InputEntry): boolean {
++  return (
++    entry.supercollider !== undefined ||
++    entry.generative !== undefined ||
++    entry.record !== undefined ||
++    entry.notes !== undefined
++  );
++}
++
+ // The wiring ref an entry contributes to `sources`: kind-in-field in the
+ // file (nested-tracks.md §18) flattens to one string here — `audio:`
+ // names pass through (bare, or the //shared/asset: label), a `track:`
+@@ -43,7 +57,7 @@ export function generatorName(entry: InputEntry, owner: string): string {
+ // action key: refs are wiring, and the resolved plan is what hashes.
+ export function entryRef(entry: InputEntry, owner: string): string {
+   if (entry.track !== undefined) return trackRef(entry.track);
+-  if (entry.supercollider !== undefined || entry.generative !== undefined) {
++  if (entry.supercollider !== undefined || entry.generative !== undefined || entry.notes !== undefined) {
+     return genRef(generatorName(entry, owner));
+   }
+   if (entry.record !== undefined) return recordRef(generatorName(entry, owner));
+@@ -58,7 +72,7 @@ export function entryLabel(entry: InputEntry): string {
+   if (entry.supercollider !== undefined) return 'supercollider';
+   if (entry.generative !== undefined) return 'generative';
+   if (entry.record !== undefined) return 'record';
+-  return entry.track ?? entry.audio ?? '?';
++  return entry.track ?? entry.audio ?? entry.notes ?? '?';
+ }
+ 
+ export interface PlacedClip {
+@@ -180,6 +194,72 @@ export function placedWindow(
+   return { start, duration: tempoMap.ticksToSamples(entry.at + entry.duration) - start };
+ }
+ 
++// The window a loop tiles, in samples. Every repetition has a concrete
++// window: a loop tiles a window, so a looping entry declares a duration
++// even though an ordinary one need not (schema/track.ts). `check`
++// refuses the combination by name; this is the guard for anything that
++// reaches the planner another way.
++function loopWindow(entry: InputEntry, tempoMap: TempoMap): { start: number; end: number } {
++  const { start, duration } = placedWindow(entry, tempoMap);
++  if (duration === undefined) {
++    throw new Error(
++      `input "${entryLabel(entry)}" loops but declares no duration — a loop tiles a window`,
++    );
++  }
++  return { start, end: start + duration };
++}
++
++function anchorSample(entry: InputEntry, at: number, tempoMap: TempoMap): number {
++  return entry.anchor === 'absolute' ? at : tempoMap.ticksToSamples(at);
++}
++
++// Where each repetition of a loop with `every` starts, in the entry's
++// anchor units (clip-looping.md decision 3): ticks on a musical entry,
++// so the repetitions stay on the grid straight through tempo ramps, and
++// samples on an absolute one.
++export function loopStarts(entry: InputEntry, every: number, tempoMap: TempoMap): number[] {
++  const { end } = loopWindow(entry, tempoMap);
++  const starts: number[] = [];
++  for (let at = entry.at; anchorSample(entry, at, tempoMap) < end; at += every) starts.push(at);
++  return starts;
++}
++
++// What a placed part renders (sequencer.md §9). Each repetition of its
++// loop resolves where the repetition starts, as the part placed there by
++// hand would, so a tempo or meter change reaches the repetitions after
++// it. Repetitions that resolve alike play one render. The first render
++// takes the entry's generator name, and each other one that name and
++// the number of the first repetition that plays it, `<name>-<n>`.
++// `repetitions` names the render each repetition plays, in order.
++export function partRenders(
++  file: NotesFile,
++  entry: InputEntry,
++  name: string,
++  time: NotesTime,
++): { renders: { name: string; events: ResolvedNotes }[]; repetitions: string[] } {
++  const starts =
++    entry.loop?.enabled && entry.loop.every !== undefined ? loopStarts(entry, entry.loop.every, time.tempo) : [entry.at];
++  const renders: { name: string; events: ResolvedNotes }[] = [];
++  const renderByEvents = new Map<string, string>();
++  const repetitions = starts.map((at, k) => {
++    let events: ResolvedNotes;
++    try {
++      events = resolveNotes(file, placementAnchor({ anchor: entry.anchor, at }, time.tempo), time);
++    } catch (err) {
++      throw k === 0 ? err : new Error(`at repetition ${k + 1} of its loop: ${(err as Error).message}`);
++    }
++    const key = JSON.stringify(events);
++    let render = renderByEvents.get(key);
++    if (render === undefined) {
++      render = k === 0 ? name : `${name}-${k + 1}`;
++      renderByEvents.set(key, render);
++      renders.push({ name: render, events });
++    }
++    return render;
++  });
++  return { renders, repetitions };
++}
++
+ // A placed track's window, projected the same way — the child's origin
+ // Loop expansion (clip-looping.md §1.6): a looped entry becomes the same
+ // resolved per-repetition windows equivalent hand-written entries would
+@@ -199,29 +279,13 @@ export function expandLoop(
+   // caller, validate included, which is all of them until a conversion
+   // is in play.
+   readOffset: number = entry.source_offset - entry.slip,
+-  // Every repetition has a concrete window: a loop tiles a window, so a
+-  // looping entry declares a duration even though an ordinary one need not
+-  // (schema/track.ts). `check` refuses the combination by name; this is
+-  // the guard for anything that reaches the planner another way.
+ ): Omit<RenderedClip, 'input'>[] {
+-  const { start, duration } = placedWindow(entry, tempoMap);
+-  if (duration === undefined) {
+-    throw new Error(
+-      `input "${entryLabel(entry)}" loops but declares no duration — a loop tiles a window`,
+-    );
+-  }
+-  const windowEnd = start + duration;
++  const { start, end: windowEnd } = loopWindow(entry, tempoMap);
+ 
+   // Repetition boundaries on the stem timeline, in samples.
+   const bounds: number[] = [];
+   if (loop.every !== undefined) {
+-    // Anchor units, like at/duration: musical loops repeat on the
+-    // grid straight through tempo ramps.
+-    for (let at = entry.at; ; at += loop.every) {
+-      const sample = entry.anchor === 'absolute' ? at : tempoMap.ticksToSamples(at);
+-      if (sample >= windowEnd) break;
+-      bounds.push(sample);
+-    }
++    bounds.push(...loopStarts(entry, loop.every, tempoMap).map((at) => anchorSample(entry, at, tempoMap)));
+   } else {
+     // Tile at the source's own length. A buildable's length is unknown at
+     // plan time (validate already demands `every` there); an asset whose
+@@ -293,10 +357,19 @@ export function planTrack(
+   // track by the graph, so built-in-only chains' specs (and therefore
+   // their action keys) never learn plugins exist.
+   hosted?: HostedTrackContext,
++  // The render each repetition of a placed part plays, by the entry's
++  // ref (partRenders).
++  repetitionRefs: Map<string, string[]> = new Map(),
+ ): StemSpec {
+-  const refFor = (e: InputEntry): string => {
++  const converted = (raw: string): string => convertBySource.get(raw)?.ref ?? raw;
++  const refFor = (e: InputEntry): string => converted(entryRef(e, track.name));
++  const repetitionRef = (e: InputEntry, k: number): string => {
+     const raw = entryRef(e, track.name);
+-    return convertBySource.get(raw)?.ref ?? raw;
++    return converted(repetitionRefs.get(raw)?.[k] ?? raw);
++  };
++  const refsOf = (e: InputEntry): string[] => {
++    const raw = entryRef(e, track.name);
++    return (repetitionRefs.get(raw) ?? [raw]).map(converted);
+   };
+   const readOffsetFor = (e: InputEntry): number => {
+     const scale = convertBySource.get(entryRef(e, track.name))?.scale ?? 1;
+@@ -313,7 +386,7 @@ export function planTrack(
+   // for the same reason they do. A converted source is buildable however
+   // committed its origin: the stem's input is the conversion's output,
+   // whose bytes do not exist until it runs.
+-  const refs = [...new Set([...placeable.map(refFor), ...cables.map(cableRefFor)])];
++  const refs = [...new Set([...placeable.flatMap(refsOf), ...cables.map(cableRefFor)])];
+   const committed = refs
+     .filter((r) => sha256BySource.has(r))
+     .sort((a, b) => {
+@@ -344,8 +417,8 @@ export function planTrack(
+     const loop = entry.loop?.enabled ? entry.loop : undefined;
+     if (loop) {
+       const frames = framesBySource.get(refFor(entry));
+-      return expandLoop(entry, loop, tempoMap, frames, readOffsetFor(entry)).map((rep) => ({
+-        input,
++      return expandLoop(entry, loop, tempoMap, frames, readOffsetFor(entry)).map((rep, k) => ({
++        input: inputIndex.get(repetitionRef(entry, k))!,
+         ...rep,
+       }));
+     }
+diff --git a/src/generators/voice-render.test.ts b/src/generators/voice-render.test.ts
+index b7e3c83e..6fc8fd34 100644
+--- a/src/generators/voice-render.test.ts
++++ b/src/generators/voice-render.test.ts
+@@ -7,18 +7,21 @@ import type { MidiTake } from '../audiod/protocol.js';
+ import { buildLabels, explainLabel } from '../commands/build.js';
+ import { createSong, createTrack } from '../commands/create.js';
+ import { init } from '../commands/init.js';
++import { appendLedgerRow, openLedger } from '../commands/import.js';
+ import { landMidiTake } from '../commands/land.js';
+ import type { GeneratorRunner } from '../graph/build.js';
+ import { withTakes } from '../graph/graph.js';
++import { sha256Text } from '../hash.js';
+ import { genRef } from '../labels.js';
+ import { loadProject } from '../model/project.js';
+ import { TempoMap } from '../time/tempo.js';
+ import { RELEASE_TAIL_SECONDS } from './voice-render.js';
+ 
+-// A recorded MIDI take in the build (keyboard-instrument.md §12.3): the
+-// graph mints a voice-render node for the record entry, keyed on the
+-// notes file, the instrument, and Field's own harness, and the track
+-// places its render where the take was played.
++// A recorded MIDI take in the build (keyboard-instrument.md §12.3,
++// sequencer.md §2.4): the graph mints a voice-render node for the record
++// entry, keyed on the take, its resolved events, the instrument, and
++// Field's own harness, and the track places its render where the take
++// starts.
+ 
+ let root: string;
+ const GEN = '//songs/creek/gen:keys';
+@@ -29,7 +32,7 @@ beforeEach(async () => {
+   createSong(root, 'creek');
+   createTrack(root, 'creek', 'keys');
+   writeFileSync(join(root, 'shared/instruments/pad.scd'), VOICE);
+-  writeFileSync(join(root, 'songs/creek/tracks/keys.yaml'), 'name: keys\ninputs:\n  - record:\n      instrument: pad\n');
++  writeFileSync(join(root, 'songs/creek/tracks/keys.yaml'), 'name: keys\ninstrument: pad\ninputs:\n  - record:\n');
+   await landMidiTake(root, midiTransaction());
+ });
+ 
+@@ -45,6 +48,14 @@ const HELD = [
+   { at: 12000, midi: [144, 72, 80] },
+ ];
+ 
++// Where the graph places the keys track's chosen take under the song's
++// current tempo.
++function placedAt(): unknown[] {
++  const song = loadProject(root).songs.find((s) => s.name === 'creek')!;
++  const track = song.tracks.find((t) => t.data.name === 'keys')!.data;
++  return withTakes(track, song, new TempoMap(song.time!.tempo, 48000), 48000, () => 48000).inputs;
++}
++
+ function midiTransaction(id = 'take-20261010-120000', placed: Partial<MidiTake> = {}, lines = HELD): MidiTake {
+   const dir = join(root, '.field', 'recording', id);
+   mkdirSync(dir, { recursive: true });
+@@ -93,16 +104,77 @@ describe('voice-render in the graph', () => {
+     ]);
+   });
+ 
+-  it('places the render where the take was played, less the output latency', async () => {
+-    // Half a second into the track, with 128 samples of output latency:
+-    // the render starts 128 samples earlier, where the player heard it.
++  it('places the render where the take started, and follows a tempo edit there', async () => {
++    // Half a second into the track, beat 2 at 120 bpm, with 128 samples
++    // of output latency: the latency comes off the notes, and the take
++    // starts where the capture did.
+     await landMidiTake(root, midiTransaction('take-20261010-120100', { started_at_samples: 24000, output_latency: 128 }));
+-    const song = loadProject(root).songs.find((s) => s.name === 'creek')!;
+-    const track = song.tracks.find((t) => t.data.name === 'keys')!.data;
+-    const placed = withTakes(track, song, new TempoMap(song.time!.tempo, 48000), 48000, () => 48000);
+-    expect(placed.inputs).toEqual([
+-      expect.objectContaining({ audio: genRef('keys'), anchor: 'absolute', at: 24000 - 128, source_offset: 0 }),
+-    ]);
++    expect(placedAt()).toEqual([expect.objectContaining({ audio: genRef('keys'), anchor: 'absolute', at: 24000, source_offset: 0 })]);
++    const events = async (): Promise<unknown> => ((await explainLabel(root, GEN)).parameters as { events: unknown }).events;
++    // The A pressed at the take's start ends a quarter second later, as heard.
++    expect(await events()).toMatchObject({ sample_rate: 48000, notes: [{ at: 0, length: 12000 - 125, note: 69 }, { at: 12000 - 125 }] });
++
++    // At 60 bpm beat 2 is a second in, and every note is twice as long.
++    const songYaml = join(root, 'songs/creek/song.yaml');
++    writeFileSync(songYaml, readFileSync(songYaml, 'utf8').replace('bpm: 120', 'bpm: 60'));
++    expect(placedAt()).toEqual([expect.objectContaining({ at: 48000 })]);
++    expect(await events()).toMatchObject({ notes: [{ at: 0, length: 24000 - 250, note: 69 }, { at: 24000 - 250 }] });
++  });
++
++  it('moves with its record entry by the same musical distance, and keeps its notes on their beats there', async () => {
++    // Beat 2 of the entry's first bar, at 120 bpm.
++    const landed = await landMidiTake(root, midiTransaction('take-20261010-120200', { started_at_samples: 24000 }));
++    expect(landed.row).toMatchObject({ started_at_samples: 24000, started_at_ticks: 960, musical_position: [1, 2] });
++    const events = async (): Promise<unknown> => ((await explainLabel(root, GEN)).parameters as { events: unknown }).events;
++    const before = await events();
++
++    // Two bars later, the take starts on beat 2 of bar 3, and plays as it did.
++    writeFileSync(join(root, 'songs/creek/tracks/keys.yaml'), 'name: keys\ninstrument: pad\ninputs:\n  - record:\n    at: [3]\n');
++    expect(placedAt()).toEqual([expect.objectContaining({ audio: genRef('keys'), at: 2 * 96000 + 24000 })]);
++    expect(await events()).toEqual(before);
++
++    // At 60 bpm a bar is four seconds, and beat 2 is a second into it.
++    const songYaml = join(root, 'songs/creek/song.yaml');
++    writeFileSync(songYaml, readFileSync(songYaml, 'utf8').replace('bpm: 120', 'bpm: 60'));
++    expect(placedAt()).toEqual([expect.objectContaining({ at: 2 * 4 * 48000 + 48000 })]);
++    expect(await events()).toMatchObject({ notes: [{ at: 0, length: 24000, note: 69 }, { at: 24000 }] });
++  });
++
++  it('plays a take recorded in samples as it was recorded, wherever the tempo goes', async () => {
++    // A take written before takes landed in ticks: samples at its rate,
++    // placed by its row, less the output latency, as an audio take is.
++    const name = 'take-20261010-110000';
++    const file = `audio/keys/${name}.notes.yaml`;
++    const text = 'sample_rate: 48000\nlength: 24000\nnotes:\n  - { at: 0, length: 12000, note: 69, velocity: 100 }\ncontrols: []\nbends: []\n';
++    writeFileSync(join(root, 'songs/creek', file), text);
++    const songDir = join(root, 'songs/creek');
++    const { doc } = openLedger(songDir);
++    appendLedgerRow(songDir, doc, { name, file, sha256: sha256Text(text), bytes: Buffer.byteLength(text) });
++    writeFileSync(
++      join(songDir, 'audio/keys/takes.yaml'),
++      [
++        'record: keys',
++        `chosen: ${name}`,
++        'takes:',
++        `  - asset: ${name}`,
++        '    started_at_samples: 24000',
++        '    musical_position: [1, 2]',
++        '    latency: 128',
++        '    sources: [Field Keys]',
++        '    recorded_at: 2026-10-10T11:00:00.000-04:00',
++        '',
++      ].join('\n'),
++    );
++    const e = await explainLabel(root, GEN);
++    expect(e.inputs[0]!.label).toBe(`//songs/creek/asset:${name}`);
++    expect(e.parameters).toMatchObject({
++      events: { sample_rate: 48000, length: 24000, notes: [{ at: 0, length: 12000, note: 69, velocity: 100 }] },
++    });
++    expect(placedAt()).toEqual([expect.objectContaining({ at: 24000 - 128 })]);
++    const songYaml = join(root, 'songs/creek/song.yaml');
++    writeFileSync(songYaml, readFileSync(songYaml, 'utf8').replace('bpm: 120', 'bpm: 60'));
++    expect(placedAt()).toEqual([expect.objectContaining({ at: 24000 - 128 })]);
++    expect((await explainLabel(root, GEN)).actionKey).toBe(e.actionKey);
+   });
+ 
+   it('renders once, caches, and re-renders when the instrument changes', async () => {
+@@ -262,7 +334,7 @@ describe.skipIf(!sclangPresent)('voice-render through real sclang', () => {
+       );
+       writeFileSync(
+         join(root, 'songs/creek/tracks/keys.yaml'),
+-        `name: keys\ninputs:\n  - record:\n      instrument: ${instrument}\n`,
++        `name: keys\ninstrument: ${instrument}\ninputs:\n  - record:\n`,
+       );
+       const wav = readWav(built(await buildLabels(root, [GEN]), GEN).outputPath!);
+       expect(wav.channels[0]!.some((s) => s !== 0)).toBe(true);
+diff --git a/src/generators/voice-render.ts b/src/generators/voice-render.ts
+index a0f969aa..7bb5031b 100644
+--- a/src/generators/voice-render.ts
++++ b/src/generators/voice-render.ts
+@@ -1,90 +1,104 @@
+-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
++import { existsSync, rmSync, writeFileSync } from 'node:fs';
+ import { join, posix } from 'node:path';
+-import { parseDocument } from 'yaml';
+ import { sha256File } from '../hash.js';
+ import { knobFileFor, knobsCopy, KnobsError, loadKnobs } from '../keys/knobs.js';
+-import { notesFileSchema, renderEvents } from '../schema/notes.js';
++import { renderEvents, type ResolvedNotes } from '../schema/notes.js';
+ import { instrumentProgram, runScProgram, scScript } from './supercollider.js';
+-import type { Generator } from './types.js';
++import type { Generator, ValidateContext } from './types.js';
+ 
+-// voice-render: a recorded MIDI take rendered offline through the record
+-// entry's instrument (keyboard-instrument.md §12.3). The graph mints one
+-// for a record entry with an instrument whose chosen take is a notes
+-// file. sc/voice-render.scd loads the instrument's voice and drives it
+-// with sc/voicer.scd, the voicing the live host plays with, so the take
++// voice-render: notes rendered offline through their track's instrument
++// (keyboard-instrument.md §12.3, sequencer.md §2.3). The graph mints one
++// for each `notes:` entry and for each record entry whose chosen take is
++// MIDI. sc/voice-render.scd loads the instrument's voice and drives it
++// with sc/voicer.scd, the voicing the live host plays with, so a take
+ // renders as it sounded while it was played. An instrument with a knob
+ // file maps its controllers through it (instrument-knobs.md §2.4), so the
+ // file decides the sound too: it is checked here, hashed as an input, and
+ // handed to the voice as the copy that passed.
++//
++// The render is keyed on `events`, the notes resolved for the placement
++// from its start (src/time/notes.ts), so a tempo edit renders it again
++// and two placements that resolve alike are one render. The notes file
++// is an input by its hash too, so `field explain` names it and a take
++// copied into a part has the take's key: a take is a source, and the
++// build refuses one whose pinned bytes changed; a part is hashed in
++// place.
+ export interface VoiceRenderSpec {
+   name: string;
+   type: 'voice-render';
+-  take: string; // the notes file's name in the song's ledger
++  take?: string; // a MIDI take's name in the song's ledger
++  part?: string; // or a part's project-relative path
+   instrument: string; // resolves as field keys resolves an instrument
++  events: ResolvedNotes;
+ }
+ 
+-// Rendered past the take's end, so the last notes' release is heard. A
++// Rendered past the notes' end, so the last notes' release is heard. A
+ // fixed tail rather than one per instrument: the voice contract carries no
+ // release time.
+ export const RELEASE_TAIL_SECONDS = 4;
+ 
+ const HARNESS = ['voice-render.scd', 'voice-load.scd', 'voicer.scd'];
+ 
++// The supercollider rule's path checks, on the program the instrument
++// names: normalized, inside the project, and a regular file; and the
++// knob file's schema, the check field keys runs, when it has one.
++export function validateInstrument(instrument: string, ctx: Pick<ValidateContext, 'root' | 'push' | 'resolveFile'>): void {
++  const program = instrumentProgram(instrument);
++  if (program !== posix.normalize(program) || program.includes('\\')) {
++    ctx.push(`instrument path not in normalized form: ${instrument}`);
++    return;
++  }
++  const resolved = ctx.resolveFile('', program); // project-relative
++  if (resolved.problem) {
++    ctx.push(`instrument ${resolved.problem}`);
++    return;
++  }
++  const knobs = knobFileFor(program);
++  if (!existsSync(join(ctx.root, knobs))) return;
++  try {
++    loadKnobs(join(ctx.root, knobs));
++  } catch (err) {
++    if (!(err instanceof KnobsError)) throw err;
++    for (const problem of err.problems) ctx.push(`${knobs}: ${problem}`);
++  }
++}
++
+ export const voiceRenderGenerator: Generator<VoiceRenderSpec> = {
+-  version: 2, // 2: a zero-length note releases after its own on
+-  wiringFields: ['take'],
++  version: 3, // 3: keyed on the resolved events
++  wiringFields: ['take', 'part'],
+ 
+   sources(spec) {
+-    return [spec.take];
++    return spec.take !== undefined ? [spec.take] : [];
+   },
+ 
+-  // The supercollider rule's path checks, on the program the instrument
+-  // names: normalized, inside the project, and a regular file; and the
+-  // knob file's schema, the check field keys runs, when it has one.
+   validate(spec, ctx) {
+-    const program = instrumentProgram(spec.instrument);
+-    if (program !== posix.normalize(program) || program.includes('\\')) {
+-      ctx.push(`instrument path not in normalized form: ${spec.instrument}`);
+-      return;
+-    }
+-    const resolved = ctx.resolveFile('', program); // project-relative
+-    if (resolved.problem) {
+-      ctx.push(`instrument ${resolved.problem}`);
+-      return;
+-    }
+-    const knobs = knobFileFor(program);
+-    if (!existsSync(join(ctx.root, knobs))) return;
+-    try {
+-      loadKnobs(join(ctx.root, knobs));
+-    } catch (err) {
+-      if (!(err instanceof KnobsError)) throw err;
+-      for (const problem of err.problems) ctx.push(`${knobs}: ${problem}`);
+-    }
++    validateInstrument(spec.instrument, ctx);
+   },
+ 
+-  // The instrument, its knob file, and Field's own harness all decide the
+-  // sound, so editing any of them re-renders the take.
++  // The part, the instrument, its knob file, and Field's own harness all
++  // decide the sound, so editing any of them renders the notes again. The
++  // part comes first, where a take's hash sits among the inputs.
+   async extraInputs(root, spec) {
+     const program = instrumentProgram(spec.instrument);
+     const knobs = knobFileFor(program);
+     return [
++      ...(spec.part !== undefined ? [{ label: spec.part, sha256: await sha256File(join(root, spec.part)) }] : []),
+       { label: program, sha256: await sha256File(join(root, program)) },
+       ...(existsSync(join(root, knobs)) ? [{ label: knobs, sha256: await sha256File(join(root, knobs)) }] : []),
+       ...(await Promise.all(HARNESS.map(async (name) => ({ label: `sc/${name}`, sha256: await sha256File(scScript(name)) })))),
+     ];
+   },
+ 
+-  async execute(spec, inputPaths, outputPath, ctx) {
+-    const notes = notesFileSchema.parse(parseDocument(readFileSync(inputPaths[0]!, 'utf8')).toJS());
++  async execute(spec, _inputPaths, outputPath, ctx) {
+     const eventsPath = `${outputPath}.events.json`;
+-    writeFileSync(eventsPath, JSON.stringify({ events: renderEvents(notes) }));
++    writeFileSync(eventsPath, JSON.stringify({ events: renderEvents(spec.events) }));
+     const knobFile = join(ctx.root, knobFileFor(instrumentProgram(spec.instrument)));
+     const knobsPath = existsSync(knobFile) ? `${outputPath}.knobs.yaml` : undefined;
+     try {
+       if (knobsPath !== undefined) writeFileSync(knobsPath, knobsCopy(loadKnobs(knobFile)));
+       await runScProgram(scScript('voice-render.scd'), outputPath, {
+         seed: 0,
+-        duration: notes.length / notes.sample_rate + RELEASE_TAIL_SECONDS,
++        duration: spec.events.length / spec.events.sample_rate + RELEASE_TAIL_SECONDS,
+         channels: 2,
+         sampleRate: ctx.sampleRate,
+         env: {
+@@ -99,14 +113,16 @@ export const voiceRenderGenerator: Generator<VoiceRenderSpec> = {
+       if (knobsPath !== undefined) rmSync(knobsPath, { force: true });
+     }
+     if (!existsSync(outputPath)) {
+-      throw new Error(`rendering ${spec.take} through ${spec.instrument} wrote no audio`);
++      throw new Error(`rendering ${spec.take ?? spec.part} through ${spec.instrument} wrote no audio`);
+     }
+   },
+ 
++  // The render reads the instrument and its knob file while it runs, and
++  // the notes not at all: they are in the spec, as keyed.
+   async verifyAfterRun(root, spec, extraInputs) {
+     const program = instrumentProgram(spec.instrument);
+     const after = await sha256File(join(root, program));
+-    if (after !== extraInputs[0]!.sha256) {
++    if (after !== extraInputs.find((input) => input.label === program)?.sha256) {
+       throw new Error(`refusing to cache: ${spec.instrument} changed during the render — re-run the build`);
+     }
+     const knobs = knobFileFor(program);
+diff --git a/src/graph/graph.ts b/src/graph/graph.ts
+index c77a3117..aa421a42 100644
+--- a/src/graph/graph.ts
++++ b/src/graph/graph.ts
+@@ -21,14 +21,16 @@ import { chosenTake, committedFileResolver, type LoadedProject, type LoadedSong
+ import type { Cable } from '../model/cables.js';
+ import { generatorFor, type GeneratorSpec } from '../generators/index.js';
+ import type { ResampleSpec } from '../generators/resample.js';
+-import { entryRef, generatorName, placedWindow, planTrack } from '../generators/stem.js';
++import { entryRef, generatorName, partRenders, placedWindow, planTrack } from '../generators/stem.js';
+ import {
+   indexStateBlobs,
+   transportSegments,
+   type HostedTrackContext,
+   type StateBlob,
+ } from '../audio/plugins.js';
+-import { TempoMap } from '../time/tempo.js';
++import { resolveNotes, takeAnchor } from '../time/notes.js';
++import { MeterMap, TempoMap } from '../time/tempo.js';
++import type { VoiceRenderSpec } from '../generators/voice-render.js';
+ import type { Asset, InputEntry, Track } from '../schema/index.js';
+ import { isHostedInsert, isMidiTakeRow } from '../schema/index.js';
+ import { DEFAULT_SAMPLE_RATE } from '../constants.js';
+@@ -89,6 +91,12 @@ export interface GenerationNode {
+ 
+ export type GraphNode = AssetNode | GeneratorNode | GenerationNode;
+ 
++// A track's own maps, at its rate.
++export interface TrackTime {
++  tempo: TempoMap;
++  meter: MeterMap;
++}
++
+ export interface Graph {
+   nodes: Map<string, GraphNode>; // keyed by formatted label
+   // Generative requests whose entry exists but whose takes do not
+@@ -228,6 +236,29 @@ export function buildGraph(project: LoadedProject): Graph {
+     // track's own content, so producing it at the project rate only to
+     // convert it back at the edge would be a conversion nobody asked for.
+     const scEntryRate = new Map<string, number>();
++    const repetitionRefs = new Map<string, string[]>();
++    // A track's own maps at its rate (nested-tracks.md §13), which its
++    // notes resolve through. Validate refused a song without `time:`.
++    const timeOf = (track: Track): TrackTime => ({
++      tempo: new TempoMap(track.time?.tempo ?? song.time!.tempo, trackRate(track)),
++      meter: new MeterMap(track.time?.meter ?? song.time!.meter),
++    });
++    // Notes render through the track's instrument at the track's rate
++    // (sequencer.md §2.3), keyed on the events they resolve to.
++    const addVoiceRender = (
++      name: string,
++      track: Track,
++      notes: Pick<VoiceRenderSpec, 'take' | 'part' | 'events'>,
++    ): void => {
++      scEntryRate.set(name, trackRate(track));
++      addRule(
++        { pkg: `${pkgBase}/gen`, name },
++        song.dir,
++        { name, type: 'voice-render', instrument: track.instrument!, ...notes },
++        refLabel,
++        trackRate(track),
++      );
++    };
+     for (const file of song.tracks) {
+       for (const entry of file.data.inputs) {
+         if (entry.supercollider !== undefined) {
+@@ -271,21 +302,28 @@ export function buildGraph(project: LoadedProject): Graph {
+             });
+             sha256BySource.set(genRef(name), variant.sha256);
+           }
+-        } else if (entry.record?.instrument !== undefined) {
+-          // A chosen MIDI take renders through the entry's instrument at
+-          // the track's rate (keyboard-instrument.md §12.3), and withTakes
+-          // places the render where the take was played.
++        } else if (entry.notes !== undefined) {
++          // A part, from where the entry places it and from where each
++          // repetition of its loop starts; planTrack places each
++          // repetition's render in its slot of the entry's window.
++          const part = song.parts.get(entry.notes)!;
++          const name = generatorName(entry, file.data.name);
++          const { renders, repetitions } = partRenders(part.data, entry, name, timeOf(file.data));
++          for (const render of renders) {
++            addVoiceRender(render.name, file.data, { part: part.path, events: render.events });
++          }
++          repetitionRefs.set(genRef(name), repetitions.map(genRef));
++        } else if (entry.record !== undefined && file.data.instrument !== undefined) {
++          // A chosen MIDI take, from where it starts after its entry when
++          // it is in ticks (sequencer.md §2.4); withTakes places the
++          // render there, or, for a take in samples, where it was played.
+           const name = generatorName(entry, file.data.name);
+           const take = chosenTake(song.recordTakes.get(name)?.data);
+-          if (take !== undefined && isMidiTakeRow(take)) {
+-            scEntryRate.set(name, trackRate(file.data));
+-            addRule(
+-              { pkg: `${pkgBase}/gen`, name },
+-              song.dir,
+-              { name, type: 'voice-render', take: take.asset, instrument: entry.record.instrument },
+-              refLabel,
+-              trackRate(file.data),
+-            );
++          const notes = take !== undefined ? song.takeNotes.get(take.asset) : undefined;
++          if (take !== undefined && isMidiTakeRow(take) && notes !== undefined) {
++            const time = timeOf(file.data);
++            const anchor = notes.data.sample_rate === undefined ? takeAnchor(entry, take, time.tempo) : 0;
++            addVoiceRender(name, file.data, { take: take.asset, events: resolveNotes(notes.data, anchor, time) });
+           }
+         }
+       }
+@@ -460,7 +498,8 @@ export function buildGraph(project: LoadedProject): Graph {
+         };
+         for (const entry of planned.inputs) {
+           if (entry.receive !== undefined) continue; // a cable is not a source here
+-          ensureConvert(entryRef(entry, planned.name));
++          const raw = entryRef(entry, planned.name);
++          for (const ref of repetitionRefs.get(raw) ?? [raw]) ensureConvert(ref);
+         }
+         // The cables arriving here become plan inputs: the sender's stem
+         // for a post tap, the tap node for pre — converted at the edge
+@@ -497,6 +536,7 @@ export function buildGraph(project: LoadedProject): Graph {
+           convertBySource,
+           cableIns,
+           hosted,
++          repetitionRefs,
+         );
+       };
+       for (const track of renderable) {
+@@ -543,8 +583,11 @@ export function buildGraph(project: LoadedProject): Graph {
+ // that started before the window (a negative placement) reads into its
+ // source by that much instead, in the source's own samples, because
+ // `source_offset` addresses the source (project-core.md §3.2) and the
+-// edge conversion scales it. The result is an absolute `audio:` entry,
+-// so nothing after this point knows recording exists.
++// edge conversion scales it. A MIDI take in ticks (sequencer.md §2.4)
++// sounds `started_at_ticks` after the tick the entry's window starts
++// on instead, where its render begins: its notes already have the
++// latency off, and its sample row is a record. The result is an absolute `audio:` entry, so nothing after
++// this point knows recording exists.
+ export function withTakes(
+   track: Track,
+   song: LoadedSong,
+@@ -559,7 +602,11 @@ export function withTakes(
+     const take = chosenTake(song.recordTakes.get(name)?.data);
+     if (take === undefined) return [];
+     const window = placedWindow(entry, local);
+-    const at = window.start + take.started_at_samples - take.latency;
++    const notes = song.takeNotes.get(take.asset);
++    const at =
++      isMidiTakeRow(take) && notes !== undefined && notes.data.sample_rate === undefined
++        ? local.ticksToSamples(takeAnchor(entry, take, local))
++        : window.start + take.started_at_samples - take.latency;
+     // A MIDI take sounds through its render, the gen node the graph minted
+     // for the entry (keyboard-instrument.md §12.3); an audio take is its
+     // own bytes.
+diff --git a/src/graph/parts.test.ts b/src/graph/parts.test.ts
+new file mode 100644
+index 00000000..a6becee2
+--- /dev/null
++++ b/src/graph/parts.test.ts
+@@ -0,0 +1,305 @@
++import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { afterEach, beforeEach, describe, expect, it } from 'vitest';
++import type { MidiTake } from '../audiod/protocol.js';
++import { buildLabels, explainLabel } from '../commands/build.js';
++import { check } from '../commands/check.js';
++import { createSong, createTrack } from '../commands/create.js';
++import { fmt } from '../commands/fmt.js';
++import { init } from '../commands/init.js';
++import { landMidiTake } from '../commands/land.js';
++import type { GeneratorRunner } from './build.js';
++
++// Parts in the build (sequencer.md §2.1–§2.4): a `notes:` entry places a
++// part, the graph renders it through the track's instrument as a
++// voice-render node keyed on the events it resolves to, and the track
++// places the render where the entry says.
++
++let root: string;
++let runs: string[];
++
++// Every rule renders its own spec, so a render's bytes change exactly
++// when its spec does, and each run is counted by label.
++const runner: GeneratorRunner = async (node, _inputPaths, outputPath) => {
++  runs.push(node.label.name);
++  writeFileSync(outputPath, JSON.stringify(node.spec));
++};
++
++const VOICE = '(\nSynthDef(\\pad, { |freq = 440, amp = 0.5, gate = 1, out = 0| Out.ar(out, SinOsc.ar(freq) ! 2) });\n)\n';
++const RIFF = [
++  'length: [2]',
++  'notes:',
++  '  - {at: [1], length: [0, 1], note: C3, velocity: 110}',
++  '  - {at: [1, 2], length: [0, 1], note: G3}',
++  '  - {at: [2], length: [1], note: 60}',
++  'controls: []',
++  'bends: []',
++  '',
++].join('\n');
++
++function writeTrack(name: string, lines: string[]): void {
++  writeFileSync(join(root, 'songs/creek/tracks', `${name}.yaml`), [`name: ${name}`, ...lines, ''].join('\n'));
++}
++function writePart(name: string, text: string): void {
++  writeFileSync(join(root, 'songs/creek/notes', `${name}.yaml`), text);
++}
++function edit(path: string, from: string, to: string): void {
++  const file = join(root, path);
++  const text = readFileSync(file, 'utf8');
++  expect(text).toContain(from);
++  writeFileSync(file, text.replace(from, to));
++}
++const parameters = async (label: string) => (await explainLabel(root, label)).parameters as Record<string, unknown>;
++const events = async (label: string) => (await parameters(label))['events'] as { notes: { at: number; length: number }[] };
++const inputs = async (label: string) => (await explainLabel(root, label)).inputs.map((i) => i.label);
++
++beforeEach(() => {
++  root = mkdtempSync(join(tmpdir(), 'field-parts-'));
++  runs = [];
++  init({ dir: root, name: 'parts' });
++  createSong(root, 'creek'); // 120 bpm 4/4 at 48 kHz: a beat is 24000 samples, a bar 96000
++  createTrack(root, 'creek', 'keys');
++  writeFileSync(join(root, 'shared/instruments/pad.scd'), VOICE);
++  mkdirSync(join(root, 'songs/creek/notes'));
++  writePart('riff', RIFF);
++  writeTrack('keys', ['instrument: pad', 'inputs:', '  - notes: riff', '    at: [17]']);
++});
++
++afterEach(() => {
++  rmSync(root, { recursive: true, force: true });
++});
++
++describe('a placed part', () => {
++  it('renders through the track\'s instrument, with the part and the instrument as inputs, from where it is placed', async () => {
++    expect((await check(root)).diagnostics).toEqual([]);
++    const e = await explainLabel(root, '//songs/creek/gen:keys');
++    expect(e.rule).toBe('voice-render');
++    expect(e.inputs.map((i) => i.label)).toEqual([
++      'songs/creek/notes/riff.yaml',
++      'shared/instruments/pad.scd',
++      'sc/voice-render.scd',
++      'sc/voice-load.scd',
++      'sc/voicer.scd',
++    ]);
++    expect(e.parameters).toEqual({
++      instrument: 'pad',
++      events: {
++        sample_rate: 48000,
++        length: 192000,
++        notes: [
++          { at: 0, length: 24000, note: 48, velocity: 110 },
++          { at: 24000, length: 24000, note: 55, velocity: 100 },
++          { at: 96000, length: 96000, note: 60, velocity: 100 },
++        ],
++        controls: [],
++        bends: [],
++      },
++    });
++    // The track places the render at bar 17.
++    const stem = await parameters('//songs/creek/track:keys');
++    expect(stem['clips']).toEqual([expect.objectContaining({ start: 16 * 96000, read_offset: 0 })]);
++    await buildLabels(root, ['//songs/creek/track:keys'], runner);
++    expect(runs).toEqual(['keys', 'keys']); // the render, then the stem
++  });
++
++  it('renders again when a note, the tempo, or the instrument changes, and keeps every note on its beat', async () => {
++    await buildLabels(root, ['//songs/creek/gen:keys'], runner);
++    edit('songs/creek/notes/riff.yaml', 'note: G3', 'note: A3');
++    await buildLabels(root, ['//songs/creek/gen:keys'], runner);
++    expect(runs).toHaveLength(2);
++
++    edit('songs/creek/song.yaml', 'bpm: 120', 'bpm: 60');
++    await buildLabels(root, ['//songs/creek/gen:keys'], runner);
++    expect(runs).toHaveLength(3);
++    // At 60 bpm a beat is a second: the second note is on beat 2 still,
++    // and bar 2 starts four seconds in.
++    expect((await events('//songs/creek/gen:keys')).notes.map((n) => n.at)).toEqual([0, 48000, 4 * 48000]);
++    const stem = await parameters('//songs/creek/track:keys');
++    expect(stem['clips']).toEqual([expect.objectContaining({ start: 16 * 4 * 48000 })]);
++
++    writeFileSync(join(root, 'shared/instruments/pad.scd'), VOICE.replace('440', '220'));
++    await buildLabels(root, ['//songs/creek/gen:keys'], runner);
++    expect(runs).toHaveLength(4);
++    await buildLabels(root, ['//songs/creek/gen:keys'], runner);
++    expect(runs).toHaveLength(4);
++  });
++
++  it('is one render where two placements resolve alike in a steady song', async () => {
++    writeTrack('keys', [
++      'instrument: pad',
++      'inputs:',
++      '  - id: a',
++      '    notes: riff',
++      '    at: [1]',
++      '  - id: b',
++      '    notes: riff',
++      '    at: [17]',
++    ]);
++    const a = await explainLabel(root, '//songs/creek/gen:keys-a');
++    const b = await explainLabel(root, '//songs/creek/gen:keys-b');
++    expect(b.actionKey).toBe(a.actionKey);
++    const outcomes = await buildLabels(root, ['//songs/creek/gen:keys-a', '//songs/creek/gen:keys-b'], runner);
++    expect(runs).toEqual(['keys-a']);
++    expect(outcomes.find((o) => o.label === '//songs/creek/gen:keys-b')).toMatchObject({ cached: true });
++  });
++
++  it('repeats at the part\'s length when its loop omits every, from one render in a steady song', async () => {
++    writeTrack('keys', ['instrument: pad', 'inputs:', '  - notes: riff', '    at: [1]', '    duration: [8]', '    loop: {}']);
++    expect((await check(root)).diagnostics).toEqual([]);
++    expect(await inputs('//songs/creek/track:keys')).toEqual(['//songs/creek/gen:keys']);
++    const stem = await parameters('//songs/creek/track:keys');
++    expect((stem['clips'] as { start: number }[]).map((c) => c.start)).toEqual([0, 2, 4, 6].map((bar) => bar * 96000));
++  });
++
++  it('is one render for a whole loop at a tempo where a bar is not a whole number of samples', async () => {
++    const sixteenths = Array.from({ length: 16 }, (_, i) => `  - {at: ${i * 240}, length: 240, note: C3}`);
++    writePart('steps', ['length: [1]', 'notes:', ...sixteenths, 'controls: []', 'bends: []', ''].join('\n'));
++    edit('songs/creek/song.yaml', 'bpm: 120', 'bpm: 133');
++    writeTrack('keys', ['instrument: pad', 'inputs:', '  - notes: steps', '    at: [1]', '    duration: [32]', '    loop: {}']);
++    expect((await check(root)).diagnostics).toEqual([]);
++    expect(await inputs('//songs/creek/track:keys')).toEqual(['//songs/creek/gen:keys']);
++    expect(((await parameters('//songs/creek/track:keys'))['clips'] as unknown[]).length).toBe(32);
++  });
++
++  it('resolves each repetition of its loop where the repetition starts, so a tempo change reaches the later ones', async () => {
++    writePart('beat', ['length: [1]', 'notes:', '  - {at: [1, 2], length: [0, 1], note: C3}', 'controls: []', 'bends: []', ''].join('\n'));
++    createTrack(root, 'creek', 'pads');
++    writeTrack('keys', ['instrument: pad', 'inputs:', '  - notes: beat', '    at: [1]', '    duration: [3]', '    loop: {}']);
++    writeTrack('pads', ['instrument: pad', 'inputs:', '  - notes: beat', '    at: [2]']);
++    edit('songs/creek/song.yaml', '      bpm: 120\n', '      bpm: 120\n    - at: 3840\n      bpm: 60\n');
++    expect((await check(root)).diagnostics).toEqual([]);
++    // Beat 2 is half a second into bar 1, at 120 bpm, and a second into
++    // bars 2 and 3, at 60.
++    expect((await events('//songs/creek/gen:keys')).notes.map((n) => n.at)).toEqual([24000]);
++    expect((await events('//songs/creek/gen:keys-2')).notes.map((n) => n.at)).toEqual([48000]);
++    await expect(explainLabel(root, '//songs/creek/gen:keys-3')).rejects.toThrow('no such label');
++    // Repetitions 2 and 3 resolve alike and play one render, the one the
++    // same part placed by hand at bar 2 has.
++    expect(await inputs('//songs/creek/track:keys')).toEqual(['//songs/creek/gen:keys', '//songs/creek/gen:keys-2']);
++    const stem = await parameters('//songs/creek/track:keys');
++    expect(stem['clips']).toEqual([
++      expect.objectContaining({ input: 0, start: 0 }),
++      expect.objectContaining({ input: 1, start: 96000 }),
++      expect.objectContaining({ input: 1, start: 96000 + 4 * 48000 }),
++    ]);
++    const repetition = await explainLabel(root, '//songs/creek/gen:keys-2');
++    expect(repetition.actionKey).toBe((await explainLabel(root, '//songs/creek/gen:pads')).actionKey);
++    await buildLabels(root, ['//songs/creek/track:keys', '//songs/creek/gen:pads'], runner);
++    expect(runs.sort()).toEqual(['keys', 'keys', 'keys-2']);
++  });
++
++  it('needs ids on two notes entries in one track, as any two generators do', async () => {
++    writeTrack('keys', ['instrument: pad', 'inputs:', '  - notes: riff', '  - notes: riff', '    at: [17]']);
++    expect((await check(root)).diagnostics.map((d) => d.message)).toContain(
++      'two generator entries share the name "keys" — give each an id so its render has a name of its own (nested-tracks.md §18)',
++    );
++  });
++});
++
++describe('field check on parts', () => {
++  it('refuses a notes entry with no instrument, a missing part, a note name that is not one, and an instrument on record:', async () => {
++    createTrack(root, 'creek', 'pads');
++    createTrack(root, 'creek', 'vox');
++    writeTrack('pads', ['inputs:', '  - notes: riff']);
++    writeTrack('keys', ['instrument: pad', 'inputs:', '  - notes: riff', '  - id: two', '    notes: ghost']);
++    writePart('bad', 'notes:\n  - {at: [1], length: [0, 1], note: H2}\n');
++    writeTrack('vox', ['inputs:', '  - record:', '      instrument: pad']);
++    const messages = (await check(root)).diagnostics.map((d) => `${d.file}: ${d.message}`);
++    expect(messages).toEqual(
++      expect.arrayContaining([
++        'songs/creek/tracks/pads.yaml: input 1 ("riff") places notes, and pads has no instrument to play them — give the track one with `instrument: <name>`',
++        'songs/creek/tracks/keys.yaml: input "two" places the part "ghost", and there is no songs/creek/notes/ghost.yaml',
++        'songs/creek/notes/bad.yaml: "H2" is not a note name: a note is a MIDI number from 0 to 127 or a name in scientific pitch, where C4 is 60 at notes.0.note',
++        "songs/creek/tracks/vox.yaml: the instrument is the track's: move `instrument: pad` up beside the track's `name:`, and leave `- record:` bare (sequencer.md §3.4) at inputs.0.record",
++      ]),
++    );
++  });
++
++  it('refuses a position the placing track\'s meter does not have', async () => {
++    writePart('riff', 'notes:\n  - {at: [1, 5], length: [0, 1], note: C3}\n');
++    expect((await check(root)).diagnostics.map((d) => d.message)).toEqual([
++      'input 1 ("riff") places songs/creek/notes/riff.yaml, which does not resolve there: notes.0.at: beat 5 out of range for 4/4 in bar 1',
++    ]);
++  });
++
++  it('refuses a loop repetition that lands where the part does not resolve', async () => {
++    writePart('riff', 'length: [1]\nnotes:\n  - {at: [1, 4], length: [0, 1], note: C3}\n');
++    writeTrack('keys', ['instrument: pad', 'inputs:', '  - notes: riff', '    at: [1]', '    duration: [3]', '    loop: {every: [1]}']);
++    edit('songs/creek/song.yaml', '      denominator: 4\n', '      denominator: 4\n    - at: 3840\n      numerator: 3\n      denominator: 4\n');
++    expect((await check(root)).diagnostics.map((d) => d.message)).toEqual([
++      'input 1 ("riff") places songs/creek/notes/riff.yaml, which does not resolve at repetition 2 of its loop: notes.0.at: beat 4 out of range for 3/4 in bar 1',
++    ]);
++  });
++
++  it('refuses a generator named as a loop repetition\'s render', async () => {
++    createTrack(root, 'creek', 'keys-2');
++    writeTrack('keys', ['instrument: pad', 'inputs:', '  - notes: riff', '    at: [1]', '    duration: [4]', '    loop: {}']);
++    writeTrack('keys-2', ['instrument: pad', 'inputs:', '  - notes: riff']);
++    edit('songs/creek/song.yaml', '      bpm: 120\n', '      bpm: 120\n    - at: 7680\n      bpm: 60\n');
++    expect((await check(root)).diagnostics.map((d) => `${d.file}: ${d.message}`)).toEqual([
++      'songs/creek/tracks/keys.yaml: repetition 2 of input 1 ("riff") renders as "keys-2", which the generator in songs/creek/tracks/keys-2.yaml also names — rename a track or change an id so each render has a name of its own',
++    ]);
++  });
++
++  it('formats a part one row per note, keeping its spellings', async () => {
++    writePart('riff', 'notes:\n  - at: [1]\n    note: C3\n    length: [0, 1]\n  - {length: 480, at: 960, note: 62}\n');
++    expect((await check(root)).unformatted).toEqual(['songs/creek/notes/riff.yaml']);
++    expect(fmt(root).formatted).toEqual(['songs/creek/notes/riff.yaml']);
++    expect(readFileSync(join(root, 'songs/creek/notes/riff.yaml'), 'utf8')).toBe(
++      'notes:\n  - {at: [1], length: [0, 1], note: C3}\n  - {at: 960, length: 480, note: 62}\n',
++    );
++    expect((await check(root)).ok).toBe(true);
++  });
++});
++
++describe('a take copied into a part', () => {
++  it('has the take\'s action key when it is placed at the take\'s position', async () => {
++    writeTrack('keys', ['instrument: pad', 'inputs:', '  - record:']);
++    const id = 'take-20261015-143012';
++    const dir = join(root, '.field', 'recording', id);
++    mkdirSync(dir, { recursive: true });
++    const lines = [
++      { at: 0, midi: [144, 60, 100] },
++      { at: 12000, midi: [144, 64, 90] },
++      { at: 30000, midi: [128, 60, 0] },
++      { at: 40000, midi: [128, 64, 0] },
++    ];
++    writeFileSync(join(dir, 'take.midi.ndjson'), lines.map((l) => `${JSON.stringify(l)}\n`).join(''));
++    const take: MidiTake = {
++      id,
++      file: `.field/recording/${id}/take.midi.ndjson`,
++      track: '//songs/creek/track:keys',
++      song: 'creek',
++      kind: 'midi',
++      sources: ['Field Keys'],
++      sample_rate: 48000,
++      timeline_rate: 48000,
++      output_latency: 0,
++      started_at_samples: 9 * 96000 + 24000, // bar 10, beat 2
++      started_wall: '2026-10-15T14:30:12.000-04:00',
++      daemon: '0.14.0',
++      complete: true,
++      frames: 48000,
++      events: lines.length,
++    };
++    const landed = await landMidiTake(root, take);
++    expect(landed.row.musical_position).toEqual([10, 2]);
++
++    copyFileSync(join(root, 'songs/creek', landed.file), join(root, 'songs/creek/notes/keys-verse.yaml'));
++    writeTrack('keys', [
++      'instrument: pad',
++      'inputs:',
++      '  - record:',
++      '    mute: true',
++      '  - id: verse',
++      '    notes: keys-verse',
++      '    at: [10, 2]',
++    ]);
++    expect((await check(root)).diagnostics).toEqual([]);
++    const takeRender = await explainLabel(root, '//songs/creek/gen:keys');
++    const partRender = await explainLabel(root, '//songs/creek/gen:keys-verse');
++    expect(partRender.parameters).toEqual(takeRender.parameters);
++    expect(partRender.actionKey).toBe(takeRender.actionKey);
++  });
++});
+diff --git a/src/keys/routing-voice.test.ts b/src/keys/routing-voice.test.ts
+index 8fd5e996..c971c2b0 100644
+--- a/src/keys/routing-voice.test.ts
++++ b/src/keys/routing-voice.test.ts
+@@ -53,7 +53,7 @@ describe.skipIf(!binary || !sclang || !fieldOut || process.platform === 'win32')
+       copyFileSync(bloomPad, join(root, 'shared/instruments/pad.scd'));
+       createSong(root, 'creek');
+       createTrack(root, 'creek', 'bass');
+-      writeFileSync(join(root, 'songs/creek/tracks/bass.yaml'), 'name: bass\ninputs:\n  - record:\n      instrument: pad\n');
++      writeFileSync(join(root, 'songs/creek/tracks/bass.yaml'), 'name: bass\ninstrument: pad\ninputs:\n  - record:\n');
+       writeFileSync(join(root, 'songs/creek/tracks/main.yaml'), 'name: main\ninputs:\n  - track: bass\n');
+     });
+     afterEach(async () => {
+diff --git a/src/keys/routing.test.ts b/src/keys/routing.test.ts
+index 4946714d..1fcdad4e 100644
+--- a/src/keys/routing.test.ts
++++ b/src/keys/routing.test.ts
+@@ -43,7 +43,7 @@ describe.skipIf(!binary || process.platform === 'win32')('routing armed tracks t
+     for (const song of ['creek', 'tall-grass', 'fast']) {
+       createSong(root, song);
+       createTrack(root, song, 'bass');
+-      writeFileSync(join(root, `songs/${song}/tracks/bass.yaml`), 'name: bass\ninputs:\n  - record:\n      instrument: pad\n');
++      writeFileSync(join(root, `songs/${song}/tracks/bass.yaml`), 'name: bass\ninstrument: pad\ninputs:\n  - record:\n');
+       writeFileSync(join(root, `songs/${song}/tracks/main.yaml`), 'name: main\ninputs:\n  - track: bass\n');
+     }
+     // A song at a rate the null device does not run at, so the daemon
+diff --git a/src/keys/targets.test.ts b/src/keys/targets.test.ts
+index bcfad0d3..5a0fc99b 100644
+--- a/src/keys/targets.test.ts
++++ b/src/keys/targets.test.ts
+@@ -7,8 +7,8 @@ import { init } from '../commands/init.js';
+ import { resolveKeysTargets } from './targets.js';
+ 
+ // What `field keys` arms from its targets (arming.md §2.1): a program by
+-// name, a MIDI track, or the one MIDI track under a bus, refusing a bus
+-// with several so you name the ones you mean.
++// name, a track with an instrument, or the one such track under a bus,
++// refusing a bus with several so you name the ones you mean.
+ 
+ let root: string;
+ 
+@@ -25,8 +25,8 @@ beforeEach(() => {
+   writeFileSync(join(root, 'shared/instruments/juno.scd'), VOICE);
+   writeFileSync(join(root, 'shared/instruments/bass.scd'), VOICE);
+   for (const name of ['keys', 'bass', 'keys-bus', 'band', 'keys-loop', 'pad-sc']) createTrack(root, 'creek', name);
+-  writeTrack('keys', ['inputs:', '  - record:', '      instrument: juno']);
+-  writeTrack('bass', ['inputs:', '  - record:', '      instrument: bass']);
++  writeTrack('keys', ['instrument: juno', 'inputs:', '  - record:']);
++  writeTrack('bass', ['instrument: bass', 'inputs:', '  - record:']);
+   writeTrack('keys-bus', [
+     'inserts:',
+     '  - effect: eq',
+@@ -48,7 +48,7 @@ afterEach(() => {
+ const program = (name: string): string => join(root, 'shared/instruments', `${name}.scd`);
+ 
+ describe('field keys targets', () => {
+-  it('arms a MIDI track by its record entry, with no takes yet', () => {
++  it('arms a track by its instrument, with no takes yet', () => {
+     // createTrack places every track in main, so keys-bus, which places
+     // keys, is on keys' way to the speakers.
+     expect(resolveKeysTargets(['creek/track:keys'], root)).toEqual([
+@@ -56,7 +56,7 @@ describe('field keys targets', () => {
+     ]);
+   });
+ 
+-  it('arms the one MIDI track under a bus, and names the effects it does not hear yet', () => {
++  it('arms the one track with an instrument under a bus, and names the effects it does not hear yet', () => {
+     expect(resolveKeysTargets(['creek/track:keys-bus'], root)).toEqual([
+       { program: program('juno'), track: 'creek/keys', unheardEffects: ['keys-bus'] },
+     ]);
+@@ -69,14 +69,14 @@ describe('field keys targets', () => {
+     ]);
+   });
+ 
+-  it('refuses a bus with several MIDI tracks under it, listing them', () => {
++  it('refuses a bus with several tracks with instruments under it, listing them', () => {
+     expect(() => resolveKeysTargets(['creek/track:band'], root)).toThrow(
+-      'field keys creek/track:band: 2 MIDI tracks are under band, and field keys plays the ones you name: ' +
++      'field keys creek/track:band: 2 tracks with instruments are under band, and field keys plays the ones you name: ' +
+         'creek/track:keys, creek/track:bass',
+     );
+   });
+ 
+-  it('counts a MIDI track reached by several paths once, with the effects of every path', () => {
++  it('counts a track reached by several paths once, with the effects of every path', () => {
+     // keys-loop places keys twice, and once more through keys-bus.
+     expect(resolveKeysTargets(['creek/track:keys-loop'], root)).toEqual([
+       { program: program('juno'), track: 'creek/keys', unheardEffects: ['keys-bus'] },
+@@ -92,8 +92,8 @@ describe('field keys targets', () => {
+     }
+   });
+ 
+-  it('refuses a track with no MIDI track on it or under it', () => {
+-    expect(() => resolveKeysTargets(['creek/track:pad-sc'], root)).toThrow('no MIDI track there');
++  it('refuses a track with no instrument on it or under it', () => {
++    expect(() => resolveKeysTargets(['creek/track:pad-sc'], root)).toThrow('no instrument there');
+   });
+ 
+   it('arms every target at once, instruments and tracks mixed, each once', () => {
+diff --git a/src/keys/targets.ts b/src/keys/targets.ts
+index 54a38b78..fc97405a 100644
+--- a/src/keys/targets.ts
++++ b/src/keys/targets.ts
+@@ -57,13 +57,13 @@ function describeShelf(root: string): string {
+ }
+ 
+ // What `field keys` plays (arming.md §2.1): each instrument it was given
+-// by program, and each MIDI track it was given or found under a track it
+-// was given, all at once.
++// by program, and each track with an instrument it was given or found
++// under a track it was given, all at once.
+ export interface ArmedInstrument {
+   program: string; // absolute path to the instrument's program
+-  track?: string; // the MIDI track it plays for, `song/track`
++  track?: string; // the track it plays for, `song/track`
+   // Tracks above the one named, the one named, and those down to the
+-  // MIDI track, top-down, whose inserts the
++  // track it plays for, top-down, whose inserts the
+   // voice does not pass through yet (live-supercollider.md).
+   unheardEffects: string[];
+ }
+@@ -95,26 +95,26 @@ export function resolveKeysTargets(targets: string[], cwd = process.cwd()): Arme
+     const { song: songName, track } = resolveRecordTarget(root, target);
+     const project = loadProject(root);
+     const song = project.songs.find((s) => s.name === songName)!;
+-    const found = midiTracksUnder(song, track);
++    const found = instrumentTracksUnder(song, track);
+     if (found.length === 0) {
+       throw new Error(
+-        `field keys ${target}: no MIDI track there — a MIDI track is one whose record entry names an ` +
+-          'instrument (instrument: under record:), on the track or on a track under it',
++        `field keys ${target}: no instrument there — give the track one with \`instrument: <name>\`, ` +
++          'or name a track under it that has one',
+       );
+     }
+     if (found.length > 1) {
+       throw new Error(
+-        `field keys ${target}: ${found.length} MIDI tracks are under ${track}, and field keys plays the ` +
+-          `ones you name: ${found.map((f) => `${songName}/track:${f.track}`).join(', ')}`,
++        `field keys ${target}: ${found.length} tracks with instruments are under ${track}, and field keys ` +
++          `plays the ones you name: ${found.map((f) => `${songName}/track:${f.track}`).join(', ')}`,
+       );
+     }
+     // resolveRecordTarget loads a valid project, and validation already
+     // refuses an instrument with no program.
+-    const [midi] = found as [MidiTrack];
++    const [played] = found as [InstrumentTrack];
+     add({
+-      program: instrumentPath(midi.instrument, root),
+-      track: `${songName}/${midi.track}`,
+-      unheardEffects: [...new Set([...effectsAbove(song, track), ...midi.effects])],
++      program: instrumentPath(played.instrument, root),
++      track: `${songName}/${played.track}`,
++      unheardEffects: [...new Set([...effectsAbove(song, track), ...played.effects])],
+     });
+   }
+   return [...armed.values()];
+@@ -141,23 +141,23 @@ function effectsAbove(song: LoadedSong, name: string): string[] {
+   return [...found];
+ }
+ 
+-interface MidiTrack {
++interface InstrumentTrack {
+   track: string;
+   instrument: string;
+   effects: string[]; // tracks on the way down, this one included, that have inserts
+ }
+ 
+-// The named track itself when its record entry names an instrument;
+-// otherwise every such track under it, down its `track:` inputs, once
+-// each however many paths reach it, with the effects of all of them.
+-function midiTracksUnder(song: LoadedSong, name: string): MidiTrack[] {
++// The named track itself when it has an instrument; otherwise every such
++// track under it, down its `track:` inputs, once each however many paths
++// reach it, with the effects of all of them.
++function instrumentTracksUnder(song: LoadedSong, name: string): InstrumentTrack[] {
+   const byName = new Map(song.tracks.map((t) => [t.data.name, t.data]));
+-  const found = new Map<string, MidiTrack>();
++  const found = new Map<string, InstrumentTrack>();
+   const visit = (trackName: string, above: string[], path: Set<string>): void => {
+     const track = byName.get(trackName);
+     if (track === undefined || path.has(trackName)) return;
+     const effects = track.inserts.length > 0 ? [...above, trackName] : above;
+-    const instrument = track.inputs.find((e) => e.record?.instrument !== undefined)?.record?.instrument;
++    const instrument = track.instrument;
+     if (instrument !== undefined) {
+       const earlier = found.get(trackName);
+       found.set(trackName, {
+diff --git a/src/model/cables.ts b/src/model/cables.ts
+index a372d3cf..351c228d 100644
+--- a/src/model/cables.ts
++++ b/src/model/cables.ts
+@@ -84,6 +84,7 @@ export function entryName(entry: InputEntry, index: number): string {
+   const target =
+     entry.track ??
+     entry.audio ??
++    entry.notes ??
+     (entry.supercollider
+       ? 'supercollider'
+       : entry.generative
+diff --git a/src/model/project.test.ts b/src/model/project.test.ts
+index af6629f8..0eb9f675 100644
+--- a/src/model/project.test.ts
++++ b/src/model/project.test.ts
+@@ -1663,7 +1663,7 @@ describe('record entries (recording.md §3–§4)', () => {
+   });
+ 
+   it('reports an instrument whose knob file fails its schema, as the take\'s render would', async () => {
+-    writeVox(['  - record:', '      instrument: pad']);
++    writeFileSync(join(root, 'songs/opener/tracks/vox.yaml'), 'name: vox\ninstrument: pad\ninputs:\n  - record:\n');
+     writeFileSync(join(root, 'shared/instruments/pad.scd'), 'Out.ar(0, Silent.ar(2));\n');
+     writeFileSync(join(root, 'shared/instruments/pad.knobs.yaml'), 'knobs:\n  - { name: cutoff, cc: 64 }\n');
+     expect((await diagnostics()).join('\n')).toContain('shared/instruments/pad.knobs.yaml: knobs.0.cc: cutoff: cc 64 is the sustain pedal');
+diff --git a/src/model/project.ts b/src/model/project.ts
+index 2a969b76..100fba78 100644
+--- a/src/model/project.ts
++++ b/src/model/project.ts
+@@ -5,7 +5,11 @@ import type { z } from 'zod';
+ import { PROJECT_MANIFEST } from '../constants.js';
+ import { readWavHeader } from '../audio/wav.js';
+ import { generatorFor } from '../generators/index.js';
+-import { entryRef, expandLoop, generatorName, placedWindow } from '../generators/stem.js';
++import { entryRef, expandLoop, generatorName, mintsGenerator, partRenders, placedWindow } from '../generators/stem.js';
++import { validateInstrument } from '../generators/voice-render.js';
++import { isSlug } from '../ids.js';
++import { notesFileOrder, notesFileSchema, type NotesFile } from '../schema/notes.js';
++import { notesLength, placementAnchor, resolveNotes, takeAnchor } from '../time/notes.js';
+ import { MeterMap, TempoMap } from '../time/tempo.js';
+ import { canonicalText, hasAnchorsOrAliases, type KeyOrder } from '../yaml/emit.js';
+ import { checkCables, entryName, type Cable } from './cables.js';
+@@ -96,6 +100,12 @@ export interface LoadedSong {
+   // node name: audio/<name>/takes.yaml. Absent means nothing has been
+   // recorded yet, which builds as silence (§4).
+   recordTakes: Map<string, LoadedFile<RecordTakes>>;
++  // The song's parts (sequencer.md §3.2): songs/<song>/notes/<name>.yaml,
++  // keyed by name, whether or not an entry places them.
++  parts: Map<string, LoadedFile<NotesFile>>;
++  // Each chosen MIDI take's notes file, keyed by the take's ledger name.
++  // Read for the render and never formatted: the ledger pins its bytes.
++  takeNotes: Map<string, LoadedFile<NotesFile>>;
+   // The song's resolved cables (nested-tracks.md §19), derived by
+   // validate: complete, acyclic, arrivals agreed. The graph consumes
+   // these rather than re-walking, so check and build cannot answer
+@@ -345,6 +355,8 @@ function loadProjectFiles(root: string): LoadedProject {
+       tracks: [],
+       genTakes: new Map(),
+       recordTakes: new Map(),
++      parts: new Map(),
++      takeNotes: new Map(),
+       cables: [],
+     };
+ 
+@@ -401,6 +413,22 @@ function loadProjectFiles(root: string): LoadedProject {
+         }
+       }
+     }
++    // A chosen MIDI take's notes, through the ledger row that pins them.
++    // A row that names nothing, or a file outside the project, is
++    // validate's to diagnose, so neither is read here.
++    for (const takes of song.recordTakes.values()) {
++      const take = chosenTake(takes.data);
++      if (take === undefined || !isMidiTakeRow(take)) continue;
++      const asset = song.assets?.data.assets.find((a) => a.name === take.asset);
++      const { path } = asset !== undefined ? resolveAssetFile(project.root, song.dir, asset.file) : {};
++      const notes = path !== undefined ? loadFile(project, path, { schema: notesFileSchema, order: notesFileOrder }) : undefined;
++      if (notes) song.takeNotes.set(take.asset, notes);
++    }
++
++    for (const file of yamlFiles(join(dir, 'notes'))) {
++      const part = loadFile(project, file, { schema: notesFileSchema, order: notesFileOrder });
++      if (part) song.parts.set(basename(file, '.yaml'), part);
++    }
+ 
+     project.songs.push(song);
+   }
+@@ -421,6 +449,7 @@ export function allFiles(project: LoadedProject): LoadedFile<unknown>[] {
+       ...s.genTakes.values(),
+       ...s.recordTakes.values(),
+       ...s.tracks,
++      ...s.parts.values(),
+     ]),
+   ];
+   return files.filter((f) => f !== undefined);
+@@ -592,13 +621,7 @@ function validate(project: LoadedProject): void {
+     const genNodeNames = new Set<string>();
+     for (const trackFile of song.tracks) {
+       for (const entry of trackFile.data.inputs) {
+-        if (
+-          entry.supercollider !== undefined ||
+-          entry.generative !== undefined ||
+-          entry.record !== undefined
+-        ) {
+-          genNodeNames.add(generatorName(entry, trackFile.data.name));
+-        }
++        if (mintsGenerator(entry)) genNodeNames.add(generatorName(entry, trackFile.data.name));
+       }
+     }
+ 
+@@ -610,6 +633,9 @@ function validate(project: LoadedProject): void {
+       string,
+       { tempo: TempoMap | undefined; meter: MeterMap | undefined; rate: number }
+     >();
++    // The renders a part's later loop repetitions mint (partRenders), so
++    // each can be checked against the generator names once all are known.
++    const repetitionRenders: { name: string; path: string; what: string; repetition: number }[] = [];
+     for (const track of song.tracks) {
+       // At the track's effective rate (multi-rate.md decision 3): the
+       // sample-domain checks below — fade fit, loop expansion — have to
+@@ -673,6 +699,17 @@ function validate(project: LoadedProject): void {
+       // to mean one thing regardless of who consumes it.
+       const { tempo: trackTempo, meter: trackMeter } = timeByTrack.get(track.data.name)!;
+ 
++      // Resolved by the render's own rule, so check and the build find
++      // the program the same way.
++      const instrument = track.data.instrument;
++      if (instrument !== undefined) {
++        validateInstrument(instrument, {
++          root: project.root,
++          push: (message: string) => push(track.path, message),
++          resolveFile: (baseDir: string, file: string) => resolveAssetFile(project.root, baseDir, file),
++        });
++      }
++
+       // One entry loop (nested-tracks.md §18): what an entry plays is
+       // named by its field, so resolution is per kind and never guesses —
+       // audio: refuses a name that renders, pointing at the field that
+@@ -786,30 +823,26 @@ function validate(project: LoadedProject): void {
+               `${what} has takes but none chosen — field choose ${song.name}/${rname} --take <name> first`,
+             );
+           }
+-          // The instrument decides the kind of take the entry records
+-          // (keyboard-instrument.md §12.2): it must exist, and every take
+-          // must be of the entry's kind.
+-          const instrument = entry.record.instrument;
+-          if (instrument !== undefined) {
+-            // Through the render's own rule, as a supercollider: entry is,
+-            // so check and the build resolve the program the same way. The
+-            // take plays no part in it.
+-            const spec = { name: rname, type: 'voice-render' as const, take: takes?.chosen ?? '', instrument };
+-            generatorFor(spec).validate(spec, {
+-              root: project.root,
+-              songDir: song.dir,
+-              names,
+-              push: (message: string) => push(track.path, `${what} ${message}`),
+-              resolveFile: (baseDir: string, file: string) => resolveAssetFile(project.root, baseDir, file),
+-            });
+-          }
++          // The track's instrument decides the kind of take the entry
++          // records (sequencer.md §3.4), so every take must be of that kind.
+           for (const take of takes?.takes ?? []) {
+             if (isMidiTakeRow(take) && instrument === undefined) {
+-              push(track.path, `take "${take.asset}" is a MIDI take, and ${what} names no instrument to play it`);
++              push(track.path, `take "${take.asset}" is a MIDI take, and ${track.data.name} has no instrument to play it`);
+             } else if (!isMidiTakeRow(take) && instrument !== undefined) {
+-              push(track.path, `take "${take.asset}" is an audio take, and ${what} records MIDI for ${instrument}`);
++              push(track.path, `take "${take.asset}" is an audio take, and ${track.data.name} records MIDI for ${instrument}`);
+             }
+           }
++        } else if (entry.notes !== undefined) {
++          if (instrument === undefined) {
++            push(
++              track.path,
++              `${what} places notes, and ${track.data.name} has no instrument to play them — ` +
++                'give the track one with `instrument: <name>`',
++            );
++          }
++          if (!song.parts.has(entry.notes) && !existsSync(join(project.root, song.dir, 'notes', `${entry.notes}.yaml`))) {
++            push(track.path, `${what} places the part "${entry.notes}", and there is no ${song.dir}/notes/${entry.notes}.yaml`);
++          }
+         }
+         // Musical arrays need the musical anchor: an absolute entry's
+         // scalars are samples, and silently converting [9, 2] would be a
+@@ -830,6 +863,19 @@ function validate(project: LoadedProject): void {
+         const pos = positionTicks(track.path, `${what} at`, entry.at, trackMeter);
+         if (pos === undefined) return;
+         entry.at = pos;
++        // A take in ticks plays from its record entry (§2.4), so it has to
++        // start on the track and resolve from there as a part would.
++        if (entry.record !== undefined && trackTempo && trackMeter) {
++          const chosen = chosenTake(song.recordTakes.get(generatorName(entry, track.data.name))?.data);
++          const notes = chosen !== undefined ? song.takeNotes.get(chosen.asset) : undefined;
++          if (chosen !== undefined && isMidiTakeRow(chosen) && notes !== undefined && notes.data.sample_rate === undefined) {
++            try {
++              resolveNotes(notes.data, takeAnchor(entry, chosen, trackTempo), { tempo: trackTempo, meter: trackMeter });
++            } catch (err) {
++              push(track.path, `take "${chosen.asset}": ${(err as Error).message}`);
++            }
++          }
++        }
+         // An *absent* duration is the entry declining to truncate, and has
+         // to be told apart from one that failed to resolve: the second
+         // already pushed a diagnostic and must skip the checks below,
+@@ -855,6 +901,27 @@ function validate(project: LoadedProject): void {
+           );
+           return;
+         }
++        // A part resolves from where the entry places it, so a position
++        // out of range is this placement's to report. Its length is known
++        // here, which is what lets a looping notes entry omit `every`.
++        const part = entry.notes !== undefined ? song.parts.get(entry.notes) : undefined;
++        if (part !== undefined && trackTempo) {
++          const time = { tempo: trackTempo, meter: trackMeter };
++          try {
++            resolveNotes(part.data, placementAnchor(entry, trackTempo), time);
++          } catch (err) {
++            push(track.path, `${what} places ${part.path}, which does not resolve there: ${(err as Error).message}`);
++            return;
++          }
++          if (entry.loop?.enabled && entry.loop.every === undefined) {
++            const every = notesLength(part.data, entry, time);
++            if (every <= 0) {
++              push(track.path, `${what} loops a part with no length — give ${part.path} a length or the loop an every`);
++              return;
++            }
++            entry.loop.every = every;
++          }
++        }
+         if (entry.loop?.every !== undefined) {
+           const every = spanTicks(track.path, `${what} loop.every`, entry.loop.every, pos, trackMeter);
+           if (every === undefined) return;
+@@ -864,6 +931,18 @@ function validate(project: LoadedProject): void {
+           }
+           entry.loop.every = every;
+         }
++        if (part !== undefined && trackTempo && entry.loop?.enabled) {
++          const name = generatorName(entry, track.data.name);
++          try {
++            const { renders, repetitions } = partRenders(part.data, entry, name, { tempo: trackTempo, meter: trackMeter });
++            for (const render of renders.slice(1)) {
++              repetitionRenders.push({ name: render.name, path: track.path, what, repetition: repetitions.indexOf(render.name) + 1 });
++            }
++          } catch (err) {
++            push(track.path, `${what} places ${part.path}, which does not resolve ${(err as Error).message}`);
++            return;
++          }
++        }
+         // Loops are diagnosed here in full — running the same expansion the
+         // plan will run — because check is the gate: a check-clean project
+         // must never fail to construct its graph (#21 review).
+@@ -970,12 +1049,7 @@ function validate(project: LoadedProject): void {
+     const genNames = new Map<string, string>();
+     for (const trackFile of song.tracks) {
+       for (const entry of trackFile.data.inputs) {
+-        if (
+-          entry.supercollider === undefined &&
+-          entry.generative === undefined &&
+-          entry.record === undefined
+-        )
+-          continue;
++        if (!mintsGenerator(entry)) continue;
+         const name = generatorName(entry, trackFile.data.name);
+         // A generative entry's takes claim audio/<name>/, and so does an
+         // asset: imports land in audio/<name>/ too (project-layout.md
+@@ -1012,6 +1086,16 @@ function validate(project: LoadedProject): void {
+         }
+       }
+     }
++    for (const render of repetitionRenders) {
++      const owner = genNames.get(render.name);
++      if (owner !== undefined) {
++        push(
++          render.path,
++          `repetition ${render.repetition} of ${render.what} renders as "${render.name}", which the ` +
++            `generator in ${owner} also names — rename a track or change an id so each render has a name of its own`,
++        );
++      }
++    }
+ 
+     // Hosted plugin inserts (plugin-hosting.md §3). Repository facts —
+     // pins, ids, state refs — are judged everywhere; what only an
+@@ -1149,6 +1233,12 @@ function validate(project: LoadedProject): void {
+       }
+     }
+ 
++    for (const [name, part] of song.parts) {
++      if (!isSlug(name)) {
++        push(part.path, `a part is named by its file, and "${name}" is not a lowercase slug that a notes: entry can name`);
++      }
++    }
++
+     // A generative entry's takes get the checks a generative sound's do
+     // (the deliberate-sounds block above): committed, content-addressed,
+     // contained in audio/<name>/, `chosen` naming a take that exists.
+diff --git a/src/schema/common.ts b/src/schema/common.ts
+index c388fcb9..ce3d1c79 100644
+--- a/src/schema/common.ts
++++ b/src/schema/common.ts
+@@ -55,6 +55,9 @@ const musicalPosition = z.array(z.number().int().min(1)).min(1).max(3);
+ const musicalSpan = z.array(z.number().int().min(0)).min(1).max(3);
+ export const timePosition = z.union([ticks, musicalPosition]);
+ export const timeSpan = z.union([z.number().int().positive(), musicalSpan]);
++// A span that may be empty, as a note's can: a drum pad's on and off can
++// land in one tick.
++export const timeLength = z.union([ticks, musicalSpan]);
+ 
+ // The error names the set because the refusal is the documentation: a
+ // raw "Invalid input" does not say what a rate may be, and `rate:` on a
+diff --git a/src/schema/notes.test.ts b/src/schema/notes.test.ts
+index ca22eb8a..551737f1 100644
+--- a/src/schema/notes.test.ts
++++ b/src/schema/notes.test.ts
+@@ -1,6 +1,7 @@
+ import { describe, expect, it } from 'vitest';
+ import { parseDocument } from 'yaml';
+-import { formatNotesFile, notesFileSchema, notesFromMessages, renderEvents } from './notes.js';
++import { canonicalText } from '../yaml/emit.js';
++import { formatNotesFile, noteNumber, notesFileOrder, notesFileSchema, notesFromMessages, renderEvents } from './notes.js';
+ 
+ describe('pairing captured messages into notes', () => {
+   it('pairs each note-on with its note-off, by channel and note', () => {
+@@ -12,7 +13,6 @@ describe('pairing captured messages into notes', () => {
+         { at: 30000, midi: [129, 60, 0] },
+       ],
+       48000,
+-      48000,
+     );
+     expect(file.notes).toEqual([
+       { at: 0, length: 24000, note: 60, velocity: 100 },
+@@ -21,7 +21,7 @@ describe('pairing captured messages into notes', () => {
+   });
+ 
+   it('takes a note-on with velocity 0 as a note-off', () => {
+-    const file = notesFromMessages([{ at: 0, midi: [144, 62, 80] }, { at: 100, midi: [144, 62, 0] }], 200, 48000);
++    const file = notesFromMessages([{ at: 0, midi: [144, 62, 80] }, { at: 100, midi: [144, 62, 0] }], 200);
+     expect(file.notes).toEqual([{ at: 0, length: 100, note: 62, velocity: 80 }]);
+   });
+ 
+@@ -33,7 +33,6 @@ describe('pairing captured messages into notes', () => {
+         { at: 900, midi: [128, 60, 0] },
+       ],
+       1000,
+-      48000,
+     );
+     expect(file.notes).toEqual([
+       { at: 0, length: 500, note: 60, velocity: 100 },
+@@ -42,7 +41,7 @@ describe('pairing captured messages into notes', () => {
+   });
+ 
+   it('lets a note held at the end last to the end, and drops a note-off with no note-on', () => {
+-    const file = notesFromMessages([{ at: 10, midi: [128, 64, 0] }, { at: 100, midi: [144, 67, 90] }], 1000, 48000);
++    const file = notesFromMessages([{ at: 10, midi: [128, 64, 0] }, { at: 100, midi: [144, 67, 90] }], 1000);
+     expect(file.notes).toEqual([{ at: 100, length: 900, note: 67, velocity: 90 }]);
+   });
+ 
+@@ -56,10 +55,8 @@ describe('pairing captured messages into notes', () => {
+         { at: 9, midi: [248] },
+       ],
+       10,
+-      44100,
+     );
+     expect(file).toEqual({
+-      sample_rate: 44100,
+       length: 10,
+       notes: [],
+       controls: [
+@@ -75,56 +72,125 @@ describe('the notes file', () => {
+   const file = notesFromMessages(
+     [
+       { at: 0, midi: [144, 60, 100] },
+-      { at: 12000, midi: [145, 64, 90] },
+-      { at: 24000, midi: [128, 60, 0] },
+-      { at: 30000, midi: [176, 64, 127] },
+-      { at: 50000, midi: [224, 0, 96] },
++      { at: 480, midi: [145, 64, 90] },
++      { at: 960, midi: [128, 60, 0] },
++      { at: 1200, midi: [176, 64, 127] },
++      { at: 2000, midi: [224, 0, 96] },
+     ],
+-    60000,
+-    48000,
++    2400,
+   );
+ 
+-  it('writes one row per note, in a fixed key order', () => {
++  it('writes a take in ticks, one row per note, in a fixed key order', () => {
+     expect(formatNotesFile(file)).toBe(
+       [
+-        'sample_rate: 48000',
+-        'length: 60000',
++        'length: 2400',
+         'notes:',
+-        '  - { at: 0, length: 24000, note: 60, velocity: 100 }',
+-        '  - { at: 12000, length: 48000, note: 64, velocity: 90, channel: 2 }',
++        '  - {at: 0, length: 960, note: 60, velocity: 100}',
++        '  - {at: 480, length: 1920, note: 64, velocity: 90, channel: 2}',
+         'controls:',
+-        '  - { at: 30000, cc: 64, value: 127 }',
++        '  - {at: 1200, cc: 64, value: 127}',
+         'bends:',
+-        '  - { at: 50000, value: 12288 }',
++        '  - {at: 2000, value: 12288}',
+         '',
+       ].join('\n'),
+     );
+   });
+ 
+-  it('reads back as the file it was written from', () => {
++  it('reads back as the notes it was written from', () => {
+     expect(notesFileSchema.parse(parseDocument(formatNotesFile(file)).toJS())).toEqual(file);
+   });
+ 
++  it('writes a take that is already a formatted part, so a copy keeps the take\'s bytes', () => {
++    expect(canonicalText(formatNotesFile(file), notesFileOrder)).toBe(formatNotesFile(file));
++  });
++
+   it('writes an empty take', () => {
+-    const empty = notesFromMessages([], 480, 48000);
+-    expect(formatNotesFile(empty)).toBe('sample_rate: 48000\nlength: 480\nnotes: []\ncontrols: []\nbends: []\n');
++    const empty = notesFromMessages([], 480);
++    expect(formatNotesFile(empty)).toBe('length: 480\nnotes: []\ncontrols: []\nbends: []\n');
+     expect(notesFileSchema.parse(parseDocument(formatNotesFile(empty)).toJS())).toEqual(empty);
+   });
+ });
+ 
+-describe('render events', () => {
+-  it('puts every event in time order in seconds, offs before controls before ons at one instant', () => {
+-    const file = notesFileSchema.parse({
+-      sample_rate: 48000,
+-      length: 96000,
++describe('a part', () => {
++  const parse = (text: string) => notesFileSchema.safeParse(parseDocument(text).toJS());
++  const messages = (text: string): string[] => {
++    const parsed = parse(text);
++    return parsed.success ? [] : parsed.error.issues.map((i) => `${i.message} at ${i.path.join('.')}`);
++  };
++
++  it('names notes in scientific pitch, where C4 is 60, with sharps or flats', () => {
++    expect(['C4', 'C#4', 'Db4', 'A4', 'B3', 'C-1', 'G9'].map(noteNumber)).toEqual([60, 61, 61, 69, 59, 0, 127]);
++    expect(['H2', 'c4', 'C', 'G#9', 'Cb-1', 'C10'].map(noteNumber)).toEqual(Array(6).fill(undefined));
++  });
++
++  it('takes musical time and note names, and plays a note at velocity 100 when it names none', () => {
++    const parsed = parse('length: [2]\nnotes:\n  - { at: [1, 2], length: [0, 1], note: G3 }\n  - { at: 1920, length: 480, note: 60, velocity: 90 }\n');
++    expect(parsed.success && parsed.data).toEqual({
++      length: [2],
+       notes: [
+-        { at: 0, length: 24000, note: 60, velocity: 100 },
+-        { at: 24000, length: 24000, note: 60, velocity: 90 },
++        { at: [1, 2], length: [0, 1], note: 55, velocity: 100 },
++        { at: 1920, length: 480, note: 60, velocity: 90 },
+       ],
+-      controls: [{ at: 24000, cc: 64, value: 127 }],
+-      bends: [{ at: 48000, value: 8192, channel: 3 }],
++      controls: [],
++      bends: [],
+     });
+-    expect(renderEvents(file)).toEqual([
++  });
++
++  it('refuses a note name that is not one', () => {
++    expect(messages('notes:\n  - { at: 0, length: 480, note: H2 }\n')).toEqual([
++      '"H2" is not a note name: a note is a MIDI number from 0 to 127 or a name in scientific pitch, where C4 is 60 at notes.0.note',
++    ]);
++    expect(messages('notes:\n  - { at: 0, length: 480, note: 128 }\n')).toEqual([
++      'a note is a MIDI number from 0 to 127 or a name in scientific pitch, where C4 is 60 at notes.0.note',
++    ]);
++  });
++
++  it('refuses musical time in a take timed in samples', () => {
++    expect(messages('sample_rate: 48000\nlength: 96000\nnotes:\n  - { at: [1, 2], length: 480, note: 60 }\n')).toEqual([
++      'a notes file with sample_rate: counts samples, so its times are scalars at notes.0.at',
++    ]);
++  });
++
++  it('formats one row per note and keeps each spelling', () => {
++    const text = [
++      'notes:',
++      '  - at: [1]',
++      '    note: C3',
++      '    length: [0, 1]',
++      '  - { at: [1, 2], length: [0, 1], note: G3, velocity: 110, channel: 2 }',
++      'length: [2]',
++      'controls: []',
++      'bends: []',
++      '',
++    ].join('\n');
++    expect(canonicalText(text, notesFileOrder)).toBe(
++      [
++        'length: [2]',
++        'notes:',
++        '  - {at: [1], length: [0, 1], note: C3}',
++        '  - {at: [1, 2], length: [0, 1], note: G3, velocity: 110, channel: 2}',
++        'controls: []',
++        'bends: []',
++        '',
++      ].join('\n'),
++    );
++  });
++});
++
++describe('render events', () => {
++  it('puts every event in time order in seconds, offs before controls before ons at one instant', () => {
++    expect(
++      renderEvents({
++        sample_rate: 48000,
++        length: 96000,
++        notes: [
++          { at: 0, length: 24000, note: 60, velocity: 100 },
++          { at: 24000, length: 24000, note: 60, velocity: 90 },
++        ],
++        controls: [{ at: 24000, cc: 64, value: 127 }],
++        bends: [{ at: 48000, value: 8192, channel: 3 }],
++      }),
++    ).toEqual([
+       [0, 'on', 0, 60, 100],
+       [0.5, 'off', 0, 60],
+       [0.5, 'cc', 0, 64, 127],
+@@ -144,13 +210,12 @@ describe('render events', () => {
+         { at: 4800, midi: [144, 60, 90] },
+       ],
+       9600,
+-      48000,
+     );
+     expect(file.notes).toEqual([
+       { at: 4800, length: 0, note: 36, velocity: 120 },
+       { at: 4800, length: 4800, note: 60, velocity: 90 },
+     ]);
+-    expect(renderEvents(file)).toEqual([
++    expect(renderEvents({ ...file, sample_rate: 48000 })).toEqual([
+       [0.1, 'on', 0, 36, 120],
+       [0.1, 'off', 0, 36],
+       [0.1, 'on', 0, 60, 90],
+diff --git a/src/schema/notes.ts b/src/schema/notes.ts
+index 13d3b906..686ebe3e 100644
+--- a/src/schema/notes.ts
++++ b/src/schema/notes.ts
+@@ -1,38 +1,120 @@
+ import { z } from 'zod';
++import { stringifyCanonical, type KeyOrder } from '../yaml/emit.js';
++import { timeLength, timePosition } from './common.js';
+ 
+-// A recorded MIDI take (keyboard-instrument.md §12.1): a text list of
+-// notes, controller changes, and bends, timed in samples from the take's
+-// start at the rate it was captured at. Pinned in the ledger by hash like
+-// any take; the build renders it through the record entry's instrument.
++// A notes file (sequencer.md §2.2): notes, controller changes, and bends,
++// one row each. A part is one you write, under songs/<song>/notes/; a
++// MIDI take is one `field record` writes, in scalar ticks from the take's
++// start (§2.4). Time fields take musical time's two spellings, a scalar
++// in ticks or a musical array, both counted from the file's start and
++// resolved through the placing track's meter map (src/time/notes.ts).
++// A file with `sample_rate:` is a take recorded before takes landed in
++// ticks: its times are samples at that rate, and it plays as recorded.
+ 
+-const at = z.number().int().min(0);
+ const channel = z.number().int().min(1).max(16).optional();
+ const seven = z.number().int().min(0).max(127);
+ 
+-export const notesFileSchema = z.strictObject({
+-  sample_rate: z.number().int().positive(),
+-  length: at,
+-  notes: z
+-    .array(z.strictObject({ at, length: at, note: seven, velocity: z.number().int().min(1).max(127), channel }))
+-    .default([]),
+-  controls: z.array(z.strictObject({ at, cc: seven, value: seven, channel })).default([]),
+-  bends: z.array(z.strictObject({ at, value: z.number().int().min(0).max(16383), channel })).default([]),
++const SEMITONES: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
++
++// Scientific pitch, where C4 is 60, as `field keys` prints a note
++// (src/keys/print.ts), with a sharp or a flat: C#4 and Db4 are both 61.
++export function noteNumber(name: string): number | undefined {
++  const m = /^([A-G])([#b]?)(-?\d)$/.exec(name);
++  if (m === null) return undefined;
++  const number = (Number(m[3]) + 1) * 12 + SEMITONES[m[1]!]! + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0);
++  return number >= 0 && number <= 127 ? number : undefined;
++}
++
++const NOTE_SPELLING = 'a note is a MIDI number from 0 to 127 or a name in scientific pitch, where C4 is 60';
++const note = z.unknown().transform((value, ctx) => {
++  const number = typeof value === 'string' ? noteNumber(value) : value;
++  if (typeof number === 'number' && Number.isInteger(number) && number >= 0 && number <= 127) return number;
++  ctx.addIssue({
++    code: 'custom',
++    message: typeof value === 'string' ? `"${value}" is not a note name: ${NOTE_SPELLING}` : NOTE_SPELLING,
++  });
++  return z.NEVER;
+ });
++
++const LISTS = ['notes', 'controls', 'bends'] as const;
++
++export const notesFileSchema = z
++  .strictObject({
++    sample_rate: z.number().int().positive().optional(),
++    // Omitted, the file ends where its last note ends.
++    length: timeLength.optional(),
++    notes: z
++      .array(
++        z.strictObject({
++          at: timePosition,
++          length: timeLength,
++          note,
++          velocity: z.number().int().min(1).max(127).default(100),
++          channel,
++        }),
++      )
++      .default([]),
++    controls: z.array(z.strictObject({ at: timePosition, cc: seven, value: seven, channel })).default([]),
++    bends: z.array(z.strictObject({ at: timePosition, value: z.number().int().min(0).max(16383), channel })).default([]),
++  })
++  .superRefine((file, ctx) => {
++    if (file.sample_rate === undefined) return;
++    const message = 'a notes file with sample_rate: counts samples, so its times are scalars';
++    if (Array.isArray(file.length)) ctx.addIssue({ code: 'custom', path: ['length'], message });
++    for (const list of LISTS) {
++      file[list].forEach((row, i) => {
++        for (const [field, value] of Object.entries(row)) {
++          if (Array.isArray(value)) ctx.addIssue({ code: 'custom', path: [list, i, field], message });
++        }
++      });
++    }
++  });
+ export type NotesFile = z.infer<typeof notesFileSchema>;
+ 
++// One row per note, each on one line however many fields it spells, so
++// two versions of a part diff line by line. `field fmt` keeps the
++// spelling each row has: a name or a number, ticks or musical time.
++const row = (keys: string[]): KeyOrder => ({ keys, flow: true });
++export const notesFileOrder: KeyOrder = {
++  keys: ['sample_rate', 'length', ...LISTS],
++  lineWidth: 0,
++  children: {
++    length: { flow: true },
++    notes: { items: row(['at', 'length', 'note', 'velocity', 'channel']) },
++    controls: { items: row(['at', 'cc', 'value', 'channel']) },
++    bends: { items: row(['at', 'value', 'channel']) },
++  },
++};
++
++// Notes with every time a scalar in one unit and every note a number:
++// what pairing captured messages makes, and a take's ticks.
++export interface TimedNotes {
++  length: number;
++  notes: { at: number; length: number; note: number; velocity: number; channel?: number | undefined }[];
++  controls: { at: number; cc: number; value: number; channel?: number | undefined }[];
++  bends: { at: number; value: number; channel?: number | undefined }[];
++}
++
++// A notes file resolved for one placement: every time in samples at
++// `sample_rate`, from where the placement starts. The render plays it.
++export interface ResolvedNotes extends TimedNotes {
++  sample_rate: number;
++}
++
+ // What the daemon captures: one MIDI message, `at` samples into the take.
+ export interface CapturedMessage {
+   at: number;
+   midi: number[];
+ }
+ 
+-// Pairs each note-on with the note-off that ends it. A note still held at
+-// the end lasts to the end; a note-off whose note-on came before the take
+-// began is dropped; a second note-on for a sounding note ends the first.
+-export function notesFromMessages(messages: readonly CapturedMessage[], length: number, sampleRate: number): NotesFile {
+-  const notes: NotesFile['notes'] = [];
+-  const controls: NotesFile['controls'] = [];
+-  const bends: NotesFile['bends'] = [];
++// Pairs each note-on with the note-off that ends it, in the messages'
++// own time unit. A note still held at the end lasts to the end; a
++// note-off whose note-on came before the take began is dropped; a second
++// note-on for a sounding note ends the first.
++export function notesFromMessages(messages: readonly CapturedMessage[], length: number): TimedNotes {
++  const notes: TimedNotes['notes'] = [];
++  const controls: TimedNotes['controls'] = [];
++  const bends: TimedNotes['bends'] = [];
+   const open = new Map<number, { at: number; velocity: number }>();
+   const withChannel = <T extends object>(row: T, ch: number): T & { channel?: number } =>
+     ch === 1 ? row : { ...row, channel: ch };
+@@ -62,33 +144,14 @@ export function notesFromMessages(messages: readonly CapturedMessage[], length:
+   for (const key of [...open.keys()]) end(key, length);
+ 
+   notes.sort((a, b) => a.at - b.at || a.note - b.note || (a.channel ?? 1) - (b.channel ?? 1));
+-  return { sample_rate: sampleRate, length, notes, controls, bends };
++  return { length, notes, controls, bends };
+ }
+ 
+-function row(fields: Record<string, number | undefined>): string {
+-  const parts = Object.entries(fields)
+-    .filter(([, v]) => v !== undefined)
+-    .map(([k, v]) => `${k}: ${v}`);
+-  return `{ ${parts.join(', ')} }`;
+-}
+-
+-// One row per note, in the file's own fixed key order, so a take reads as
+-// a table and two takes diff line by line. The bytes are what the ledger
+-// pins, so this is the only writer.
+-export function formatNotesFile(file: NotesFile): string {
+-  const lines = [`sample_rate: ${file.sample_rate}`, `length: ${file.length}`];
+-  const list = (name: string, rows: string[]): void => {
+-    if (rows.length === 0) {
+-      lines.push(`${name}: []`);
+-      return;
+-    }
+-    lines.push(`${name}:`);
+-    for (const r of rows) lines.push(`  - ${r}`);
+-  };
+-  list('notes', file.notes.map((n) => row({ at: n.at, length: n.length, note: n.note, velocity: n.velocity, channel: n.channel })));
+-  list('controls', file.controls.map((c) => row({ at: c.at, cc: c.cc, value: c.value, channel: c.channel })));
+-  list('bends', file.bends.map((b) => row({ at: b.at, value: b.value, channel: b.channel })));
+-  return `${lines.join('\n')}\n`;
++// A take's bytes, in ticks: what the ledger pins. They are canonical as
++// a part, so a take copied into songs/<song>/notes/ is a part `field fmt`
++// leaves alone, with the take's hash.
++export function formatNotesFile(file: TimedNotes): string {
++  return stringifyCanonical(file, notesFileOrder);
+ }
+ 
+ // The renderer's input (sc/voice-render.scd): every event in time order,
+@@ -105,7 +168,7 @@ export type RenderEvent =
+   | [number, 'cc', number, number, number]
+   | [number, 'bend', number, number];
+ 
+-export function renderEvents(file: NotesFile): RenderEvent[] {
++export function renderEvents(file: ResolvedNotes): RenderEvent[] {
+   const seconds = (samples: number): number => samples / file.sample_rate;
+   const [OFF, CONTROL, ON] = [0, 1, 2];
+   const timed: { at: number; rank: number; event: RenderEvent }[] = [];
+diff --git a/src/schema/record.ts b/src/schema/record.ts
+index bc2cda3f..b21e2232 100644
+--- a/src/schema/record.ts
++++ b/src/schema/record.ts
+@@ -13,14 +13,21 @@ import { labelName } from './common.js';
+ // spelling — YAML's null preprocesses to the empty table, the way a bare
+ // send label already does (track.ts sendSchema; §11 resolved 2026-09-06).
+ //
+-// `instrument` is the field that earned it (keyboard-instrument.md §12.2):
+-// it decides the kind of take. With one, the entry records MIDI and the
+-// build renders the chosen take through that instrument's voice; without,
+-// it records audio. It resolves as `field keys` resolves an instrument.
+-export const recordEntrySchema = z.preprocess(
+-  (v) => v ?? {},
+-  z.strictObject({ instrument: z.string().min(1).optional() }),
+-);
++// The kind of take is the track's `instrument` to decide (sequencer.md
++// §3.4): MIDI with one, audio without. `instrument:` here is refused by
++// name, because an unrecognized key would not say where it goes.
++export const recordEntrySchema = z.preprocess((v, ctx) => {
++  const entry = v ?? {};
++  if (typeof entry !== 'object' || !('instrument' in entry)) return entry;
++  const { instrument, ...rest } = entry as Record<string, unknown>;
++  ctx.addIssue({
++    code: 'custom',
++    message:
++      `the instrument is the track's: move \`instrument: ${String(instrument)}\` up beside the ` +
++      "track's `name:`, and leave `- record:` bare (sequencer.md §3.4)",
++  });
++  return rest;
++}, z.strictObject({}));
+ export type RecordEntry = z.infer<typeof recordEntrySchema>;
+ 
+ // Take names are timestamps (§3): sortable, and two clones recording
+@@ -66,11 +73,20 @@ export const audioTakeRowSchema = z.strictObject({
+ // and it carries the MIDI sources the daemon listened to in place of an
+ // audio take's device and input. `latency` is the output latency alone,
+ // because a player presses a key in time with what they hear, and MIDI
+-// has no input latency worth the name; placement subtracts it as for
+-// audio.
++// has no input latency worth the name. A take in ticks (sequencer.md
++// §2.4) has the latency taken off its notes already, and plays from
++// `started_at_ticks`, where it starts in ticks counted from the whole
++// tick its record entry's window starts on. The two are authoritative,
++// so the take moves with its entry by the same musical distance and
++// follows a tempo edit. `started_at_samples`, `latency`, and
++// `musical_position`, where it started on its track in the track's own
++// time, are its record. A take whose notes file carries `sample_rate:`
++// places by sample arithmetic, as an audio take does, and has no
++// `started_at_ticks`.
+ export const midiTakeRowSchema = z.strictObject({
+   asset: takeName,
+   started_at_samples: z.number().int(),
++  started_at_ticks: z.number().int().optional(),
+   musical_position: musicalPosition,
+   latency: z.number().int().min(0),
+   sources: z.array(z.string().min(1)),
+@@ -108,6 +124,7 @@ export const recordTakesOrder: KeyOrder = {
+         keys: [
+           'asset',
+           'started_at_samples',
++          'started_at_ticks',
+           'musical_position',
+           'latency',
+           'device',
+diff --git a/src/schema/track.ts b/src/schema/track.ts
+index 291ad1bb..81969729 100644
+--- a/src/schema/track.ts
++++ b/src/schema/track.ts
+@@ -24,7 +24,10 @@ import { recordEntrySchema } from './record.js';
+ // `record:` is the generative pattern with a human where the model was
+ // (recording.md §1): its takes live beside the audio under the record
+ // node's name, `field record` fills them, and an entry with none yet
+-// builds as silence rather than refusing (§4).
++// builds as silence rather than refusing (§4). `notes:` places a part,
++// a notes file under songs/<song>/notes/, and renders it through the
++// track's `instrument` as a gen node, as a MIDI take renders
++// (sequencer.md §2.3).
+ //
+ // Placement fields are uniform across kinds, because none of them means
+ // something different depending on what produced the audio. A window is
+@@ -84,6 +87,7 @@ const inputEntryFields = z
+     supercollider: supercolliderEntrySchema.optional(), // an inline render
+     generative: generativeEntrySchema.optional(), // a deliberate request
+     record: recordEntrySchema.optional(), // a performance to record (recording.md §4)
++    notes: slug.optional(), // a part: songs/<song>/notes/<name>.yaml (sequencer.md §2.3)
+     receive: labelName.optional(), // a cable's label (nested-tracks.md §19)
+     anchor: z.enum(['musical', 'absolute']).default('musical'),
+     // Omitted means the track's start — the leaf case reads as bare
+@@ -121,6 +125,7 @@ const inputEntryFields = z
+       entry.supercollider,
+       entry.generative,
+       entry.record,
++      entry.notes,
+       entry.receive,
+     ].filter((v) => v !== undefined);
+     if (kinds.length !== 1) {
+@@ -128,7 +133,7 @@ const inputEntryFields = z
+         code: 'custom',
+         message:
+           'an entry plays exactly one thing — name it with track:, audio:, ' +
+-          'supercollider:, generative:, record:, or receive:',
++          'supercollider:, generative:, record:, notes:, or receive:',
+       });
+     }
+     // A take is placed where it was sung (recording.md §3); tiling it
+@@ -157,6 +162,7 @@ export const inputEntryOrder: KeyOrder = {
+     'supercollider',
+     'generative',
+     'record',
++    'notes',
+     'receive',
+     'anchor',
+     'at',
+@@ -245,6 +251,11 @@ export type TrackTime = z.infer<typeof trackTimeSchema>;
+ 
+ export const trackSchema = z.strictObject({
+   name: labelName,
++  // The program the track's notes play through (sequencer.md §3.4): its
++  // parts, its MIDI takes, and `field keys` on the track. It decides the
++  // kind of take `record:` records, MIDI with one and audio without. It
++  // resolves as `field keys` resolves an instrument.
++  instrument: z.string().min(1).optional(),
+   // The rate this track renders at (multi-rate.md decision 3). Omitted
+   // means the project's — the same inheritance shape as `time:`, and from
+   // the song for the same reason: a track may have two parents and
+@@ -268,7 +279,7 @@ export type Track = Omit<TrackFile, 'inputs'> & {
+   inputs: InputEntry[];
+ };
+ export const trackOrder: KeyOrder = {
+-  keys: ['name', 'rate', 'time', 'inserts', 'sends', 'inputs'],
++  keys: ['name', 'instrument', 'rate', 'time', 'inserts', 'sends', 'inputs'],
+   children: {
+     // The labels are the author's; only the values have known keys.
+     sends: { entries: { keys: ['gain_db', 'tap'] } },
+diff --git a/src/time/notes.test.ts b/src/time/notes.test.ts
+new file mode 100644
+index 00000000..08f40604
+--- /dev/null
++++ b/src/time/notes.test.ts
+@@ -0,0 +1,143 @@
++import { describe, expect, it } from 'vitest';
++import { notesFileSchema } from '../schema/notes.js';
++import { notesLength, resolveNotes, takeAnchor } from './notes.js';
++import { MeterMap, TempoMap } from './tempo.js';
++
++// At 120 bpm and 48 kHz a tick is 25 samples: a quarter note is 960
++// ticks and 24000 samples, and a 4/4 bar is 3840 ticks.
++const TICK = 25;
++const steady = new TempoMap([{ at: 0, bpm: 120 }], 48000);
++const fourFour = new MeterMap([{ at: 0, numerator: 4, denominator: 4 }]);
++// 4/4 for one bar, then 7/8 from bar 2 on: a 7/8 bar is 3360 ticks.
++const toSevenEight = new MeterMap([
++  { at: 0, numerator: 4, denominator: 4 },
++  { at: 3840, numerator: 7, denominator: 8 },
++]);
++
++const part = (rows: object) => notesFileSchema.parse(rows);
++const starts = (resolved: { notes: { at: number }[] }): number[] => resolved.notes.map((n) => n.at);
++
++describe('resolving a part', () => {
++  const riff = part({
++    notes: [
++      { at: [1], length: [0, 1], note: 'C3' },
++      { at: [2], length: [0, 1], note: 'G3' },
++      { at: [3], length: [0, 1], note: 60 },
++    ],
++  });
++
++  it('starts the part\'s second bar at the bar line after a meter change from 4/4 to 7/8', () => {
++    const resolved = resolveNotes(riff, 0, { tempo: steady, meter: toSevenEight });
++    expect(starts(resolved)).toEqual([0, 3840 * TICK, (3840 + 3360) * TICK]);
++    // From bar 2, every bar of the part is a 7/8 bar.
++    expect(starts(resolveNotes(riff, 3840, { tempo: steady, meter: toSevenEight }))).toEqual([0, 3360 * TICK, 2 * 3360 * TICK]);
++  });
++
++  it('counts its samples from where it is placed, so one part placed twice in a steady song resolves alike', () => {
++    const at1 = resolveNotes(riff, 0, { tempo: steady, meter: fourFour });
++    const at17 = resolveNotes(riff, 16 * 3840, { tempo: steady, meter: fourFour });
++    expect(at17).toEqual(at1);
++    expect(at1).toMatchObject({ sample_rate: 48000, length: 2 * 3840 * TICK + 960 * TICK });
++  });
++
++  it.each([133, 128, 96])('resolves alike at every bar of a steady song at %d bpm, where a tick is not a whole number of samples', (bpm) => {
++    const tempo = new TempoMap([{ at: 0, bpm }], 48000);
++    const time = { tempo, meter: fourFour };
++    // One tick of each kind in the bar: 133 bpm never lands on half a
++    // sample, and 96 and 128 bpm do, at ticks 2 and 8.
++    const ticks = part({ notes: Array.from({ length: 64 }, (_, i) => ({ at: i * 60 + (i % 16), length: 2, note: 60 })) });
++    const first = resolveNotes(ticks, 0, time);
++    for (let bar = 1; bar < 256; bar++) {
++      expect(resolveNotes(ticks, bar * 3840, time)).toEqual(first);
++    }
++  });
++
++  it('follows the tempo map from where it is placed', () => {
++    // 60 bpm from bar 2: a quarter note there is a second.
++    const slowing = new TempoMap([{ at: 0, bpm: 120 }, { at: 3840, bpm: 60 }], 48000);
++    const resolved = resolveNotes(riff, 0, { tempo: slowing, meter: fourFour });
++    expect(starts(resolved)).toEqual([0, 96000, 96000 + 4 * 48000]);
++    expect(resolved.notes.map((n) => n.length)).toEqual([24000, 48000, 48000]);
++    expect(resolveNotes(riff, 3840, { tempo: slowing, meter: fourFour }).notes[1]!.at).toBe(4 * 48000);
++  });
++
++  it('reads beats and ticks within the bar, and scalar times as ticks from the part\'s start', () => {
++    const resolved = resolveNotes(
++      part({
++        length: 1920,
++        notes: [
++          { at: [1, 3], length: 480, note: 64 },
++          { at: [1, 2, 241], length: [0, 0, 120], note: 67, channel: 2 },
++          { at: 480, length: 0, note: 36, velocity: 127 },
++        ],
++        controls: [{ at: [1, 4], cc: 74, value: 64 }],
++        bends: [{ at: 960, value: 0 }],
++      }),
++      3840,
++      { tempo: steady, meter: fourFour },
++    );
++    expect(resolved).toEqual({
++      sample_rate: 48000,
++      length: 1920 * TICK,
++      notes: [
++        { at: 1920 * TICK, length: 480 * TICK, note: 64, velocity: 100, channel: undefined },
++        { at: 1200 * TICK, length: 120 * TICK, note: 67, velocity: 100, channel: 2 },
++        { at: 480 * TICK, length: 0, note: 36, velocity: 127, channel: undefined },
++      ],
++      controls: [{ at: 2880 * TICK, cc: 74, value: 64, channel: undefined }],
++      bends: [{ at: 960 * TICK, value: 0, channel: undefined }],
++    });
++  });
++
++  it('ends where its last note ends when it declares no length', () => {
++    const resolved = resolveNotes(part({ notes: [{ at: [2, 4], length: [0, 1], note: 60 }, { at: 0, length: 480, note: 62 }] }), 0, {
++      tempo: steady,
++      meter: fourFour,
++    });
++    expect(resolved.length).toBe(2 * 3840 * TICK);
++    expect(resolveNotes(part({}), 0, { tempo: steady, meter: fourFour }).length).toBe(0);
++  });
++
++  it('names the row whose position the placement\'s meter does not have', () => {
++    const fifth = part({ notes: [{ at: 0, length: 1, note: 60 }, { at: [2, 5], length: 1, note: 60 }] });
++    expect(() => resolveNotes(fifth, 0, { tempo: steady, meter: fourFour })).toThrow('notes.1.at: beat 5 out of range for 4/4 in bar 2');
++    // Beat 5 is in range where bar 2 is a 7/8 bar.
++    expect(() => resolveNotes(fifth, 0, { tempo: steady, meter: toSevenEight })).not.toThrow();
++    expect(() => resolveNotes(fifth, 0, { tempo: steady, meter: undefined })).toThrow(
++      'notes.1.at: musical time but no valid meter map applies',
++    );
++  });
++
++  it('plays a take timed in samples as it was recorded, wherever it is placed', () => {
++    const take = part({ sample_rate: 44100, length: 44100, notes: [{ at: 4410, length: 22050, note: 60, velocity: 90 }] });
++    const resolved = resolveNotes(take, 3840, { tempo: steady, meter: fourFour });
++    expect(resolved).toMatchObject({ sample_rate: 44100, length: 44100, notes: [{ at: 4410, length: 22050, note: 60 }] });
++  });
++});
++
++describe('how long a part is where it is placed', () => {
++  const twoBars = part({ length: [2], notes: [] });
++
++  it('counts ticks for a musical entry, through the meter from the entry', () => {
++    expect(notesLength(twoBars, { anchor: 'musical', at: 0 }, { tempo: steady, meter: fourFour })).toBe(7680);
++    expect(notesLength(twoBars, { anchor: 'musical', at: 0 }, { tempo: steady, meter: toSevenEight })).toBe(3840 + 3360);
++  });
++
++  it('counts samples for an absolute entry', () => {
++    expect(notesLength(twoBars, { anchor: 'absolute', at: 0 }, { tempo: steady, meter: fourFour })).toBe(7680 * TICK);
++  });
++});
++
++describe('where a take in ticks starts', () => {
++  it('is started_at_ticks after the whole tick its record entry starts on', () => {
++    expect(takeAnchor({ anchor: 'musical', at: 3840 }, { started_at_ticks: 1920 }, steady)).toBe(3840 + 1920);
++    // 1.5 ticks in samples falls between ticks; the take counts from the whole one.
++    expect(takeAnchor({ anchor: 'absolute', at: 1.5 * TICK }, { started_at_ticks: 960 }, steady)).toBe(2 + 960);
++    expect(() => takeAnchor({ anchor: 'musical', at: 0 }, {}, steady)).toThrow(
++      'a take in ticks starts started_at_ticks after its record entry, and this row has none',
++    );
++    expect(() => takeAnchor({ anchor: 'musical', at: 0 }, { started_at_ticks: -960 }, steady)).toThrow(
++      'it starts 960 ticks before its track does — move the record entry later',
++    );
++  });
++});
+diff --git a/src/time/notes.ts b/src/time/notes.ts
+new file mode 100644
+index 00000000..a3d3e7dc
+--- /dev/null
++++ b/src/time/notes.ts
+@@ -0,0 +1,117 @@
++import type { NotesFile, ResolvedNotes } from '../schema/notes.js';
++import { beatTicks, type MeterMap, type TempoMap } from './tempo.js';
++
++// The one place a notes placement becomes sample times (sequencer.md
++// §3.5): a part, or a chosen MIDI take, from the tick where it is placed
++// through the placing track's maps. The build renders what this returns,
++// and a live schedule plays it, so a part plays live where it renders.
++
++export interface NotesTime {
++  tempo: TempoMap; // the placing track's, at the track's rate
++  // The placing track's, or undefined when its map is broken: a musical
++  // time then cannot resolve, and says so.
++  meter: MeterMap | undefined;
++}
++
++// Where an entry starts, in ticks on its track: an absolute entry's `at`
++// is samples, which the tempo map turns into the tick it falls on.
++export function placementAnchor(entry: { anchor: 'musical' | 'absolute'; at: number }, tempo: TempoMap): number {
++  return entry.anchor === 'absolute' ? tempo.samplesToTicks(entry.at) : entry.at;
++}
++
++// The whole tick an entry's window starts on, which a MIDI take's
++// `started_at_ticks` counts from: an absolute entry's sample can fall
++// between ticks, and a take's start is a whole tick.
++export function entryTick(entry: { anchor: 'musical' | 'absolute'; at: number }, tempo: TempoMap): number {
++  return Math.round(placementAnchor(entry, tempo));
++}
++
++// Where a MIDI take in ticks starts on its track (sequencer.md §2.4):
++// `started_at_ticks` after the tick its record entry's window starts
++// on, so moving the entry moves the take by the same musical distance.
++export function takeAnchor(
++  entry: { anchor: 'musical' | 'absolute'; at: number },
++  take: { started_at_ticks?: number | undefined },
++  tempo: TempoMap,
++): number {
++  if (take.started_at_ticks === undefined) {
++    throw new Error('a take in ticks starts started_at_ticks after its record entry, and this row has none');
++  }
++  const anchor = entryTick(entry, tempo) + take.started_at_ticks;
++  if (anchor < 0) throw new Error(`it starts ${-anchor} ticks before its track does — move the record entry later`);
++  return anchor;
++}
++
++function musicalMeter(meter: MeterMap | undefined): MeterMap {
++  if (meter === undefined) throw new Error('musical time but no valid meter map applies');
++  return meter;
++}
++
++// A position counts from the file's start: [1] is where it is placed,
++// and [2, 3] is beat 3 of its second bar. Bars and beats are the ones in
++// force at the moving position, as a musical duration counts them
++// (musical-time.md §1.4), so a part placed across a meter change keeps
++// its bars whole. The beat and tick ranges are the bar's own.
++function positionTicks(value: number | number[], from: number, meter: MeterMap | undefined): number {
++  if (!Array.isArray(value)) return from + value;
++  const map = musicalMeter(meter);
++  const [bar = 1, beat = 1, tick = 1] = value;
++  const barStart = from + map.spanTicks(from, [bar - 1]);
++  const { numerator, denominator } = map.meterAt(barStart);
++  if (beat > numerator) throw new Error(`beat ${beat} out of range for ${numerator}/${denominator} in bar ${bar}`);
++  if (tick > beatTicks(denominator)) throw new Error(`tick ${tick} out of range in bar ${bar}`);
++  return barStart + map.spanTicks(barStart, [0, beat - 1, tick - 1]);
++}
++
++function spanTicks(value: number | number[], from: number, meter: MeterMap | undefined): number {
++  return Array.isArray(value) ? musicalMeter(meter).spanTicks(from, value) : value;
++}
++
++// Each failure names the row it came from, as the schema's own messages
++// do, because the file cannot say it alone: a beat that is in range in
++// one placement can be out of range in another.
++function at<T>(path: string, resolve: () => T): T {
++  try {
++    return resolve();
++  } catch (err) {
++    throw new Error(`${path}: ${(err as Error).message}`);
++  }
++}
++
++// A file in ticks resolves from `anchor` through the track's maps, and
++// its times become samples from the anchor's sample. A file with
++// `sample_rate:` is already samples from its start, at its own rate.
++export function resolveNotes(file: NotesFile, anchor: number, time: NotesTime): ResolvedNotes {
++  const inTicks = file.sample_rate === undefined;
++  const from = inTicks ? anchor : 0;
++  // Rounded once, on the distance from the anchor: rounding the two ticks
++  // apart moves a note by a sample with where the part is placed, which
++  // gives each placement a render of its own.
++  const sample = (t: number): number => (inTicks ? Math.round(time.tempo.secondsBetween(anchor, t) * time.tempo.sampleRate) : t);
++  const meter = inTicks ? time.meter : undefined;
++  const start = (row: { at: number | number[] }, path: string): number =>
++    at(`${path}.at`, () => positionTicks(row.at, from, meter));
++
++  let end = from;
++  const notes = file.notes.map((n, i) => {
++    const on = start(n, `notes.${i}`);
++    const off = on + at(`notes.${i}.length`, () => spanTicks(n.length, on, meter));
++    end = Math.max(end, off);
++    return { at: sample(on), length: sample(off) - sample(on), note: n.note, velocity: n.velocity, channel: n.channel };
++  });
++  const controls = file.controls.map((c, i) => ({ at: sample(start(c, `controls.${i}`)), cc: c.cc, value: c.value, channel: c.channel }));
++  const bends = file.bends.map((b, i) => ({ at: sample(start(b, `bends.${i}`)), value: b.value, channel: b.channel }));
++  const length = file.length === undefined ? end : from + at('length', () => spanTicks(file.length!, from, meter));
++  return { sample_rate: file.sample_rate ?? time.tempo.sampleRate, length: sample(length), notes, controls, bends };
++}
++
++// How long a file is from where it is placed, in the placing entry's
++// own units, ticks for a musical entry and samples for an absolute one:
++// what a looping notes entry repeats at when it omits `every`.
++export function notesLength(file: NotesFile, entry: { anchor: 'musical' | 'absolute'; at: number }, time: NotesTime): number {
++  const anchor = placementAnchor(entry, time.tempo);
++  const resolved = resolveNotes(file, anchor, time);
++  const seconds = resolved.length / resolved.sample_rate;
++  if (entry.anchor === 'absolute') return Math.round(seconds * time.tempo.sampleRate);
++  return Math.round(time.tempo.secondsToTicks(time.tempo.ticksToSeconds(anchor) + seconds) - anchor);
++}
+diff --git a/src/time/tempo.test.ts b/src/time/tempo.test.ts
+index 33d6a91e..2eb8d3ee 100644
+--- a/src/time/tempo.test.ts
++++ b/src/time/tempo.test.ts
+@@ -53,6 +53,34 @@ describe('TempoMap', () => {
+     expect(map.ticksToSamples(PPQ)).toBe(48000);
+   });
+ 
++  it('measures the seconds between two ticks across changes and ramps', () => {
++    const map = new TempoMap(
++      [
++        { at: 0, bpm: 120 },
++        { at: PPQ * 4, bpm: 60, ramp: 'linear' },
++        { at: PPQ * 8, bpm: 120 },
++      ],
++      48000,
++    );
++    for (const [from, to] of [
++      [0, PPQ],
++      [PPQ * 2, PPQ * 5],
++      [PPQ * 5, PPQ * 7],
++      [PPQ * 3, PPQ * 10],
++      [PPQ, PPQ],
++    ] as const) {
++      expect(map.secondsBetween(from, to)).toBeCloseTo(map.ticksToSeconds(to) - map.ticksToSeconds(from), 9);
++    }
++  });
++
++  it('gives a span in a steady segment the same seconds wherever it starts', () => {
++    const map = new TempoMap([{ at: 0, bpm: 96 }], 48000);
++    const span = map.secondsBetween(0, 2);
++    for (let bar = 1; bar < 256; bar++) {
++      expect(map.secondsBetween(bar * 3840, bar * 3840 + 2)).toBe(span);
++    }
++  });
++
+   it('rejects invalid maps', () => {
+     expect(() => new TempoMap([], 48000)).toThrow();
+     expect(() => new TempoMap([{ at: 100, bpm: 120 }], 48000)).toThrow('tick 0');
+diff --git a/src/time/tempo.ts b/src/time/tempo.ts
+index f70f3f54..8d73bcb6 100644
+--- a/src/time/tempo.ts
++++ b/src/time/tempo.ts
+@@ -56,6 +56,28 @@ export class TempoMap {
+     return seconds;
+   }
+ 
++  // Seconds from one tick to a later one, adding only the segments between
++  // them. A span in a steady segment then lasts exactly the same wherever
++  // it starts, which subtracting two ticksToSeconds does not promise: each
++  // keeps its own rounding error, enough to move a span that falls on half
++  // a sample.
++  secondsBetween(from: number, to: number): number {
++    if (from < 0 || to < from) throw new Error(`no span from tick ${from} to tick ${to}`);
++    let seconds = 0;
++    for (let i = 0; i < this.events.length; i++) {
++      const e = this.events[i]!;
++      const next = this.events[i + 1];
++      const start = Math.max(from, e.at);
++      const end = next ? Math.min(to, next.at) : to;
++      if (end > start) {
++        seconds += this.isSteady(i)
++          ? this.segmentSeconds(i, end - start)
++          : this.segmentSeconds(i, end - e.at) - this.segmentSeconds(i, start - e.at);
++      }
++    }
++    return seconds;
++  }
++
+   secondsToTicks(seconds: number): number {
+     if (seconds < 0) throw new Error('negative seconds');
+     let remaining = seconds;
+@@ -80,14 +102,20 @@ export class TempoMap {
+     return this.secondsToTicks(samples / this.sampleRate);
+   }
+ 
++  private isSteady(i: number): boolean {
++    const e = this.events[i]!;
++    const next = this.events[i + 1];
++    return e.ramp !== 'linear' || !next || next.bpm === e.bpm;
++  }
++
+   // Seconds spanned by the first `ticks` ticks of segment i.
+   private segmentSeconds(i: number, ticks: number): number {
+     const e = this.events[i]!;
+-    const next = this.events[i + 1];
+     const beats = ticks / PPQ;
+-    if (e.ramp !== 'linear' || !next || next.bpm === e.bpm) {
++    if (this.isSteady(i)) {
+       return (beats * 60) / e.bpm;
+     }
++    const next = this.events[i + 1]!;
+     // bpm(b) = b0 + k·b over the full span of B beats, k = (b1 − b0) / B.
+     const spanBeats = (next.at - e.at) / PPQ;
+     const k = (next.bpm - e.bpm) / spanBeats;
+@@ -97,10 +125,10 @@ export class TempoMap {
+   // Inverse of segmentSeconds: ticks into segment i after `seconds`.
+   private segmentTicksAt(i: number, seconds: number): number {
+     const e = this.events[i]!;
+-    const next = this.events[i + 1];
+-    if (e.ramp !== 'linear' || !next || next.bpm === e.bpm) {
++    if (this.isSteady(i)) {
+       return (seconds * e.bpm * PPQ) / 60;
+     }
++    const next = this.events[i + 1]!;
+     const spanBeats = (next.at - e.at) / PPQ;
+     const k = (next.bpm - e.bpm) / spanBeats;
+     const beats = (e.bpm / k) * (Math.exp((seconds * k) / 60) - 1);
+@@ -140,6 +168,10 @@ export class MeterMap {
+     return i;
+   }
+ 
++  meterAt(ticks: number): MeterEvent {
++    return this.events[this.segmentFor(ticks)]!;
++  }
++
+   // The ordinal position of a tick — [bar, beat, tick], 1-indexed — as
+   // numbers, for a writer that needs the array spelling rather than the
+   // display string. positionTicks's inverse: for any non-negative
+diff --git a/src/yaml/emit.ts b/src/yaml/emit.ts
+index 0abd49b2..447c060c 100644
+--- a/src/yaml/emit.ts
++++ b/src/yaml/emit.ts
+@@ -13,10 +13,15 @@ export interface KeyOrder {
+   // a record like `sends:`, keyed by author-chosen labels. `children`
+   // addresses known keys; this addresses all of them.
+   entries?: KeyOrder;
+-  // Musical time arrays are the one recorded exception to block style
++  // Musical time arrays are a recorded exception to block style
+   // (musical-time.md §1.7): a flow-flagged sequence stays inline —
+-  // `length: [12]`, not a block item per element.
++  // `length: [12]`, not a block item per element. A notes file's rows
++  // are the other: a flow-flagged map is one row, `{at: [1], note: C3}`.
+   flow?: boolean;
++  // Read at the document's root: the width past which a flow collection
++  // breaks across lines. 0 never breaks one, so every note of a notes
++  // file stays one row however many fields it spells out.
++  lineWidth?: number;
+ }
+ 
+ const STRINGIFY_OPTIONS = {
+@@ -37,7 +42,7 @@ function keyName(pair: Pair): string | undefined {
+ function orderNode(node: Node | null, order: KeyOrder | undefined): void {
+   if (!order || node == null) return;
+   // Applied after clearFlow, so the flag wins over blocks-everywhere.
+-  if (order.flow && isSeq(node) && node.items.length > 0) node.flow = true;
++  if (order.flow && (isSeq(node) || isMap(node)) && node.items.length > 0) node.flow = true;
+   if (isMap(node)) {
+     const keys = order.keys ?? [];
+     const rank = new Map(keys.map((k, i) => [k, i]));
+@@ -75,15 +80,15 @@ export function canonicalizeDocument(doc: Document, order: KeyOrder): void {
+   orderNode(doc.contents, order);
+ }
+ 
+-export function stringifyDocument(doc: Document): string {
+-  return doc.toString(STRINGIFY_OPTIONS);
++export function stringifyDocument(doc: Document, order?: KeyOrder): string {
++  return doc.toString({ ...STRINGIFY_OPTIONS, lineWidth: order?.lineWidth ?? STRINGIFY_OPTIONS.lineWidth });
+ }
+ 
+ // Canonical emission of a fresh value (no comments to preserve).
+ export function stringifyCanonical(value: unknown, order?: KeyOrder): string {
+   const doc = new Document(value);
+   if (order) canonicalizeDocument(doc, order);
+-  return stringifyDocument(doc);
++  return stringifyDocument(doc, order);
+ }
+ 
+ // Anchors and aliases are banned from checked-in files (project-core.md
+@@ -118,5 +123,5 @@ export function canonicalText(text: string, order: KeyOrder): string {
+     throw new Error(doc.errors[0]!.message);
+   }
+   canonicalizeDocument(doc, order);
+-  return stringifyDocument(doc);
++  return stringifyDocument(doc, order);
+ }
