@@ -370,11 +370,13 @@ int runMidiMonitor (const juce::String& name, bool destination)
     MidiPrinter printer;
     const auto giveUpAt = juce::Time::currentTimeMillis() + 5000;
     auto input = openSource (name, printer);
-    while (input == nullptr && juce::Time::currentTimeMillis() < giveUpAt)
+    while (input == nullptr && ! stopRequested && juce::Time::currentTimeMillis() < giveUpAt)
     {
         messageManager->runDispatchLoopUntil (100);
         input = openSource (name, printer);
     }
+    if (input == nullptr && stopRequested)
+        return 0;
     if (input == nullptr)
     {
         printError ("no MIDI source named " + name);

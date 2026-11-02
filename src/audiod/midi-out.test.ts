@@ -188,6 +188,16 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
     expect(stdout.trim()).toBe('{"ok":true}');
   });
 
+  it('leaves --midi-monitor\'s wait for a source at once on SIGTERM', { timeout: 10_000 }, async () => {
+    const child = spawn(binary!, ['--midi-monitor', name('nowhere')], { stdio: 'pipe' });
+    const closed = new Promise((resolve) => child.on('close', resolve));
+    const spawned = Date.now();
+    await sleep(300);
+    child.kill('SIGTERM');
+    await closed;
+    expect(Date.now() - spawned).toBeLessThan(2000);
+  });
+
   it('advertises midi-out, and refuses a malformed schedule, an unknown destination, and an unknown close', async () => {
     expect(client.supports('midi-out')).toBe(true);
     const base = { name: 'bad', rate: RATE, lead: 0, events: [] };
