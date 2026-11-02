@@ -441,7 +441,8 @@ void MidiOutputs::play (Output& output, const MidiBlock& block) noexcept
     else if (const auto moved = distance (output.lastPosition, block.position, block);
              moved >= 0 && std::abs (moved - output.lastAdvance) <= block.slack)
     {
-        from = std::max<juce::int64> (0, output.takenAhead - moved);
+        // Negative when the position landed past the last window's end.
+        from = output.takenAhead - moved;
     }
     else
     {
@@ -467,8 +468,11 @@ void MidiOutputs::take (Output& output, const MidiBlock& block, juce::int64 from
     const auto msAt = [&] (juce::int64 offset)
     { return block.startMs + (double) std::max<juce::int64> (0, offset - lead) * 1000.0 / schedule.rate; };
     const bool wraps = block.wrapTo > block.wrapFrom;
-    juce::int64 segment = block.position; // where this stretch of the timeline starts
-    juce::int64 offset = 0; // how far ahead of the block's position that is
+    juce::int64 offset = std::min<juce::int64> (0, from); // how far ahead of the block's position this stretch starts
+    juce::int64 segment = block.position + offset; // where this stretch of the timeline starts
+    // A window behind the position starts before the wrap the bed crossed.
+    if (from < 0 && wraps && block.position < output.lastPosition && segment < block.wrapFrom)
+        segment += block.wrapTo - block.wrapFrom;
     for (int lap = 0; lap < maxLaps; ++lap)
     {
         const juce::int64 end = wraps && segment < block.wrapTo ? block.wrapTo : unbounded;
@@ -497,10 +501,11 @@ void MidiOutputs::take (Output& output, const MidiBlock& block, juce::int64 from
         if (end == unbounded)
             return;
         offset += end - segment;
-        if (offset >= to)
+        if (offset > to)
             return;
-        // A wrap the window reached in an earlier block was pushed then.
-        if (offset >= from)
+        // A window holds a wrap at its end and not one at its start, so a
+        // wrap where one block's window meets the next is pushed once.
+        if (offset > from)
         {
             const double ms = msAt (offset);
             push (output, Entry::wrap (ms));
@@ -931,7 +936,8 @@ struct Harness
         b.startMs = ms;
         b.rolling = rolling;
         b.position = position;
-        b.advance = testBlock;
+        b.advance = advance;
+        b.slack = slack;
         b.wrapFrom = wrapFrom;
         b.wrapTo = wrapTo;
         outputs.play (b);
@@ -950,6 +956,8 @@ struct Harness
     }
 
     const bool scheduling;
+    juce::int64 advance = testBlock;
+    juce::int64 slack = 0;
     double clock = 0.0;
     std::vector<Logged> log;
     int flushes = 0;
@@ -1092,6 +1100,30 @@ std::string checkHeld()
             return "held: the wrap's note-off and note-on did not leave at the wrap";
     }
     {
+        // A loop two blocks long wraps where one block's window ends and
+        // the next one's starts: each wrap still ends the note, once.
+        Harness h;
+        h.open (heldNote);
+        for (juce::int64 p = 0; p < 6 * testBlock; p += testBlock)
+            h.block (p % 1024, msOf (p), true, 0, 1024);
+        h.serve (1.0e9);
+        const Bytes onOff { { 0x9f, 60, 100 }, { 0x8f, 60, 0 } };
+        if (h.sent() != Bytes { onOff[0], onOff[1], onOff[0], onOff[1], onOff[0], onOff[1] })
+            return "held: a wrap at a block's end did not end the note before the loop's start began it again";
+        if (! closeTo (h.log[1].ms, msOf (1024)) || ! closeTo (h.log[3].ms, msOf (2048)) || ! closeTo (h.log[5].ms, msOf (3072)))
+            return "held: a wrap at a block's end did not end the note at the wrap";
+
+        // With a lead the same wrap falls inside a window, and still ends
+        // the note once.
+        Harness led;
+        led.open (heldNote.replace ("\"lead\":0", "\"lead\":192"));
+        for (juce::int64 p = 0; p < 6 * testBlock; p += testBlock)
+            led.block (p % 1024, msOf (p), true, 0, 1024);
+        led.serve (1.0e9);
+        if (led.sent() != Bytes { onOff[0], onOff[1], onOff[0], onOff[1], onOff[0], onOff[1], onOff[0] })
+            return "held: with a lead, a wrap at a block's end did not end the note exactly once";
+    }
+    {
         Harness h;
         h.open (heldNote);
         h.block (0, 0.0);
@@ -1192,6 +1224,83 @@ std::string checkClock()
     at = play (768000 + 2 * testBlock - 1000, 2, false);
     if (h.sent (at) != Bytes { { clockStop } })
         return "clock: a pause did not send Stop alone";
+
+    const double alignedStart = ms;
+    at = play (816000 - testBlock, 2, true, 768000, 816000);
+    if (transport (at) != Bytes { { songPosition, 8, 1 }, { clockContinue }, { clockStop }, { songPosition, 0, 1 }, { clockContinue } })
+        return "clock: a wrap at a block's end did not send Stop, the loop start's Song Position Pointer, and Continue";
+    if (! closeTo (firstPulseMs (at), alignedStart + msOf (testBlock)))
+        return "clock: after a wrap at a block's end, the first pulse was not the loop start's, at the wrap";
+    return {};
+}
+
+// Converted delivery moves the bed in steps of its own, so a block's
+// position can land past the end of the last block's window.
+std::string checkSteps()
+{
+    constexpr int steps = 512;
+    constexpr int blockAdvance = 470;
+    const auto schedule = [] (juce::int64 length)
+    {
+        juce::String events;
+        for (juce::int64 s = 0; s < length; s += 100)
+            events << (s > 0 ? "," : "") << "{\"sample\":" << juce::String (s) << ",\"midi\":[159," << juce::String ((s / 100) % 128) << ",100]}";
+        return R"({"name":"steps","source":"Steps","rate":44100,"lead":0,"events":[)" + events + "]}";
+    };
+    {
+        Harness h;
+        h.advance = blockAdvance;
+        h.slack = 8192;
+        if (auto error = h.open (schedule (10000)); error.isNotEmpty())
+            return "steps: " + error.toStdString();
+        juce::int64 position = 0;
+        double ms = 0.0;
+        for (int i = 0; i < 30; ++i)
+        {
+            h.block (position, ms);
+            position += i % 3 == 2 ? 0 : (i % 3 + 1) * steps;
+            ms += 10.0;
+        }
+        h.serve (1.0e9);
+        if (h.log.size() != 100)
+            return "steps: " + std::to_string (h.log.size()) + " of the 100 notes left";
+        for (size_t i = 0; i < h.log.size(); ++i)
+            if (h.log[i].bytes[1] != (juce::uint8) i)
+                return "steps: the notes left out of order at note " + std::to_string (i);
+    }
+    {
+        // A step that carries the bed over the loop's end sends what it
+        // skipped and the wrap, once, at the block's start, and then what
+        // lies from the loop's start to the block's position.
+        Harness h;
+        h.advance = blockAdvance;
+        h.slack = 8192;
+        h.open (R"({"name":"steps","source":"Steps","rate":44100,"lead":0,"events":[
+            {"sample":100,"midi":[159,60,100]},{"sample":4800,"midi":[159,61,100]}],"clock":{"pulses":[0,4900]}})");
+        h.block (0, 0.0, true, 0, 5000);
+        h.block (4096, 10.0, true, 0, 5000);
+        const double stepped = 20.0;
+        h.block (120, stepped, true, 0, 5000);
+        h.serve (1.0e9);
+        const Bytes wanted { { clockStart }, { clockPulse }, { 0x9f, 60, 100 }, { 0x9f, 61, 100 }, { clockPulse }, { 0x8f, 60, 0 }, { 0x8f, 61, 0 },
+                             { clockStop }, { songPosition, 0, 0 }, { clockContinue }, { clockPulse }, { 0x9f, 60, 100 } };
+        if (h.sent() != wanted)
+            return "steps: a step over the loop's end did not send what it skipped, the wrap, and the loop's start";
+        if (! closeTo (h.log[5].ms, stepped))
+            return "steps: the wrap a step skipped over did not leave at the block's start";
+    }
+    {
+        // A locate back before the loop's start is a jump, not a step over
+        // the loop's end, and sends what lies from there.
+        Harness h;
+        h.open (R"({"name":"steps","source":"Steps","rate":48000,"lead":0,"events":[
+            {"sample":1100,"midi":[159,60,100]},{"sample":8100,"midi":[159,61,100]}]})");
+        h.block (8000, 0.0, true, 5000, 9000);
+        h.block (1000, 10.0, true, 5000, 9000);
+        h.serve (1.0e9);
+        if (h.sent() != Bytes { { 0x9f, 61, 100 }, { 0x8f, 61, 0 }, { 0x9f, 60, 100 } })
+            return "steps: a locate before the loop's start did not send what lies from there";
+    }
     return {};
 }
 
@@ -1223,7 +1332,7 @@ std::string checkRequests()
 
 std::string runMidiOutSelfTest()
 {
-    for (auto* check : { checkLead, checkFlush, checkHeld, checkClock, checkRequests })
+    for (auto* check : { checkLead, checkFlush, checkHeld, checkClock, checkSteps, checkRequests })
         if (auto error = check(); ! error.empty())
             return error;
     return {};

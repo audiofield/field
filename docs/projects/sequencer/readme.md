@@ -900,11 +900,20 @@ points, each measured on macOS 27 with JUCE 8.0.4:
   in steps of its own and a resampled file reads through a buffer, so
   for them a position within a block and 1024 samples of the expected
   one still continues. A block in which the pull missed the live lock is
-  skipped, because the bed did not move in it.
-- **An event that the lead puts before its block's start leaves at the
-  block's start**, and does not count as late. Only the first block
-  after play or a jump has such events, so `late` counts only the
-  sender's misses.
+  skipped, because the bed did not move in it. A window holds a wrap at
+  its end and not one at its start, so a wrap exactly where one block's
+  window meets the next, as in a loop a whole number of blocks long with
+  no lead, ends the notes and moves the clock once.
+- **A position past the last window's end sends the stretch between
+  them.** Converted delivery steps the bed by 512 samples, so a block's
+  position can land past where the last window ended, and at lead 0 a
+  44.1 kHz session on a 48 kHz device lost 8% of its events that way
+  until the window reached back to cover the stretch, along the wrap if
+  the step crossed one.
+- **An event that the lead or a step puts before its block's start
+  leaves at the block's start**, and does not count as late. Only the
+  first block after play or a jump, and a block after a step, have such
+  events, so `late` counts only the sender's misses.
 - **Each output has its own queue,** so one output's events never wait
   behind another's. The callback wakes the sender with a semaphore,
   which takes no lock: a Mach semaphore on macOS, a POSIX one on

@@ -269,6 +269,25 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
     },
   );
 
+  it('sends every event of a session the daemon converts to the device rate, with no lead', { timeout: 30_000 }, async (ctx) => {
+    const rate = 44100;
+    const songYaml = join(root, 'songs/bed/song.yaml');
+    writeFileSync(songYaml, `${readFileSync(songYaml, 'utf8')}rate: ${rate}\n`);
+    await client.session((await compileSession(root, 'bed')).session);
+    const every = 1000;
+    const events = Array.from({ length: 400 }, (_, i) => ({ sample: i * every, midi: [ON, 40, 100] }));
+    await open(ctx, { name: 'seq:converted', source: name('converted'), rate, lead: 0, events });
+    await client.locate(0);
+    await client.play();
+    await sleep(2000);
+    const status = await client.status();
+    await client.stop();
+    expect(status.state).toBe('playing');
+    const due = Math.floor(status.sample / every) + 1;
+    expect(status.outputs![0]).toMatchObject({ dropped: 0 });
+    expect(status.outputs![0]!.sent).toBeGreaterThanOrEqual(due - 2);
+  });
+
   it(
     'ends every note it started on stop, pause, locate, wrap, a replaced schedule, a close, and a dropped connection',
     { timeout: 60_000 },

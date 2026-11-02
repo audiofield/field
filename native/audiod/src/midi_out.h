@@ -139,7 +139,9 @@ private:
 
     void play (Output& output, const MidiBlock& block) noexcept;
     // Pushes what lies `from` to `to` samples ahead of the block's
-    // position, continuing at the wrap's start past its end.
+    // position, continuing at the wrap's start past its end. A negative
+    // `from` reaches back behind the position, and what lies there leaves
+    // at the block's start.
     void take (Output& output, const MidiBlock& block, juce::int64 from, juce::int64 to, juce::int64 lead) noexcept;
     void push (Output& output, const Entry& entry) noexcept;
     // The clock's transport messages when the output starts rolling at

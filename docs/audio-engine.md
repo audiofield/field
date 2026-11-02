@@ -485,8 +485,12 @@ clock MIDI capture stamps against, plus the event's offset, less the
 lead. An event that the lead puts before the block's start, which only
 the first block after play or a jump has, leaves at the block's start,
 so the first notes after play or a locate leave late by up to the lead.
-A schedule is built off the audio thread, swapped in by pointer at a
-block's start, and freed off it.
+A converted session moves the bed in steps of its own, and a block's
+position can land past the end of the last block's window. What lies
+between them, a loop's wrap included, also leaves at the block's start,
+so a block's step never skips an event. A schedule is built off the
+audio thread, swapped in by pointer at a block's start, and freed off
+it.
 
 A sender thread, at realtime priority, sends each event to a virtual
 source at its time. On macOS it hands a destination's events to
