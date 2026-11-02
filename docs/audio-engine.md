@@ -477,8 +477,11 @@ there the daemon refuses a `source` and sends only to destinations.
 macOS can refuse a process its first MIDI client, and JUCE asks for that
 client once per process. A daemon refused that way cannot publish a
 source under any name until it exits, and asking it again does not help.
-Its `midi_out` error says so. Run `field transport quit`, and the next
-command that needs a daemon starts a new one.
+JUCE also lists no ports then, so a real port reads as missing. So on
+macOS, the `midi_out` error for a source mentions the refusal, and so do
+the errors for a destination and a MIDI `arm` when the daemon lists no
+ports. Run `field transport quit`, and the next command that needs a
+daemon starts a new one.
 
 Each block, the callback takes the events whose sample falls in the
 block's lookahead window: the block's span on the bed's timeline, moved

@@ -279,6 +279,16 @@ std::unique_ptr<juce::MidiOutput> createVirtualSource (const juce::String& name)
 #endif
 }
 
+juce::String midiClientRefusalNote()
+{
+#if JUCE_MAC
+    return ". macOS can refuse a process its first MIDI client, and only a new daemon process clears that: "
+           "run field transport quit, then try again";
+#else
+    return {};
+#endif
+}
+
 int runKeys (const juce::String& name)
 {
     juce::ScopedJuceInitialiser_GUI juceInit;

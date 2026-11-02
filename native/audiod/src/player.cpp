@@ -2,6 +2,7 @@
 
 #include "capture.h"
 #include "capture_input.h"
+#include "keys.h"
 #include "live.h"
 #include "ring_input.h"
 #include "version.h"
@@ -1804,10 +1805,12 @@ juce::var Player::armSet (const juce::Array<juce::var>& tracks, const juce::Stri
         // A take records what you play, not the parts the daemon's own
         // outputs play beside it (sequencer.md §2.5).
         auto available = juce::MidiInput::getAvailableDevices();
+        const bool listedNone = available.isEmpty();
         if (! captureOwnOutputs)
             available.removeIf ([this] (const juce::MidiDeviceInfo& source) { return midiOutputs.publishes (source.identifier); });
         if (available.isEmpty())
-            return fail ("no MIDI sources to record from: start field keys or connect a controller first");
+            return fail ("no MIDI sources to record from: start field keys or connect a controller first"
+                         + (listedNone ? field::midiClientRefusalNote() : juce::String()));
         for (const auto& source : available)
             if (auto input = juce::MidiInput::openDevice (source.identifier, this))
             {
