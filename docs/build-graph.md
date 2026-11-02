@@ -298,9 +298,9 @@ it, and drives its voice from the notes with `sc/voicer.scd`, the
 voicing `field keys` plays with. Sustain, all-notes-off, pitch bend (±2
 semitones), the modulation wheel, and every other controller act as
 they did live. The render is stereo at the track's rate and runs 4
-seconds past the notes' end, so the last notes' release is heard;
-scsynth rounds it up to a whole control block, as it does every NRT
-render.
+seconds past the part's `length`, which is the last note's end when the
+part declares none, so the last notes' release is heard; scsynth rounds
+it up to a whole control block, as it does every NRT render.
 
 Its parameters are the instrument and `events`: the notes resolved
 through the track's tempo and meter maps from where they are placed, in
