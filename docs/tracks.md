@@ -13,8 +13,8 @@ see [build-graph.md](build-graph.md).
 ## A track file
 
 A track is one file, `songs/<song>/tracks/<name>.yaml`, with at most
-five keys besides its name: `rate:`, `time:`, `inserts:`, `sends:`, and
-the one list every track has — `inputs:`. From
+six keys besides its name: `instrument:`, `rate:`, `time:`, `inserts:`,
+`sends:`, and the one list every track has — `inputs:`. From
 [`examples/bloom`](../examples/bloom/README.md):
 
 ```yaml
@@ -34,6 +34,25 @@ There is no `type:` — every track is audio — and no track-level
 `gain_db` or `pan`; levels live on the placement that consumes the track
 (see [Levels live on placements](#levels-live-on-placements)).
 
+`instrument:` names the program the track's notes play through: the
+parts its `notes:` entries place, the MIDI takes its `record:` entry
+records, and `field keys` on the track. It resolves as `field keys`
+resolves an instrument: `.scd` is added to a name with no extension,
+and a name without a `/` is under `shared/instruments/`. With an
+instrument, the track's `record:` entry records MIDI; without one, it
+records audio.
+
+```yaml
+# songs/creek/tracks/keys.yaml
+name: keys
+instrument: pad
+inputs:
+  - record:
+  - id: verse
+    notes: riff
+    at: [17]
+```
+
 ## What an entry places
 
 Every entry in `inputs:` places one thing on the track's timeline, and
@@ -50,14 +69,21 @@ the kind lives in the field name, never in a value prefix:
   `text:` (voice) plus conditioning. Nothing in the build may run it;
   the node resolves to the chosen committed take. See
   [project-model.md](project-model.md) "Deliberate generation".
-- **`record:`** — a performance to record: bare `- record:` for audio,
-  or `record:` with `instrument: <name>` under it to record what is
-  played on `field keys` or a controller and hear it through that
-  instrument.
-  `field record` fills its takes, the entry plays the chosen one at the
-  position it was played, and an entry with no takes yet plays silence.
+- **`record:`** — a performance to record, always spelled bare
+  `- record:`. On a track with an `instrument:` it records what is
+  played on `field keys` or a controller, and you hear it through that
+  instrument; on a track without one it records audio.
+  `field record` fills its takes, the entry plays the chosen one where
+  it was played, counted from the entry's `at`, so moving the entry
+  moves its takes, and an entry with no takes yet plays silence.
   A MIDI take sounds through a `gen:` node the build renders from it.
-  See [project-model.md](project-model.md) "Recorded takes".
+  `check` refuses `instrument:` under `record:` and says to move it to
+  the track. See [project-model.md](project-model.md) "Recorded takes".
+- **`notes: <name>`** — a part, `songs/<song>/notes/<name>.yaml`,
+  played through the track's instrument. The build renders it as a
+  `gen:` node and places the render as the entry says. `check` refuses
+  it on a track with no instrument, and names a part that does not
+  exist. See [project-model.md](project-model.md) "Parts".
 - **`receive: <label>`** — the receiving end of a cable. A receive
   admits signal rather than placing it, so it carries nothing but its
   label; `check` rejects any other key on it. See
@@ -65,7 +91,12 @@ the kind lives in the field name, never in a value prefix:
 
 A `gen:` node is named by its owning track, or `<track>-<id>` when the
 entry carries an `id` — which is why a track holding two generators
-needs ids on them.
+needs ids on them. A `notes:` entry and a MIDI `record:` entry are
+generators by this rule. A looping `notes:` entry can mint more than
+one: a repetition that resolves differently from every repetition
+before it, as one after a tempo change does, plays a render named for
+its number, `<name>-<n>`, and `check` refuses a generator with that
+name.
 
 ## Placement fields
 
@@ -107,7 +138,9 @@ Two rules about `duration`:
 - **A looping entry must declare one**, because a loop tiles a window
   and the source fills it. A loop on a source whose length is unknowable
   before it builds (anything that renders, or committed audio at another
-  rate) must declare `every` too.
+  rate) must declare `every` too. A looping `notes:` entry may omit
+  `every`: it repeats at the part's length, which is known before the
+  part renders.
 
 ## Nesting: one render, many placements
 

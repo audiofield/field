@@ -150,9 +150,8 @@ export function planArm(root: string, project: LoadedProject, targets: string[],
     const resolved = resolveRecordTarget(root, target);
     if (tracks.some((t) => t.resolved.label === resolved.label)) throw new Error(`${resolved.label} is named twice`);
     const node = recordNodeFor(project, resolved.label);
-    // A record entry with an instrument records MIDI
-    // (keyboard-instrument.md §12.2).
-    tracks.push({ resolved, node, kind: node.entry.record?.instrument !== undefined ? 'midi' : 'audio' });
+    // A track with an instrument records MIDI (sequencer.md §3.4).
+    tracks.push({ resolved, node, kind: node.instrument !== undefined ? 'midi' : 'audio' });
   }
   const songs = [...new Set(tracks.map((t) => t.resolved.song))];
   if (songs.length > 1) {
@@ -167,7 +166,7 @@ export function planArm(root: string, project: LoadedProject, targets: string[],
     const only = tracks.length === 1 ? tracks[0]! : undefined;
     throw new Error(
       only !== undefined
-        ? `${only.node.trackName} records MIDI for ${only.node.entry.record!.instrument}: --input, --device, and --loop are for audio takes`
+        ? `${only.node.trackName} records MIDI for ${only.node.instrument}: --input, --device, and --loop are for audio takes`
         : 'every track named records MIDI: --input, --device, and --loop are for audio takes',
     );
   }

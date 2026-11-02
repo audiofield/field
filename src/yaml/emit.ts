@@ -13,10 +13,15 @@ export interface KeyOrder {
   // a record like `sends:`, keyed by author-chosen labels. `children`
   // addresses known keys; this addresses all of them.
   entries?: KeyOrder;
-  // Musical time arrays are the one recorded exception to block style
+  // Musical time arrays are a recorded exception to block style
   // (musical-time.md §1.7): a flow-flagged sequence stays inline —
-  // `length: [12]`, not a block item per element.
+  // `length: [12]`, not a block item per element. A notes file's rows
+  // are the other: a flow-flagged map is one row, `{at: [1], note: C3}`.
   flow?: boolean;
+  // Read at the document's root: the width past which a flow collection
+  // breaks across lines. 0 never breaks one, so every note of a notes
+  // file stays one row however many fields it spells out.
+  lineWidth?: number;
 }
 
 const STRINGIFY_OPTIONS = {
@@ -37,7 +42,7 @@ function keyName(pair: Pair): string | undefined {
 function orderNode(node: Node | null, order: KeyOrder | undefined): void {
   if (!order || node == null) return;
   // Applied after clearFlow, so the flag wins over blocks-everywhere.
-  if (order.flow && isSeq(node) && node.items.length > 0) node.flow = true;
+  if (order.flow && (isSeq(node) || isMap(node)) && node.items.length > 0) node.flow = true;
   if (isMap(node)) {
     const keys = order.keys ?? [];
     const rank = new Map(keys.map((k, i) => [k, i]));
@@ -75,15 +80,15 @@ export function canonicalizeDocument(doc: Document, order: KeyOrder): void {
   orderNode(doc.contents, order);
 }
 
-export function stringifyDocument(doc: Document): string {
-  return doc.toString(STRINGIFY_OPTIONS);
+export function stringifyDocument(doc: Document, order?: KeyOrder): string {
+  return doc.toString({ ...STRINGIFY_OPTIONS, lineWidth: order?.lineWidth ?? STRINGIFY_OPTIONS.lineWidth });
 }
 
 // Canonical emission of a fresh value (no comments to preserve).
 export function stringifyCanonical(value: unknown, order?: KeyOrder): string {
   const doc = new Document(value);
   if (order) canonicalizeDocument(doc, order);
-  return stringifyDocument(doc);
+  return stringifyDocument(doc, order);
 }
 
 // Anchors and aliases are banned from checked-in files (project-core.md
@@ -118,5 +123,5 @@ export function canonicalText(text: string, order: KeyOrder): string {
     throw new Error(doc.errors[0]!.message);
   }
   canonicalizeDocument(doc, order);
-  return stringifyDocument(doc);
+  return stringifyDocument(doc, order);
 }

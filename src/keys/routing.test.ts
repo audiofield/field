@@ -43,7 +43,7 @@ describe.skipIf(!binary || process.platform === 'win32')('routing armed tracks t
     for (const song of ['creek', 'tall-grass', 'fast']) {
       createSong(root, song);
       createTrack(root, song, 'bass');
-      writeFileSync(join(root, `songs/${song}/tracks/bass.yaml`), 'name: bass\ninputs:\n  - record:\n      instrument: pad\n');
+      writeFileSync(join(root, `songs/${song}/tracks/bass.yaml`), 'name: bass\ninstrument: pad\ninputs:\n  - record:\n');
       writeFileSync(join(root, `songs/${song}/tracks/main.yaml`), 'name: main\ninputs:\n  - track: bass\n');
     }
     // A song at a rate the null device does not run at, so the daemon

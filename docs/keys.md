@@ -430,8 +430,8 @@ The next save that loads puts `· reloaded` on the line instead.
 ## Play a track
 
 Name a track instead of an instrument, and `field keys` plays the
-instrument the track's record entry names, whether or not the track has
-any takes yet. Name several, and every key plays all of them at once:
+track's `instrument:`, whether or not the track has any takes or parts
+yet. Name several, and every key plays all of them at once:
 
 ```console
 $ field keys creek/track:keys creek/track:bass
@@ -441,9 +441,9 @@ Field Keys · musical · transpose 0 · velocity 100 · bend +0 · C3
 ```
 
 A target with `track:` in it is a track; anything else is an
-instrument, so you can mix the two. A track whose record entry names no
-instrument plays the MIDI track under it, down its `track:` inputs, so
-naming a bus plays the part it carries. If more than one MIDI track is
+instrument, so you can mix the two. A track with no instrument plays
+the track with one under it, down its `track:` inputs, so naming a bus
+plays the part it carries. If more than one track with an instrument is
 under it, `field keys` lists them and stops, and you name the ones you
 mean.
 
@@ -489,19 +489,19 @@ says so within two seconds of the voice going live.
 
 ## Record what you play
 
-A track records what you play when its `record:` entry names an
+A track's `record:` entry records what you play when the track has an
 instrument. The take keeps the notes, not the sound, and the build
 renders them through the instrument, so changing the instrument
 changes every take recorded for it.
 
-1. Give the track a record entry with the instrument:
+1. Give the track an instrument and a record entry:
 
    ```yaml
    # songs/creek/tracks/keys.yaml
    name: keys
+   instrument: pad
    inputs:
      - record:
-         instrument: pad
    ```
 
 2. In one terminal, play the instrument so you hear it while you
@@ -526,14 +526,16 @@ A MIDI take listens to every MIDI source on the machine when
 and connect controllers first: a source that appears after the arm is
 not heard. `--at`, `--until`, `--click`, and `--count-in`
 work as they do for audio; `--input`, `--device`, and `--loop` are for
-audio takes only. The take is placed by the output latency alone,
-because you play in time with what you hear. `field choose` picks
-among takes as it does for audio. For the files a take leaves, see
-[project-model.md](project-model.md) "MIDI takes".
+audio takes only. The take lands in ticks, with the output latency
+alone taken off its notes, because you play in time with what you hear,
+so it stays on the beats you played after a tempo edit. `field choose`
+picks among takes as it does for audio. For the files a take leaves,
+and how to copy one into a part you can edit, see
+[project-model.md](project-model.md) "MIDI takes" and "Parts".
 
-Name several tracks to record them in one pass: every MIDI track you
-name records the same notes, and an audio track records its own input,
-so you can sing and play at once:
+Name several tracks to record them in one pass: every track with an
+instrument that you name records the same notes, and an audio track
+records its own input, so you can sing and play at once:
 
 ```console
 $ field record creek/track:vox creek/track:keys --at 17

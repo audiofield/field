@@ -5,7 +5,11 @@ import type { z } from 'zod';
 import { PROJECT_MANIFEST } from '../constants.js';
 import { readWavHeader } from '../audio/wav.js';
 import { generatorFor } from '../generators/index.js';
-import { entryRef, expandLoop, generatorName, placedWindow } from '../generators/stem.js';
+import { entryRef, expandLoop, generatorName, mintsGenerator, partRenders, placedWindow } from '../generators/stem.js';
+import { validateInstrument } from '../generators/voice-render.js';
+import { isSlug } from '../ids.js';
+import { notesFileOrder, notesFileSchema, type NotesFile } from '../schema/notes.js';
+import { notesLength, placementAnchor, resolveNotes, takeAnchor } from '../time/notes.js';
 import { MeterMap, TempoMap } from '../time/tempo.js';
 import { canonicalText, hasAnchorsOrAliases, type KeyOrder } from '../yaml/emit.js';
 import { checkCables, entryName, type Cable } from './cables.js';
@@ -96,6 +100,12 @@ export interface LoadedSong {
   // node name: audio/<name>/takes.yaml. Absent means nothing has been
   // recorded yet, which builds as silence (§4).
   recordTakes: Map<string, LoadedFile<RecordTakes>>;
+  // The song's parts (sequencer.md §3.2): songs/<song>/notes/<name>.yaml,
+  // keyed by name, whether or not an entry places them.
+  parts: Map<string, LoadedFile<NotesFile>>;
+  // Each chosen MIDI take's notes file, keyed by the take's ledger name.
+  // Read for the render and never formatted: the ledger pins its bytes.
+  takeNotes: Map<string, LoadedFile<NotesFile>>;
   // The song's resolved cables (nested-tracks.md §19), derived by
   // validate: complete, acyclic, arrivals agreed. The graph consumes
   // these rather than re-walking, so check and build cannot answer
@@ -345,6 +355,8 @@ function loadProjectFiles(root: string): LoadedProject {
       tracks: [],
       genTakes: new Map(),
       recordTakes: new Map(),
+      parts: new Map(),
+      takeNotes: new Map(),
       cables: [],
     };
 
@@ -401,6 +413,22 @@ function loadProjectFiles(root: string): LoadedProject {
         }
       }
     }
+    // A chosen MIDI take's notes, through the ledger row that pins them.
+    // A row that names nothing, or a file outside the project, is
+    // validate's to diagnose, so neither is read here.
+    for (const takes of song.recordTakes.values()) {
+      const take = chosenTake(takes.data);
+      if (take === undefined || !isMidiTakeRow(take)) continue;
+      const asset = song.assets?.data.assets.find((a) => a.name === take.asset);
+      const { path } = asset !== undefined ? resolveAssetFile(project.root, song.dir, asset.file) : {};
+      const notes = path !== undefined ? loadFile(project, path, { schema: notesFileSchema, order: notesFileOrder }) : undefined;
+      if (notes) song.takeNotes.set(take.asset, notes);
+    }
+
+    for (const file of yamlFiles(join(dir, 'notes'))) {
+      const part = loadFile(project, file, { schema: notesFileSchema, order: notesFileOrder });
+      if (part) song.parts.set(basename(file, '.yaml'), part);
+    }
 
     project.songs.push(song);
   }
@@ -421,6 +449,7 @@ export function allFiles(project: LoadedProject): LoadedFile<unknown>[] {
       ...s.genTakes.values(),
       ...s.recordTakes.values(),
       ...s.tracks,
+      ...s.parts.values(),
     ]),
   ];
   return files.filter((f) => f !== undefined);
@@ -592,13 +621,7 @@ function validate(project: LoadedProject): void {
     const genNodeNames = new Set<string>();
     for (const trackFile of song.tracks) {
       for (const entry of trackFile.data.inputs) {
-        if (
-          entry.supercollider !== undefined ||
-          entry.generative !== undefined ||
-          entry.record !== undefined
-        ) {
-          genNodeNames.add(generatorName(entry, trackFile.data.name));
-        }
+        if (mintsGenerator(entry)) genNodeNames.add(generatorName(entry, trackFile.data.name));
       }
     }
 
@@ -610,6 +633,9 @@ function validate(project: LoadedProject): void {
       string,
       { tempo: TempoMap | undefined; meter: MeterMap | undefined; rate: number }
     >();
+    // The renders a part's later loop repetitions mint (partRenders), so
+    // each can be checked against the generator names once all are known.
+    const repetitionRenders: { name: string; path: string; what: string; repetition: number }[] = [];
     for (const track of song.tracks) {
       // At the track's effective rate (multi-rate.md decision 3): the
       // sample-domain checks below — fade fit, loop expansion — have to
@@ -672,6 +698,17 @@ function validate(project: LoadedProject): void {
       // in two parents (§1.3) and renders once, so "bar 2" inside it has
       // to mean one thing regardless of who consumes it.
       const { tempo: trackTempo, meter: trackMeter } = timeByTrack.get(track.data.name)!;
+
+      // Resolved by the render's own rule, so check and the build find
+      // the program the same way.
+      const instrument = track.data.instrument;
+      if (instrument !== undefined) {
+        validateInstrument(instrument, {
+          root: project.root,
+          push: (message: string) => push(track.path, message),
+          resolveFile: (baseDir: string, file: string) => resolveAssetFile(project.root, baseDir, file),
+        });
+      }
 
       // One entry loop (nested-tracks.md §18): what an entry plays is
       // named by its field, so resolution is per kind and never guesses —
@@ -786,29 +823,25 @@ function validate(project: LoadedProject): void {
               `${what} has takes but none chosen — field choose ${song.name}/${rname} --take <name> first`,
             );
           }
-          // The instrument decides the kind of take the entry records
-          // (keyboard-instrument.md §12.2): it must exist, and every take
-          // must be of the entry's kind.
-          const instrument = entry.record.instrument;
-          if (instrument !== undefined) {
-            // Through the render's own rule, as a supercollider: entry is,
-            // so check and the build resolve the program the same way. The
-            // take plays no part in it.
-            const spec = { name: rname, type: 'voice-render' as const, take: takes?.chosen ?? '', instrument };
-            generatorFor(spec).validate(spec, {
-              root: project.root,
-              songDir: song.dir,
-              names,
-              push: (message: string) => push(track.path, `${what} ${message}`),
-              resolveFile: (baseDir: string, file: string) => resolveAssetFile(project.root, baseDir, file),
-            });
-          }
+          // The track's instrument decides the kind of take the entry
+          // records (sequencer.md §3.4), so every take must be of that kind.
           for (const take of takes?.takes ?? []) {
             if (isMidiTakeRow(take) && instrument === undefined) {
-              push(track.path, `take "${take.asset}" is a MIDI take, and ${what} names no instrument to play it`);
+              push(track.path, `take "${take.asset}" is a MIDI take, and ${track.data.name} has no instrument to play it`);
             } else if (!isMidiTakeRow(take) && instrument !== undefined) {
-              push(track.path, `take "${take.asset}" is an audio take, and ${what} records MIDI for ${instrument}`);
+              push(track.path, `take "${take.asset}" is an audio take, and ${track.data.name} records MIDI for ${instrument}`);
             }
+          }
+        } else if (entry.notes !== undefined) {
+          if (instrument === undefined) {
+            push(
+              track.path,
+              `${what} places notes, and ${track.data.name} has no instrument to play them — ` +
+                'give the track one with `instrument: <name>`',
+            );
+          }
+          if (!song.parts.has(entry.notes) && !existsSync(join(project.root, song.dir, 'notes', `${entry.notes}.yaml`))) {
+            push(track.path, `${what} places the part "${entry.notes}", and there is no ${song.dir}/notes/${entry.notes}.yaml`);
           }
         }
         // Musical arrays need the musical anchor: an absolute entry's
@@ -830,6 +863,19 @@ function validate(project: LoadedProject): void {
         const pos = positionTicks(track.path, `${what} at`, entry.at, trackMeter);
         if (pos === undefined) return;
         entry.at = pos;
+        // A take in ticks plays from its record entry (§2.4), so it has to
+        // start on the track and resolve from there as a part would.
+        if (entry.record !== undefined && trackTempo && trackMeter) {
+          const chosen = chosenTake(song.recordTakes.get(generatorName(entry, track.data.name))?.data);
+          const notes = chosen !== undefined ? song.takeNotes.get(chosen.asset) : undefined;
+          if (chosen !== undefined && isMidiTakeRow(chosen) && notes !== undefined && notes.data.sample_rate === undefined) {
+            try {
+              resolveNotes(notes.data, takeAnchor(entry, chosen, trackTempo), { tempo: trackTempo, meter: trackMeter });
+            } catch (err) {
+              push(track.path, `take "${chosen.asset}": ${(err as Error).message}`);
+            }
+          }
+        }
         // An *absent* duration is the entry declining to truncate, and has
         // to be told apart from one that failed to resolve: the second
         // already pushed a diagnostic and must skip the checks below,
@@ -855,6 +901,27 @@ function validate(project: LoadedProject): void {
           );
           return;
         }
+        // A part resolves from where the entry places it, so a position
+        // out of range is this placement's to report. Its length is known
+        // here, which is what lets a looping notes entry omit `every`.
+        const part = entry.notes !== undefined ? song.parts.get(entry.notes) : undefined;
+        if (part !== undefined && trackTempo) {
+          const time = { tempo: trackTempo, meter: trackMeter };
+          try {
+            resolveNotes(part.data, placementAnchor(entry, trackTempo), time);
+          } catch (err) {
+            push(track.path, `${what} places ${part.path}, which does not resolve there: ${(err as Error).message}`);
+            return;
+          }
+          if (entry.loop?.enabled && entry.loop.every === undefined) {
+            const every = notesLength(part.data, entry, time);
+            if (every <= 0) {
+              push(track.path, `${what} loops a part with no length — give ${part.path} a length or the loop an every`);
+              return;
+            }
+            entry.loop.every = every;
+          }
+        }
         if (entry.loop?.every !== undefined) {
           const every = spanTicks(track.path, `${what} loop.every`, entry.loop.every, pos, trackMeter);
           if (every === undefined) return;
@@ -863,6 +930,18 @@ function validate(project: LoadedProject): void {
             return;
           }
           entry.loop.every = every;
+        }
+        if (part !== undefined && trackTempo && entry.loop?.enabled) {
+          const name = generatorName(entry, track.data.name);
+          try {
+            const { renders, repetitions } = partRenders(part.data, entry, name, { tempo: trackTempo, meter: trackMeter });
+            for (const render of renders.slice(1)) {
+              repetitionRenders.push({ name: render.name, path: track.path, what, repetition: repetitions.indexOf(render.name) + 1 });
+            }
+          } catch (err) {
+            push(track.path, `${what} places ${part.path}, which does not resolve ${(err as Error).message}`);
+            return;
+          }
         }
         // Loops are diagnosed here in full — running the same expansion the
         // plan will run — because check is the gate: a check-clean project
@@ -970,12 +1049,7 @@ function validate(project: LoadedProject): void {
     const genNames = new Map<string, string>();
     for (const trackFile of song.tracks) {
       for (const entry of trackFile.data.inputs) {
-        if (
-          entry.supercollider === undefined &&
-          entry.generative === undefined &&
-          entry.record === undefined
-        )
-          continue;
+        if (!mintsGenerator(entry)) continue;
         const name = generatorName(entry, trackFile.data.name);
         // A generative entry's takes claim audio/<name>/, and so does an
         // asset: imports land in audio/<name>/ too (project-layout.md
@@ -1010,6 +1084,16 @@ function validate(project: LoadedProject): void {
               `has a name of its own (nested-tracks.md §18)`,
           );
         }
+      }
+    }
+    for (const render of repetitionRenders) {
+      const owner = genNames.get(render.name);
+      if (owner !== undefined) {
+        push(
+          render.path,
+          `repetition ${render.repetition} of ${render.what} renders as "${render.name}", which the ` +
+            `generator in ${owner} also names — rename a track or change an id so each render has a name of its own`,
+        );
       }
     }
 
@@ -1146,6 +1230,12 @@ function validate(project: LoadedProject): void {
             }
           }
         }
+      }
+    }
+
+    for (const [name, part] of song.parts) {
+      if (!isSlug(name)) {
+        push(part.path, `a part is named by its file, and "${name}" is not a lowercase slug that a notes: entry can name`);
       }
     }
 

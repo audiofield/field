@@ -56,6 +56,28 @@ export class TempoMap {
     return seconds;
   }
 
+  // Seconds from one tick to a later one, adding only the segments between
+  // them. A span in a steady segment then lasts exactly the same wherever
+  // it starts, which subtracting two ticksToSeconds does not promise: each
+  // keeps its own rounding error, enough to move a span that falls on half
+  // a sample.
+  secondsBetween(from: number, to: number): number {
+    if (from < 0 || to < from) throw new Error(`no span from tick ${from} to tick ${to}`);
+    let seconds = 0;
+    for (let i = 0; i < this.events.length; i++) {
+      const e = this.events[i]!;
+      const next = this.events[i + 1];
+      const start = Math.max(from, e.at);
+      const end = next ? Math.min(to, next.at) : to;
+      if (end > start) {
+        seconds += this.isSteady(i)
+          ? this.segmentSeconds(i, end - start)
+          : this.segmentSeconds(i, end - e.at) - this.segmentSeconds(i, start - e.at);
+      }
+    }
+    return seconds;
+  }
+
   secondsToTicks(seconds: number): number {
     if (seconds < 0) throw new Error('negative seconds');
     let remaining = seconds;
@@ -80,14 +102,20 @@ export class TempoMap {
     return this.secondsToTicks(samples / this.sampleRate);
   }
 
+  private isSteady(i: number): boolean {
+    const e = this.events[i]!;
+    const next = this.events[i + 1];
+    return e.ramp !== 'linear' || !next || next.bpm === e.bpm;
+  }
+
   // Seconds spanned by the first `ticks` ticks of segment i.
   private segmentSeconds(i: number, ticks: number): number {
     const e = this.events[i]!;
-    const next = this.events[i + 1];
     const beats = ticks / PPQ;
-    if (e.ramp !== 'linear' || !next || next.bpm === e.bpm) {
+    if (this.isSteady(i)) {
       return (beats * 60) / e.bpm;
     }
+    const next = this.events[i + 1]!;
     // bpm(b) = b0 + k·b over the full span of B beats, k = (b1 − b0) / B.
     const spanBeats = (next.at - e.at) / PPQ;
     const k = (next.bpm - e.bpm) / spanBeats;
@@ -97,10 +125,10 @@ export class TempoMap {
   // Inverse of segmentSeconds: ticks into segment i after `seconds`.
   private segmentTicksAt(i: number, seconds: number): number {
     const e = this.events[i]!;
-    const next = this.events[i + 1];
-    if (e.ramp !== 'linear' || !next || next.bpm === e.bpm) {
+    if (this.isSteady(i)) {
       return (seconds * e.bpm * PPQ) / 60;
     }
+    const next = this.events[i + 1]!;
     const spanBeats = (next.at - e.at) / PPQ;
     const k = (next.bpm - e.bpm) / spanBeats;
     const beats = (e.bpm / k) * (Math.exp((seconds * k) / 60) - 1);
@@ -138,6 +166,10 @@ export class MeterMap {
     let i = 0;
     while (i + 1 < this.events.length && this.events[i + 1]!.at <= ticks) i++;
     return i;
+  }
+
+  meterAt(ticks: number): MeterEvent {
+    return this.events[this.segmentFor(ticks)]!;
   }
 
   // The ordinal position of a tick — [bar, beat, tick], 1-indexed — as

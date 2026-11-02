@@ -900,7 +900,7 @@ program
 
 program
   .command('record [targets...]')
-  .description('record a take on a track through field-audiod: arms an input, or MIDI when the record entry names an instrument, takes against what is playing, ctrl-c stops and finalizes')
+  .description('record a take on a track through field-audiod: arms an input, or MIDI when the track has an instrument, takes against what is playing, ctrl-c stops and finalizes')
   .option('--input <n,...>', 'input channel on the device, counting from 1, one per audio track in the order named (default 1, 2, ...); audio takes only', parseInputChannels)
   .option('--device <name>', 'input device (field devices lists them; default: the system input); audio takes only')
   .option('--at <position>', 'start at bar[.beat[.tick]] of the loaded song')
@@ -1080,7 +1080,7 @@ program
   .command('keys [targets...]')
   .description(
     'play the computer keyboard as the MIDI source "Field Keys", and SuperCollider instruments from it: name instruments, ' +
-      'or tracks (creek/track:keys) to play the instrument each MIDI track names, all at once ' +
+      'or tracks (creek/track:keys) to play the instrument each track names, all at once ' +
       '(needs a terminal with the kitty keyboard protocol; Ctrl-C quits)',
   )
   .option('--keymap <name or path>', 'a built-in keymap by name, or your own keymap file by path (default: $FIELD_KEYMAP, then musical)')

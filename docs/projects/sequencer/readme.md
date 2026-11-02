@@ -1,5 +1,5 @@
 ---
-status: ready
+status: in-progress
 priority: now
 ---
 
@@ -70,8 +70,12 @@ drive voices the same way.
    `- notes: riff` with `at: [17]` to `songs/creek/tracks/keys.yaml`,
    whose track names `instrument: pad`.
 2. `field check` validates the part against the notes schema and the
-   entry against its track: the part exists, the track has an
-   instrument, and the instrument's program answers `FIELD_MODE=voice`.
+   entry against its track: the part exists and the track has an
+   instrument. It resolves the instrument's program and checks its knob
+   file. The render and `field keys` report a program that does not
+   answer `FIELD_MODE=voice`, because only `sclang` can tell (corrected
+   2026-10-16: this step had `field check` test that the program
+   answers voice mode; §9).
 3. `field build creek` resolves the part from the entry's anchor
    through the track's time into sample-timed events, renders them
    through `pad` as the `voice-render` node `//songs/creek/gen:keys`,
@@ -111,12 +115,12 @@ drive voices the same way.
 # songs/creek/notes/riff.yaml
 length: [2]
 notes:
-  - { at: [1], length: [0, 1], note: C3, velocity: 110 }
-  - { at: [1, 2], length: [0, 1], note: G3 }
-  - { at: [1, 3], length: 480, note: 60 }
-  - { at: [2], length: [1], note: C2, velocity: 90, channel: 2 }
+  - {at: [1], length: [0, 1], note: C3, velocity: 110}
+  - {at: [1, 2], length: [0, 1], note: G3}
+  - {at: [1, 3], length: 480, note: 60}
+  - {at: [2], length: [1], note: C2, velocity: 90, channel: 2}
 controls:
-  - { at: [1], cc: 74, value: 64 }
+  - {at: [1], cc: 74, value: 64}
 bends: []
 ```
 
@@ -179,12 +183,19 @@ today.
 `field record` converts each captured time to ticks through the song's
 tempo map, after it subtracts the output latency, and writes the take
 in scalar ticks from the take's start. The takes row keeps
-`started_at_samples` as the record of where the take was captured. For
-a MIDI take, `musical_position` and the notes' ticks are authoritative,
-so a take follows a tempo edit as a part does. A tick is 0.52 ms at
-120 bpm, finer than the timing a player controls.
+`started_at_samples` as the record of where the take was captured, and
+`started_at_ticks`, where the take starts in ticks after its record
+entry's `at`. For a MIDI take, `started_at_ticks` and the notes' ticks
+are authoritative, so a take moves with its record entry by the same
+musical distance, as an audio take moves with its entry, and follows a
+tempo edit as a part does (corrected 2026-10-16, Justin: this section
+made `musical_position` authoritative, which left a take where it was
+captured when its entry moved). A tick is 0.52 ms at 120 bpm, finer
+than the timing a player controls.
 
-To edit a take, copy it into a part and place the part at the take's
+To edit a take, copy it into a part and place the part where the take
+plays, `started_at_ticks` after the record entry's `at`. While the
+entry has not moved since the take was recorded, that is the take's
 `musical_position`:
 
 ```console
@@ -585,7 +596,7 @@ lifecycle of its own. Revisit it when start-up time or memory says so.
 | Place the same part at bars 1 and 17 of a constant-tempo song. | The second placement is a cache hit. |
 | Place a part across a meter change from 4/4 to 7/8. | The part's second bar starts at the bar line after the change, in a resolver unit test. |
 | Run `field check` on a notes entry on a track without an instrument, a missing part, a note name that is not one, and `record: { instrument: pad }`. | Four errors. The last names the move to the track. |
-| Record a MIDI take, then edit the tempo. | The take lands in ticks and follows the tempo edit. A take with `sample_rate:` renders as before, and its tests pass unchanged. |
+| Record a MIDI take, then edit the tempo, then move its record entry. | The take lands in ticks and follows the tempo edit. It moves with its entry by the same musical distance. A take with `sample_rate:` renders as before, and its tests pass unchanged. |
 | Copy a take into a part and place it at the take's position (§2.4). | The part's render has the take's action key. |
 | Load a schedule with lead 0 and record a MIDI take from its source in the same daemon. | Every captured note lies within 48 samples (1 ms at 48 kHz) of its scheduled sample, across a loop wrap too, and `status` reports 0 `late`. |
 | Stop, pause, locate, wrap, replace the schedule, close the output, and drop its connection, each with notes sounding. | Every note-on the source sent has its note-off. |
@@ -747,3 +758,103 @@ Read on 2026-10-15, at `566d90c`:
   mode lets each repetition ring over the next.
 - **Nothing overlapped this plan.** No plan under `docs/projects/` and
   no open pull request covered sequencing.
+
+## 9 Notes and parts, as built
+
+Chunks 1 and 2 are built together, on branch `seq-notes`, as the
+bottom layer of a stack of four pull requests: chunks 1 and 2, then 3
+with 6, then 4, then 5. Each chunk alone was too small to be worth a
+review cycle. Chunks 1 and 2 are one argument, notes you write and the
+build that renders them, and chunk 6 is a small `field sc` command that
+rides with the `field sc` library of chunk 3. §6 still lists the chunks
+in the order they depend on each other.
+
+Building them settled these points, which §2 left open or stated
+loosely:
+
+- **A take starts where its capture did.** `field record` takes the
+  output latency off each note, not off the take's start, so a take
+  recorded from bar 17 has `musical_position: [17]` and counts its ticks
+  from there. A note heard before that point, because it was pressed in
+  the take's first moments, starts with the take; a note that ended
+  before it is dropped.
+- **A MIDI take starts `started_at_ticks` after its record entry.**
+  `field record` converts captured times through the recording track's
+  tempo map, which is the song's for every track without `time:` (§2.4
+  says "the song's"). It writes where the take started as
+  `started_at_ticks`, counted from the tick the record entry's window
+  starts on; an absolute entry counts from the whole tick its sample
+  falls on. The take plays from there, so moving the record entry moves
+  the take by the same musical distance, and a tempo edit keeps its
+  notes on their beats (Justin, 2026-10-16: a take that its entry could
+  not move "sounds totally wrong"). `musical_position` records where the
+  take started on its track, in the track's own time, so while the
+  entry has not moved it is the `at` that places a copy of the take as
+  a part on the same track (§2.4). An audio take's `musical_position`
+  stays what the song's map said at capture. A take in samples has no
+  `started_at_ticks`, and moves with its entry by its sample row, as an
+  audio take does.
+- **The render is keyed on events and on the notes file.** A
+  `voice-render` node's parameters are the instrument and `events`, the
+  notes resolved for the placement in samples from its start. The notes
+  file is an input by content hash as well: a take as the ledger source
+  it was, so the build still refuses a take whose pinned bytes changed,
+  and a part hashed in place, so `field explain` names the part as §4
+  asks. A byte copy of a take has the take's hash, which keeps the copy
+  on the take's action key. The cost is that an edit to a part's
+  comments or spellings alone renders it again. Justin accepted this
+  as built on 2026-10-16.
+- **Rows are written without spaces inside the braces.** `field fmt`
+  writes `{at: [1], length: [0, 1], note: C3}`, because the emitter pads
+  maps and arrays alike or neither, and track files write `[12, 2]`.
+  §2.2's example is spelled that way. A row never breaks across lines,
+  however many fields it spells out. `field record` writes takes with the
+  same formatter, so a copied take is already a formatted part. Justin
+  accepted this as built on 2026-10-16.
+- **A musical position counts within the bar it lands in.** `[2, 3]`
+  advances one bar from where the part is placed, then two beats, and
+  the beat and tick must exist in the meter of that bar. The check runs
+  per placement, because a beat that exists in one placement can be
+  missing in another, and `field check` reports it against the track
+  file whose entry places the part.
+- **An absolute entry places a part from the tick its sample falls
+  on.** Its loop's `every`, when omitted, is the part's length in
+  samples, as every absolute time is.
+- **Each repetition of a looping part resolves where it starts.**
+  Loop expansion places a render in each repetition's slot
+  (clip-looping.md decision 6), and each slot plays what the part
+  placed there by hand would: the repetitions start `every` apart in
+  the entry's anchor units (decision 3), and each resolves from its own
+  start. Repetitions that resolve alike play one render, so a loop in a
+  steady song is one render, and the repetitions after a tempo or meter
+  change play their own, `gen:<name>-<n>`, named for the first
+  repetition `<n>` that plays it. `field check` resolves every
+  repetition, so a beat that a later bar lacks is reported, and refuses
+  a generator that has a repetition's render name. `partRenders` in
+  `src/generators/stem.ts` does this for the build, and `field seq`
+  resolves a looping part with it too (§3.5).
+- **Note names** are scientific pitch with `#` or `b`, from `C-1` (0) to
+  `G9` (127). A part's file name must be a lowercase slug, the only
+  name a `notes:` entry can spell.
+- **`field check` does not test that the instrument answers voice
+  mode** (§2.1 step 2). Only `sclang` can tell, and the text test
+  `field keys` uses to sort its shelf would refuse a program whose last
+  expression is a SynthDef without reading `FIELD_MODE`. `field check`
+  resolves the program and checks its knob file, and the render and
+  `field keys` report a program that has no voice. Justin accepted this
+  as built on 2026-10-16, and §2.1 step 2 says so.
+- **Takes in samples render once more.** Their events join the action
+  key, and `voice-render` is version 3, so each takes one new render;
+  they play as they did.
+
+The first seven rows of §4 pass, each in a test:
+
+| §4 row | Test |
+| --- | --- |
+| A part placed at `[17]` on a track with `instrument: pad` | `src/graph/parts.test.ts`, "renders through the track's instrument, with the part and the instrument as inputs" |
+| A note, the tempo, then `pad` changes | `src/graph/parts.test.ts`, "renders again when a note, the tempo, or the instrument changes" |
+| One part at bars 1 and 17 of a steady song | `src/graph/parts.test.ts`, "is one render where two placements resolve alike" |
+| A part across a change from 4/4 to 7/8 | `src/time/notes.test.ts`, "starts the part's second bar at the bar line after a meter change" |
+| The four `field check` errors | `src/graph/parts.test.ts`, "refuses a notes entry with no instrument, a missing part, a note name that is not one, and an instrument on record:" |
+| A MIDI take, then a tempo edit, then its entry moved; a take in samples | `src/commands/land.test.ts`, "writes the take in ticks" and "counts started_at_ticks from the tick its record entry starts on"; `src/generators/voice-render.test.ts`, "follows a tempo edit there", "moves with its record entry by the same musical distance", and "plays a take recorded in samples as it was recorded" |
+| A take copied into a part at its position | `src/graph/parts.test.ts`, "has the take's action key when it is placed at the take's position" |

@@ -183,7 +183,9 @@ replaces the entry with a window over its chosen take's ledger asset,
 placed where the take's row says it was sung, or with nothing when no
 take is chosen (`withTakes` in `src/graph/graph.ts`). Nothing after
 that point knows recording exists. An entry that records MIDI places
-its take's render instead, a `voice-render` node (below).
+its take's render instead, a `voice-render` node (below). A `notes:`
+entry mints a `voice-render` node too, which the stem places like any
+generator's.
 
 ### `stem` — every track, implicitly
 
@@ -276,29 +278,45 @@ reading them. A `supercollider:` entry never runs in voice mode, so
 voice mode changes its renders only through the program's own content
 hash. See [keys.md](keys.md).
 
-### `voice-render` — a recorded MIDI take, rendered
+### `voice-render` — notes, rendered through an instrument
 
-The graph mints one for a record entry with an instrument whose chosen
-take is a MIDI take, at `//songs/<song>/gen:<name>` where `<name>` is
-the record node's, and the entry places it where the take was played
-(keyboard-instrument.md §12.3). Nobody declares it.
+The graph mints one for each `notes:` entry, and for each record entry
+whose chosen take is a MIDI take, at `//songs/<song>/gen:<name>` where
+`<name>` is the entry's generator name (keyboard-instrument.md §12.3,
+sequencer.md §2.3). It plays through the track's `instrument:`. Nobody
+declares it. The track places a part's render in the entry's window, as
+any generator's, and a take's render where the take starts. A looping
+part resolves each repetition where the repetition starts, and a
+repetition that resolves differently from every one before it, after a
+tempo or meter change, gets a node of its own, `gen:<name>-<n>`, named
+for its number `<n>`. Repetitions that resolve alike play one node
+(`partRenders` in `src/generators/stem.ts`).
 
 It runs `sc/voice-render.scd` through `sclang`, which loads the
 instrument in voice mode with `sc/voice-load.scd`, as `field keys` loads
-it, and drives its voice from the take's notes file with
-`sc/voicer.scd`, the voicing `field keys` plays with. Sustain,
-all-notes-off, pitch bend (±2 semitones), the modulation wheel, and
-every other controller act as they did live. The render is stereo at the
-track's rate and runs 4 seconds past the take, so the last notes'
-release is heard; scsynth rounds it up to a whole control block, as it
-does every NRT render. Its cache inputs are the notes file, the
-instrument's content hash, its knob file's when it has one, and the
-three harness files, so editing any of them renders the take again. The
-render checks the knob file as `field keys` does, so `field check` and
-the build name a file that fails before anything renders, and it hands
-the voice the checked copy in `FIELD_KNOBS`. The harness adds nothing
-random, so an instrument that renders reproducibly renders its takes
-reproducibly, bit for bit.
+it, and drives its voice from the notes with `sc/voicer.scd`, the
+voicing `field keys` plays with. Sustain, all-notes-off, pitch bend (±2
+semitones), the modulation wheel, and every other controller act as
+they did live. The render is stereo at the track's rate and runs 4
+seconds past the part's `length`, which is the last note's end when the
+part declares none, so the last notes' release is heard; scsynth rounds
+it up to a whole control block, as it does every NRT render.
+
+Its parameters are the instrument and `events`: the notes resolved
+through the track's tempo and meter maps from where they are placed, in
+samples from that point (`src/time/notes.ts`). Its cache inputs are the
+notes file, the instrument's content hash, its knob file's when it has
+one, and the three harness files. So editing a note, the tempo map, or
+any input renders it again, and a second placement that resolves alike
+is a cache hit, because the events count from the placement rather than
+from the song's start. A take is a source node, so the build refuses
+one whose pinned bytes changed; a part is hashed in place. A take
+copied into a part and placed where the take starts has the take's
+action key. The render checks the knob file as `field keys` does, so
+`field check` and the build name a file that fails before anything
+renders, and it hands the voice the checked copy in `FIELD_KNOBS`. The
+harness adds nothing random, so an instrument that renders reproducibly
+renders its notes reproducibly, bit for bit.
 
 ### `eq` / `limit` / `reverb` / `plate` / `hall` — the offline effects
 

@@ -53,7 +53,7 @@ describe.skipIf(!binary || !sclang || !fieldOut || process.platform === 'win32')
       copyFileSync(bloomPad, join(root, 'shared/instruments/pad.scd'));
       createSong(root, 'creek');
       createTrack(root, 'creek', 'bass');
-      writeFileSync(join(root, 'songs/creek/tracks/bass.yaml'), 'name: bass\ninputs:\n  - record:\n      instrument: pad\n');
+      writeFileSync(join(root, 'songs/creek/tracks/bass.yaml'), 'name: bass\ninstrument: pad\ninputs:\n  - record:\n');
       writeFileSync(join(root, 'songs/creek/tracks/main.yaml'), 'name: main\ninputs:\n  - track: bass\n');
     });
     afterEach(async () => {

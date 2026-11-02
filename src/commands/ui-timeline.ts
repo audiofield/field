@@ -1,7 +1,7 @@
 import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { readWav, readWavHeader } from '../audio/wav.js';
-import { generatorName, placedWindow } from '../generators/stem.js';
+import { generatorName, mintsGenerator, placedWindow } from '../generators/stem.js';
 import type { LoadedSong } from '../model/project.js';
 import { barTicks, MeterMap, TempoMap } from '../time/tempo.js';
 import { sha256Text } from '../hash.js';
@@ -224,13 +224,12 @@ export function projectTimeline(
       entry: index,
       file: owner.path,
       sha256: sha256Text(owner.raw),
-      // A generator entry (record, supercollider, generative) is named as
-      // the graph names it, by its generator name: the track's own name,
-      // or `<track>-<id>` when it has an id, so two in one track differ.
+      // A generator entry (record, supercollider, generative, notes) is
+      // named as the graph names it, by its generator name: the track's
+      // own name, or `<track>-<id>` when it has an id, so two in one track
+      // differ.
       name: placedName ?? entry.audio ?? entry.receive ??
-        (entry.record !== undefined || entry.supercollider !== undefined || entry.generative !== undefined
-          ? generatorName(entry, owner.data.name)
-          : `input ${index + 1}`),
+        (mintsGenerator(entry) ? generatorName(entry, owner.data.name) : `input ${index + 1}`),
       start: startSample,
       duration,
       depth,

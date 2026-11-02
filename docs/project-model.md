@@ -31,6 +31,7 @@ project/
 │   └── <song>/
 │       ├── song.yaml     # name, time (tempo + meter), rate, length, loop
 │       ├── tracks/       # one file per track: inserts and its inputs
+│       ├── notes/        # one file per part: notes in bars and beats
 │       ├── audio/        # ALL committed song sound (LFS): recorded,
 │       │                 # imported, generated — a directory per item
 │       │                 # (audio/<name>/), takes and their pins
@@ -82,7 +83,8 @@ file per track — every definition is a track: an effect is an insert on
 one, a render or a generative request is an entry in one (see
 [tracks.md](tracks.md)) — while `audio/` holds *all* of a song's
 committed sound: recorded, imported, or generated, the producer is
-irrelevant.
+irrelevant. `notes/` holds the song's parts, notes you write, which a
+track's `notes:` entries place (see "Parts" below).
 
 Where a file lives declares who may see it (project-layout.md §1.5): an
 entry references its own song's names plus `//shared/asset:` pins, and
@@ -121,7 +123,9 @@ musical, resolved through the song's meter map.
 
 Arrays are resolved to ticks at load: either spelling produces the same
 build, and `field fmt` preserves whichever notation the author wrote,
-keeping arrays single-line.
+keeping arrays single-line. A part's times are the exception: they
+count from wherever an entry places the part, so they resolve for each
+placement (see "Parts").
 
 The arrangement is derived, not authored (nested-tracks.md §11): a
 song's structure *is* its output track's placements, and
@@ -285,10 +289,11 @@ beside the audio say which performances exist and which one plays.
 
 The entry carries no device or input — bare `- record:` — because the
 device and input you record through are facts about your machine, not
-the song (recording.md §4). The one thing it may name is an instrument,
-which makes it record MIDI instead of audio (see "MIDI takes" below).
-It places like every other entry: `at`, `duration`, `gain_db`, and the
-rest apply to the window the takes fill. It never loops.
+the song (recording.md §4). The track's `instrument:` decides the kind
+of take: with one, the entry records MIDI instead of audio (see "MIDI
+takes" below). It places like every other entry: `at`, `duration`,
+`gain_db`, and the rest apply to the window the takes fill. It never
+loops.
 
 ```yaml
 # songs/creek/tracks/lead-vocal.yaml
@@ -347,36 +352,48 @@ is on disk only; the loader merges them.
 
 ### MIDI takes
 
-A record entry that names an instrument records what you play on
-`field keys` or a controller, and you hear it through that instrument
-([projects/keyboard-instrument/readme.md](projects/keyboard-instrument/readme.md)
-§12). The instrument resolves as `field keys` resolves one: `.scd` is
-added to a name with no extension, and a name without a `/` is under
-`shared/instruments/`. Its program must answer `FIELD_MODE=voice`.
+A record entry on a track that has an instrument records what you play
+on `field keys` or a controller, and you hear it through that
+instrument ([projects/keyboard-instrument/readme.md](projects/keyboard-instrument/readme.md)
+§12, [projects/sequencer/readme.md](projects/sequencer/readme.md) §2.4).
+The instrument is the track's `instrument:` ([tracks.md](tracks.md)
+"A track file"). Its program must answer `FIELD_MODE=voice`.
 
 ```yaml
 # songs/creek/tracks/keys.yaml
 name: keys
+instrument: pad
 inputs:
   - record:
-      instrument: pad
 ```
 
 A MIDI take is a notes file, `audio/<name>/<take>.notes.yaml`, pinned
-in the ledger like any take, with one flow row per note, controller
-change, and pitch bend, in samples at the capture's rate:
+in the ledger like any take, in the format a part has (see "Parts"
+below): one flow row per note, controller change, and pitch bend, in
+scalar ticks from the take's start.
 
 ```yaml
 # songs/creek/audio/keys/take-20261010-143012.notes.yaml
-sample_rate: 48000
-length: 96000
+length: 3840
 notes:
-  - { at: 0, length: 24000, note: 60, velocity: 100 }
-  - { at: 12000, length: 84000, note: 64, velocity: 90 }
+  - {at: 0, length: 960, note: 60, velocity: 100}
+  - {at: 480, length: 3360, note: 64, velocity: 90}
 controls:
-  - { at: 6000, cc: 64, value: 127 }
+  - {at: 240, cc: 64, value: 127}
 bends: []
 ```
+
+`field record` turns each captured time into ticks through the track's
+tempo map, after it takes off the output latency: you play in time with
+what you hear, which runs behind the playhead by that much. A note you
+press that early in the take's first moments starts with the take. The
+row's `started_at_ticks` is where the take starts, in ticks after the
+record entry's `at`, and the take plays from there. So moving the
+entry's `at` moves the take by the same musical distance, as it moves
+an audio take, and the take follows a tempo edit as a part does.
+`started_at_samples`, `latency`, and `musical_position`, where the take
+started on its track in the track's own time, stay in the row as the
+record of where the take was captured.
 
 A take starts where your knobs were: its first `controls` rows, at
 `at: 0`, are each controller's value when the take started, which the
@@ -385,19 +402,23 @@ arm ([audio-engine.md](audio-engine.md) "MIDI capture"). The render
 applies them before a note at 0. A note still held when the take
 stopped lasts to its end, and `channel` appears only when it is not 1.
 Its row carries `sources`, the MIDI inputs the take listened to, where
-an audio row carries `device` and `input`, and its `latency` is the
-output latency alone: you play in time with what you hear, which runs
-behind the playhead by that much.
+an audio row carries `device` and `input`.
 
-The build renders the chosen take through the instrument as a `gen:`
-node named like the record node, and the entry places that render. A
-take of the other kind than its entry records is an error in `field
-check`, as is an instrument whose program is missing or outside the
-project: it resolves by the rule a `supercollider:` entry's `source:`
-does. The notes file has one
-writer, `field record`. Editing it by hand changes its hash, and the
-build then refuses it, as it refuses any pinned file whose bytes
-changed.
+A notes file that carries `sample_rate:` is a take recorded before takes
+landed in ticks. Its times are samples at that rate, and it plays as it
+was recorded: at the entry's window start plus `started_at_samples`
+less `latency`, as an audio take does, wherever the tempo moves.
+
+The build renders the chosen take through the track's instrument as a
+`gen:` node named like the record node, and the entry places that
+render. A take of the other kind than its track records is an error in
+`field check`, as is an instrument whose program is missing or outside
+the project: it resolves by the rule a `supercollider:` entry's
+`source:` does. `check` also refuses `instrument:` under `record:`, and
+says to move it to the track. The notes file has one writer, `field
+record`. Editing it by hand changes its hash, and the build then
+refuses it, as it refuses any pinned file whose bytes changed. To edit
+a take, copy it into a part.
 
 ### Generating and choosing
 
@@ -428,3 +449,84 @@ on the gen node answers which take is chosen:
 
 Every file involved is schema-validated: `field check` verifies variant
 hashes, and `field fmt` covers them.
+
+## Parts
+
+A part is a notes file you write: `songs/<song>/notes/<name>.yaml`, by
+hand, with an agent, or by copying a take. A `- notes: <name>` entry
+places it on a track, which plays it through the track's instrument
+([projects/sequencer/readme.md](projects/sequencer/readme.md) §2.2).
+
+```yaml
+# songs/creek/notes/riff.yaml
+length: [2]
+notes:
+  - {at: [1], length: [0, 1], note: C3, velocity: 110}
+  - {at: [1, 2], length: [0, 1], note: G3}
+  - {at: [1, 3], length: 480, note: 60}
+  - {at: [2], length: [1], note: C2, velocity: 90, channel: 2}
+controls:
+  - {at: [1], cc: 74, value: 64}
+bends: []
+```
+
+| Field | Meaning |
+| --- | --- |
+| `length` | The part's span from its start. Optional: omitted, the part ends where its last note ends. A looping entry that omits `every` repeats at `length`. The render stops 4 seconds after `length`, so a note that starts later never sounds, and `field check` does not refuse it. |
+| `notes` | Each note: `at`, a position in the part; `length`, a span, which may be 0; `note`, a MIDI number from 0 to 127 or a name in scientific pitch, where `C4` is 60, with `#` or `b`; `velocity`, 1 to 127, 100 when omitted; and `channel`, 1 to 16, 1 when omitted. |
+| `controls` | Each controller change: `at`, `cc`, `value`, and `channel`. |
+| `bends` | Each pitch bend: `at`, `value` from 0 to 16383 with 8192 at rest, and `channel`. |
+
+Time fields take musical time's two spellings: a scalar is ticks, 960 to
+the quarter note, and an array is musical. A position counts from the
+part's start, so `at: [1]` is where the part is placed and `at: [2, 3]`
+is beat 3 of its second bar. Positions and spans advance through the
+placing track's meter map from the entry's `at`, as a musical
+`duration` does, so a part placed across a meter change keeps its bars
+whole. A beat or tick that the bar it lands in does not have is an
+error that `field check` reports against the entry that places the
+part.
+
+`field check` validates every part against the notes schema, a note
+name included, and every `notes:` entry against its track: the part
+exists, and the track has an instrument. `field fmt` writes one row per
+note and keeps the spelling each row has, a name or a number, ticks or
+musical time, so two versions of a part diff line by line.
+
+The build renders each placement through the track's instrument as a
+`voice-render` node, `gen:<track>` or `gen:<track>-<id>`, and the track
+places the render in the entry's window like any generator's
+([build-graph.md](build-graph.md) "`voice-render`"). The render is keyed
+on the part's events as they resolve from where the entry places them,
+counted from that point, so a second placement that resolves alike is a
+cache hit, and a tempo edit renders the part again. Each repetition of
+a looping entry resolves from where the repetition starts, as the part
+placed there by hand would. Repetitions that resolve alike play one
+render, so a loop in a steady song is one render, and the repetitions
+after a tempo change play `gen:<track>-<n>` or `gen:<track>-<id>-<n>`,
+named for the first repetition `<n>` that plays it.
+
+To edit a take, copy it into a part and place the part where the take
+plays, `started_at_ticks` after the record entry's `at`. While the
+entry has not moved since you recorded the take, that is the take's
+`musical_position`. Then mute the record entry:
+
+```console
+$ cp songs/creek/audio/keys/take-20261015-143012.notes.yaml songs/creek/notes/keys-verse.yaml
+```
+
+```yaml
+# songs/creek/tracks/keys.yaml
+name: keys
+instrument: pad
+inputs:
+  - record:
+    mute: true
+  - id: verse
+    notes: keys-verse
+    at: [10, 2]
+```
+
+The part resolves to the take's events, so its render has the take's
+action key and comes from the cache. The take stays pinned and
+choosable.

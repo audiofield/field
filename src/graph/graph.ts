@@ -21,14 +21,16 @@ import { chosenTake, committedFileResolver, type LoadedProject, type LoadedSong 
 import type { Cable } from '../model/cables.js';
 import { generatorFor, type GeneratorSpec } from '../generators/index.js';
 import type { ResampleSpec } from '../generators/resample.js';
-import { entryRef, generatorName, placedWindow, planTrack } from '../generators/stem.js';
+import { entryRef, generatorName, partRenders, placedWindow, planTrack } from '../generators/stem.js';
 import {
   indexStateBlobs,
   transportSegments,
   type HostedTrackContext,
   type StateBlob,
 } from '../audio/plugins.js';
-import { TempoMap } from '../time/tempo.js';
+import { resolveNotes, takeAnchor } from '../time/notes.js';
+import { MeterMap, TempoMap } from '../time/tempo.js';
+import type { VoiceRenderSpec } from '../generators/voice-render.js';
 import type { Asset, InputEntry, Track } from '../schema/index.js';
 import { isHostedInsert, isMidiTakeRow } from '../schema/index.js';
 import { DEFAULT_SAMPLE_RATE } from '../constants.js';
@@ -88,6 +90,12 @@ export interface GenerationNode {
 }
 
 export type GraphNode = AssetNode | GeneratorNode | GenerationNode;
+
+// A track's own maps, at its rate.
+export interface TrackTime {
+  tempo: TempoMap;
+  meter: MeterMap;
+}
 
 export interface Graph {
   nodes: Map<string, GraphNode>; // keyed by formatted label
@@ -228,6 +236,29 @@ export function buildGraph(project: LoadedProject): Graph {
     // track's own content, so producing it at the project rate only to
     // convert it back at the edge would be a conversion nobody asked for.
     const scEntryRate = new Map<string, number>();
+    const repetitionRefs = new Map<string, string[]>();
+    // A track's own maps at its rate (nested-tracks.md §13), which its
+    // notes resolve through. Validate refused a song without `time:`.
+    const timeOf = (track: Track): TrackTime => ({
+      tempo: new TempoMap(track.time?.tempo ?? song.time!.tempo, trackRate(track)),
+      meter: new MeterMap(track.time?.meter ?? song.time!.meter),
+    });
+    // Notes render through the track's instrument at the track's rate
+    // (sequencer.md §2.3), keyed on the events they resolve to.
+    const addVoiceRender = (
+      name: string,
+      track: Track,
+      notes: Pick<VoiceRenderSpec, 'take' | 'part' | 'events'>,
+    ): void => {
+      scEntryRate.set(name, trackRate(track));
+      addRule(
+        { pkg: `${pkgBase}/gen`, name },
+        song.dir,
+        { name, type: 'voice-render', instrument: track.instrument!, ...notes },
+        refLabel,
+        trackRate(track),
+      );
+    };
     for (const file of song.tracks) {
       for (const entry of file.data.inputs) {
         if (entry.supercollider !== undefined) {
@@ -271,21 +302,28 @@ export function buildGraph(project: LoadedProject): Graph {
             });
             sha256BySource.set(genRef(name), variant.sha256);
           }
-        } else if (entry.record?.instrument !== undefined) {
-          // A chosen MIDI take renders through the entry's instrument at
-          // the track's rate (keyboard-instrument.md §12.3), and withTakes
-          // places the render where the take was played.
+        } else if (entry.notes !== undefined) {
+          // A part, from where the entry places it and from where each
+          // repetition of its loop starts; planTrack places each
+          // repetition's render in its slot of the entry's window.
+          const part = song.parts.get(entry.notes)!;
+          const name = generatorName(entry, file.data.name);
+          const { renders, repetitions } = partRenders(part.data, entry, name, timeOf(file.data));
+          for (const render of renders) {
+            addVoiceRender(render.name, file.data, { part: part.path, events: render.events });
+          }
+          repetitionRefs.set(genRef(name), repetitions.map(genRef));
+        } else if (entry.record !== undefined && file.data.instrument !== undefined) {
+          // A chosen MIDI take, from where it starts after its entry when
+          // it is in ticks (sequencer.md §2.4); withTakes places the
+          // render there, or, for a take in samples, where it was played.
           const name = generatorName(entry, file.data.name);
           const take = chosenTake(song.recordTakes.get(name)?.data);
-          if (take !== undefined && isMidiTakeRow(take)) {
-            scEntryRate.set(name, trackRate(file.data));
-            addRule(
-              { pkg: `${pkgBase}/gen`, name },
-              song.dir,
-              { name, type: 'voice-render', take: take.asset, instrument: entry.record.instrument },
-              refLabel,
-              trackRate(file.data),
-            );
+          const notes = take !== undefined ? song.takeNotes.get(take.asset) : undefined;
+          if (take !== undefined && isMidiTakeRow(take) && notes !== undefined) {
+            const time = timeOf(file.data);
+            const anchor = notes.data.sample_rate === undefined ? takeAnchor(entry, take, time.tempo) : 0;
+            addVoiceRender(name, file.data, { take: take.asset, events: resolveNotes(notes.data, anchor, time) });
           }
         }
       }
@@ -460,7 +498,8 @@ export function buildGraph(project: LoadedProject): Graph {
         };
         for (const entry of planned.inputs) {
           if (entry.receive !== undefined) continue; // a cable is not a source here
-          ensureConvert(entryRef(entry, planned.name));
+          const raw = entryRef(entry, planned.name);
+          for (const ref of repetitionRefs.get(raw) ?? [raw]) ensureConvert(ref);
         }
         // The cables arriving here become plan inputs: the sender's stem
         // for a post tap, the tap node for pre — converted at the edge
@@ -497,6 +536,7 @@ export function buildGraph(project: LoadedProject): Graph {
           convertBySource,
           cableIns,
           hosted,
+          repetitionRefs,
         );
       };
       for (const track of renderable) {
@@ -543,8 +583,11 @@ export function buildGraph(project: LoadedProject): Graph {
 // that started before the window (a negative placement) reads into its
 // source by that much instead, in the source's own samples, because
 // `source_offset` addresses the source (project-core.md §3.2) and the
-// edge conversion scales it. The result is an absolute `audio:` entry,
-// so nothing after this point knows recording exists.
+// edge conversion scales it. A MIDI take in ticks (sequencer.md §2.4)
+// sounds `started_at_ticks` after the tick the entry's window starts
+// on instead, where its render begins: its notes already have the
+// latency off, and its sample row is a record. The result is an absolute `audio:` entry, so nothing after
+// this point knows recording exists.
 export function withTakes(
   track: Track,
   song: LoadedSong,
@@ -559,7 +602,11 @@ export function withTakes(
     const take = chosenTake(song.recordTakes.get(name)?.data);
     if (take === undefined) return [];
     const window = placedWindow(entry, local);
-    const at = window.start + take.started_at_samples - take.latency;
+    const notes = song.takeNotes.get(take.asset);
+    const at =
+      isMidiTakeRow(take) && notes !== undefined && notes.data.sample_rate === undefined
+        ? local.ticksToSamples(takeAnchor(entry, take, local))
+        : window.start + take.started_at_samples - take.latency;
     // A MIDI take sounds through its render, the gen node the graph minted
     // for the entry (keyboard-instrument.md §12.3); an audio take is its
     // own bytes.

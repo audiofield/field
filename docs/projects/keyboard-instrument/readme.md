@@ -1078,6 +1078,12 @@ is an addition to `field export` alone, for when a take must open in
 Logic as notes. Until then a take reaches Logic as audio:
 `field export creek/gen:keys` copies its render.
 
+Changed on 2026-10-15 by [sequencer](../sequencer/readme.md) §3.3: a
+take lands in scalar ticks, in the notes format parts share, with the
+output latency taken off its notes as it lands, so it follows a tempo
+edit and copies into a part. A notes file with `sample_rate:` is a take
+recorded before that, and plays as recorded.
+
 ### 12.2 The entry is `record:` with an instrument (DECIDED)
 
 ```yaml
@@ -1114,6 +1120,11 @@ daemon listened to, in place of an audio take's `device` and `input`:
 with what they hear, which runs behind the playhead by the output
 latency, and MIDI has no input latency worth the name. Placement
 subtracts it exactly as it does an audio take's.
+
+Changed on 2026-10-15 by [sequencer](../sequencer/readme.md) §3.4: the
+instrument is the track's `instrument:`, and `record:` stays bare. The
+track's instrument decides the kind of take, as the entry's did, and
+`field check` refuses `instrument:` under `record:`.
 
 ### 12.3 Field's renderer builds the score (DECIDED)
 

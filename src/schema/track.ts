@@ -24,7 +24,10 @@ import { recordEntrySchema } from './record.js';
 // `record:` is the generative pattern with a human where the model was
 // (recording.md §1): its takes live beside the audio under the record
 // node's name, `field record` fills them, and an entry with none yet
-// builds as silence rather than refusing (§4).
+// builds as silence rather than refusing (§4). `notes:` places a part,
+// a notes file under songs/<song>/notes/, and renders it through the
+// track's `instrument` as a gen node, as a MIDI take renders
+// (sequencer.md §2.3).
 //
 // Placement fields are uniform across kinds, because none of them means
 // something different depending on what produced the audio. A window is
@@ -84,6 +87,7 @@ const inputEntryFields = z
     supercollider: supercolliderEntrySchema.optional(), // an inline render
     generative: generativeEntrySchema.optional(), // a deliberate request
     record: recordEntrySchema.optional(), // a performance to record (recording.md §4)
+    notes: slug.optional(), // a part: songs/<song>/notes/<name>.yaml (sequencer.md §2.3)
     receive: labelName.optional(), // a cable's label (nested-tracks.md §19)
     anchor: z.enum(['musical', 'absolute']).default('musical'),
     // Omitted means the track's start — the leaf case reads as bare
@@ -121,6 +125,7 @@ const inputEntryFields = z
       entry.supercollider,
       entry.generative,
       entry.record,
+      entry.notes,
       entry.receive,
     ].filter((v) => v !== undefined);
     if (kinds.length !== 1) {
@@ -128,7 +133,7 @@ const inputEntryFields = z
         code: 'custom',
         message:
           'an entry plays exactly one thing — name it with track:, audio:, ' +
-          'supercollider:, generative:, record:, or receive:',
+          'supercollider:, generative:, record:, notes:, or receive:',
       });
     }
     // A take is placed where it was sung (recording.md §3); tiling it
@@ -157,6 +162,7 @@ export const inputEntryOrder: KeyOrder = {
     'supercollider',
     'generative',
     'record',
+    'notes',
     'receive',
     'anchor',
     'at',
@@ -245,6 +251,11 @@ export type TrackTime = z.infer<typeof trackTimeSchema>;
 
 export const trackSchema = z.strictObject({
   name: labelName,
+  // The program the track's notes play through (sequencer.md §3.4): its
+  // parts, its MIDI takes, and `field keys` on the track. It decides the
+  // kind of take `record:` records, MIDI with one and audio without. It
+  // resolves as `field keys` resolves an instrument.
+  instrument: z.string().min(1).optional(),
   // The rate this track renders at (multi-rate.md decision 3). Omitted
   // means the project's — the same inheritance shape as `time:`, and from
   // the song for the same reason: a track may have two parents and
@@ -268,7 +279,7 @@ export type Track = Omit<TrackFile, 'inputs'> & {
   inputs: InputEntry[];
 };
 export const trackOrder: KeyOrder = {
-  keys: ['name', 'rate', 'time', 'inserts', 'sends', 'inputs'],
+  keys: ['name', 'instrument', 'rate', 'time', 'inserts', 'sends', 'inputs'],
   children: {
     // The labels are the author's; only the values have known keys.
     sends: { entries: { keys: ['gain_db', 'tap'] } },

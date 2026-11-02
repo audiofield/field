@@ -28,7 +28,7 @@ beforeEach(() => {
   createTrack(root, 'tall-grass', 'gtr');
   writeTrack('creek', 'vox', ['inputs:', '  - record:']);
   writeTrack('creek', 'vox2', ['inputs:', '  - record:']);
-  writeTrack('creek', 'keys', ['inputs:', '  - record:', '      instrument: juno']);
+  writeTrack('creek', 'keys', ['instrument: juno', 'inputs:', '  - record:']);
   writeTrack('tall-grass', 'gtr', ['inputs:', '  - record:']);
 });
 

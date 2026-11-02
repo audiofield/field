@@ -53,6 +53,34 @@ describe('TempoMap', () => {
     expect(map.ticksToSamples(PPQ)).toBe(48000);
   });
 
+  it('measures the seconds between two ticks across changes and ramps', () => {
+    const map = new TempoMap(
+      [
+        { at: 0, bpm: 120 },
+        { at: PPQ * 4, bpm: 60, ramp: 'linear' },
+        { at: PPQ * 8, bpm: 120 },
+      ],
+      48000,
+    );
+    for (const [from, to] of [
+      [0, PPQ],
+      [PPQ * 2, PPQ * 5],
+      [PPQ * 5, PPQ * 7],
+      [PPQ * 3, PPQ * 10],
+      [PPQ, PPQ],
+    ] as const) {
+      expect(map.secondsBetween(from, to)).toBeCloseTo(map.ticksToSeconds(to) - map.ticksToSeconds(from), 9);
+    }
+  });
+
+  it('gives a span in a steady segment the same seconds wherever it starts', () => {
+    const map = new TempoMap([{ at: 0, bpm: 96 }], 48000);
+    const span = map.secondsBetween(0, 2);
+    for (let bar = 1; bar < 256; bar++) {
+      expect(map.secondsBetween(bar * 3840, bar * 3840 + 2)).toBe(span);
+    }
+  });
+
   it('rejects invalid maps', () => {
     expect(() => new TempoMap([], 48000)).toThrow();
     expect(() => new TempoMap([{ at: 100, bpm: 120 }], 48000)).toThrow('tick 0');

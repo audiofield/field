@@ -308,7 +308,7 @@ describe.skipIf(!binary)('several armed tracks through the daemon', () => {
       createTrack(root, 'creek', 'keys');
       writeFileSync(join(root, 'shared/instruments/pad.scd'), '// a voice\n');
       writeFileSync(join(root, 'songs/creek/tracks/vox.yaml'), 'name: vox\ninputs:\n  - record:\n');
-      writeFileSync(join(root, 'songs/creek/tracks/keys.yaml'), 'name: keys\ninputs:\n  - record:\n      instrument: pad\n');
+      writeFileSync(join(root, 'songs/creek/tracks/keys.yaml'), 'name: keys\ninstrument: pad\ninputs:\n  - record:\n');
       writeFileSync(
         join(root, 'songs/creek/tracks/main.yaml'),
         ['name: main', 'inputs:', '  - audio: tone', '    anchor: absolute', '    at: 0', ''].join('\n'),

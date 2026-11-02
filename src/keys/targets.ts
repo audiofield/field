@@ -57,13 +57,13 @@ function describeShelf(root: string): string {
 }
 
 // What `field keys` plays (arming.md §2.1): each instrument it was given
-// by program, and each MIDI track it was given or found under a track it
-// was given, all at once.
+// by program, and each track with an instrument it was given or found
+// under a track it was given, all at once.
 export interface ArmedInstrument {
   program: string; // absolute path to the instrument's program
-  track?: string; // the MIDI track it plays for, `song/track`
+  track?: string; // the track it plays for, `song/track`
   // Tracks above the one named, the one named, and those down to the
-  // MIDI track, top-down, whose inserts the
+  // track it plays for, top-down, whose inserts the
   // voice does not pass through yet (live-supercollider.md).
   unheardEffects: string[];
 }
@@ -95,26 +95,26 @@ export function resolveKeysTargets(targets: string[], cwd = process.cwd()): Arme
     const { song: songName, track } = resolveRecordTarget(root, target);
     const project = loadProject(root);
     const song = project.songs.find((s) => s.name === songName)!;
-    const found = midiTracksUnder(song, track);
+    const found = instrumentTracksUnder(song, track);
     if (found.length === 0) {
       throw new Error(
-        `field keys ${target}: no MIDI track there — a MIDI track is one whose record entry names an ` +
-          'instrument (instrument: under record:), on the track or on a track under it',
+        `field keys ${target}: no instrument there — give the track one with \`instrument: <name>\`, ` +
+          'or name a track under it that has one',
       );
     }
     if (found.length > 1) {
       throw new Error(
-        `field keys ${target}: ${found.length} MIDI tracks are under ${track}, and field keys plays the ` +
-          `ones you name: ${found.map((f) => `${songName}/track:${f.track}`).join(', ')}`,
+        `field keys ${target}: ${found.length} tracks with instruments are under ${track}, and field keys ` +
+          `plays the ones you name: ${found.map((f) => `${songName}/track:${f.track}`).join(', ')}`,
       );
     }
     // resolveRecordTarget loads a valid project, and validation already
     // refuses an instrument with no program.
-    const [midi] = found as [MidiTrack];
+    const [played] = found as [InstrumentTrack];
     add({
-      program: instrumentPath(midi.instrument, root),
-      track: `${songName}/${midi.track}`,
-      unheardEffects: [...new Set([...effectsAbove(song, track), ...midi.effects])],
+      program: instrumentPath(played.instrument, root),
+      track: `${songName}/${played.track}`,
+      unheardEffects: [...new Set([...effectsAbove(song, track), ...played.effects])],
     });
   }
   return [...armed.values()];
@@ -141,23 +141,23 @@ function effectsAbove(song: LoadedSong, name: string): string[] {
   return [...found];
 }
 
-interface MidiTrack {
+interface InstrumentTrack {
   track: string;
   instrument: string;
   effects: string[]; // tracks on the way down, this one included, that have inserts
 }
 
-// The named track itself when its record entry names an instrument;
-// otherwise every such track under it, down its `track:` inputs, once
-// each however many paths reach it, with the effects of all of them.
-function midiTracksUnder(song: LoadedSong, name: string): MidiTrack[] {
+// The named track itself when it has an instrument; otherwise every such
+// track under it, down its `track:` inputs, once each however many paths
+// reach it, with the effects of all of them.
+function instrumentTracksUnder(song: LoadedSong, name: string): InstrumentTrack[] {
   const byName = new Map(song.tracks.map((t) => [t.data.name, t.data]));
-  const found = new Map<string, MidiTrack>();
+  const found = new Map<string, InstrumentTrack>();
   const visit = (trackName: string, above: string[], path: Set<string>): void => {
     const track = byName.get(trackName);
     if (track === undefined || path.has(trackName)) return;
     const effects = track.inserts.length > 0 ? [...above, trackName] : above;
-    const instrument = track.inputs.find((e) => e.record?.instrument !== undefined)?.record?.instrument;
+    const instrument = track.instrument;
     if (instrument !== undefined) {
       const earlier = found.get(trackName);
       found.set(trackName, {

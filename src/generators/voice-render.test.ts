@@ -7,18 +7,21 @@ import type { MidiTake } from '../audiod/protocol.js';
 import { buildLabels, explainLabel } from '../commands/build.js';
 import { createSong, createTrack } from '../commands/create.js';
 import { init } from '../commands/init.js';
+import { appendLedgerRow, openLedger } from '../commands/import.js';
 import { landMidiTake } from '../commands/land.js';
 import type { GeneratorRunner } from '../graph/build.js';
 import { withTakes } from '../graph/graph.js';
+import { sha256Text } from '../hash.js';
 import { genRef } from '../labels.js';
 import { loadProject } from '../model/project.js';
 import { TempoMap } from '../time/tempo.js';
 import { RELEASE_TAIL_SECONDS } from './voice-render.js';
 
-// A recorded MIDI take in the build (keyboard-instrument.md §12.3): the
-// graph mints a voice-render node for the record entry, keyed on the
-// notes file, the instrument, and Field's own harness, and the track
-// places its render where the take was played.
+// A recorded MIDI take in the build (keyboard-instrument.md §12.3,
+// sequencer.md §2.4): the graph mints a voice-render node for the record
+// entry, keyed on the take, its resolved events, the instrument, and
+// Field's own harness, and the track places its render where the take
+// starts.
 
 let root: string;
 const GEN = '//songs/creek/gen:keys';
@@ -29,7 +32,7 @@ beforeEach(async () => {
   createSong(root, 'creek');
   createTrack(root, 'creek', 'keys');
   writeFileSync(join(root, 'shared/instruments/pad.scd'), VOICE);
-  writeFileSync(join(root, 'songs/creek/tracks/keys.yaml'), 'name: keys\ninputs:\n  - record:\n      instrument: pad\n');
+  writeFileSync(join(root, 'songs/creek/tracks/keys.yaml'), 'name: keys\ninstrument: pad\ninputs:\n  - record:\n');
   await landMidiTake(root, midiTransaction());
 });
 
@@ -44,6 +47,14 @@ const HELD = [
   { at: 12000, midi: [128, 69, 0] },
   { at: 12000, midi: [144, 72, 80] },
 ];
+
+// Where the graph places the keys track's chosen take under the song's
+// current tempo.
+function placedAt(): unknown[] {
+  const song = loadProject(root).songs.find((s) => s.name === 'creek')!;
+  const track = song.tracks.find((t) => t.data.name === 'keys')!.data;
+  return withTakes(track, song, new TempoMap(song.time!.tempo, 48000), 48000, () => 48000).inputs;
+}
 
 function midiTransaction(id = 'take-20261010-120000', placed: Partial<MidiTake> = {}, lines = HELD): MidiTake {
   const dir = join(root, '.field', 'recording', id);
@@ -93,16 +104,77 @@ describe('voice-render in the graph', () => {
     ]);
   });
 
-  it('places the render where the take was played, less the output latency', async () => {
-    // Half a second into the track, with 128 samples of output latency:
-    // the render starts 128 samples earlier, where the player heard it.
+  it('places the render where the take started, and follows a tempo edit there', async () => {
+    // Half a second into the track, beat 2 at 120 bpm, with 128 samples
+    // of output latency: the latency comes off the notes, and the take
+    // starts where the capture did.
     await landMidiTake(root, midiTransaction('take-20261010-120100', { started_at_samples: 24000, output_latency: 128 }));
-    const song = loadProject(root).songs.find((s) => s.name === 'creek')!;
-    const track = song.tracks.find((t) => t.data.name === 'keys')!.data;
-    const placed = withTakes(track, song, new TempoMap(song.time!.tempo, 48000), 48000, () => 48000);
-    expect(placed.inputs).toEqual([
-      expect.objectContaining({ audio: genRef('keys'), anchor: 'absolute', at: 24000 - 128, source_offset: 0 }),
-    ]);
+    expect(placedAt()).toEqual([expect.objectContaining({ audio: genRef('keys'), anchor: 'absolute', at: 24000, source_offset: 0 })]);
+    const events = async (): Promise<unknown> => ((await explainLabel(root, GEN)).parameters as { events: unknown }).events;
+    // The A pressed at the take's start ends a quarter second later, as heard.
+    expect(await events()).toMatchObject({ sample_rate: 48000, notes: [{ at: 0, length: 12000 - 125, note: 69 }, { at: 12000 - 125 }] });
+
+    // At 60 bpm beat 2 is a second in, and every note is twice as long.
+    const songYaml = join(root, 'songs/creek/song.yaml');
+    writeFileSync(songYaml, readFileSync(songYaml, 'utf8').replace('bpm: 120', 'bpm: 60'));
+    expect(placedAt()).toEqual([expect.objectContaining({ at: 48000 })]);
+    expect(await events()).toMatchObject({ notes: [{ at: 0, length: 24000 - 250, note: 69 }, { at: 24000 - 250 }] });
+  });
+
+  it('moves with its record entry by the same musical distance, and keeps its notes on their beats there', async () => {
+    // Beat 2 of the entry's first bar, at 120 bpm.
+    const landed = await landMidiTake(root, midiTransaction('take-20261010-120200', { started_at_samples: 24000 }));
+    expect(landed.row).toMatchObject({ started_at_samples: 24000, started_at_ticks: 960, musical_position: [1, 2] });
+    const events = async (): Promise<unknown> => ((await explainLabel(root, GEN)).parameters as { events: unknown }).events;
+    const before = await events();
+
+    // Two bars later, the take starts on beat 2 of bar 3, and plays as it did.
+    writeFileSync(join(root, 'songs/creek/tracks/keys.yaml'), 'name: keys\ninstrument: pad\ninputs:\n  - record:\n    at: [3]\n');
+    expect(placedAt()).toEqual([expect.objectContaining({ audio: genRef('keys'), at: 2 * 96000 + 24000 })]);
+    expect(await events()).toEqual(before);
+
+    // At 60 bpm a bar is four seconds, and beat 2 is a second into it.
+    const songYaml = join(root, 'songs/creek/song.yaml');
+    writeFileSync(songYaml, readFileSync(songYaml, 'utf8').replace('bpm: 120', 'bpm: 60'));
+    expect(placedAt()).toEqual([expect.objectContaining({ at: 2 * 4 * 48000 + 48000 })]);
+    expect(await events()).toMatchObject({ notes: [{ at: 0, length: 24000, note: 69 }, { at: 24000 }] });
+  });
+
+  it('plays a take recorded in samples as it was recorded, wherever the tempo goes', async () => {
+    // A take written before takes landed in ticks: samples at its rate,
+    // placed by its row, less the output latency, as an audio take is.
+    const name = 'take-20261010-110000';
+    const file = `audio/keys/${name}.notes.yaml`;
+    const text = 'sample_rate: 48000\nlength: 24000\nnotes:\n  - { at: 0, length: 12000, note: 69, velocity: 100 }\ncontrols: []\nbends: []\n';
+    writeFileSync(join(root, 'songs/creek', file), text);
+    const songDir = join(root, 'songs/creek');
+    const { doc } = openLedger(songDir);
+    appendLedgerRow(songDir, doc, { name, file, sha256: sha256Text(text), bytes: Buffer.byteLength(text) });
+    writeFileSync(
+      join(songDir, 'audio/keys/takes.yaml'),
+      [
+        'record: keys',
+        `chosen: ${name}`,
+        'takes:',
+        `  - asset: ${name}`,
+        '    started_at_samples: 24000',
+        '    musical_position: [1, 2]',
+        '    latency: 128',
+        '    sources: [Field Keys]',
+        '    recorded_at: 2026-10-10T11:00:00.000-04:00',
+        '',
+      ].join('\n'),
+    );
+    const e = await explainLabel(root, GEN);
+    expect(e.inputs[0]!.label).toBe(`//songs/creek/asset:${name}`);
+    expect(e.parameters).toMatchObject({
+      events: { sample_rate: 48000, length: 24000, notes: [{ at: 0, length: 12000, note: 69, velocity: 100 }] },
+    });
+    expect(placedAt()).toEqual([expect.objectContaining({ at: 24000 - 128 })]);
+    const songYaml = join(root, 'songs/creek/song.yaml');
+    writeFileSync(songYaml, readFileSync(songYaml, 'utf8').replace('bpm: 120', 'bpm: 60'));
+    expect(placedAt()).toEqual([expect.objectContaining({ at: 24000 - 128 })]);
+    expect((await explainLabel(root, GEN)).actionKey).toBe(e.actionKey);
   });
 
   it('renders once, caches, and re-renders when the instrument changes', async () => {
@@ -262,7 +334,7 @@ describe.skipIf(!sclangPresent)('voice-render through real sclang', () => {
       );
       writeFileSync(
         join(root, 'songs/creek/tracks/keys.yaml'),
-        `name: keys\ninputs:\n  - record:\n      instrument: ${instrument}\n`,
+        `name: keys\ninstrument: ${instrument}\ninputs:\n  - record:\n`,
       );
       const wav = readWav(built(await buildLabels(root, [GEN]), GEN).outputPath!);
       expect(wav.channels[0]!.some((s) => s !== 0)).toBe(true);

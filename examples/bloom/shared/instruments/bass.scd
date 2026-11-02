@@ -7,7 +7,7 @@
 //
 // Under FIELD_MODE=voice its value is one voice, gated, which `field keys
 // bass` plays, with the mod wheel opening its filter (§14) and the knobs
-// in bass.knobs.yaml, and a record entry with `instrument: bass` renders
+// in bass.knobs.yaml, and a track with `instrument: bass` renders
 // (keyboard-instrument.md §2.6). It plays at true pitch, so press Z in
 // musical to drop an octave. Otherwise it runs under Field's
 // sc-render contract and renders offset's sequence from sessions/juno.scd,

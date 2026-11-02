@@ -10,6 +10,8 @@ import { readWavHeader } from '../audio/wav.js';
 import { convertRefName, genRef, genRefName, recordRef, tapRefName, trackRef, trackRefName } from '../labels.js';
 import type { EffectInsert, InputEntry, Track } from '../schema/index.js';
 import { isHostedInsert } from '../schema/index.js';
+import type { NotesFile, ResolvedNotes } from '../schema/notes.js';
+import { placementAnchor, resolveNotes, type NotesTime } from '../time/notes.js';
 import type { TempoMap } from '../time/tempo.js';
 import type { Generator } from './types.js';
 
@@ -33,6 +35,18 @@ export function generatorName(entry: InputEntry, owner: string): string {
   return entry.id !== undefined ? `${owner}-${entry.id}` : owner;
 }
 
+// The entries that mint a gen node, and so take a generator name: a
+// render, a request, a record entry, and a part, which renders through
+// the track's instrument.
+export function mintsGenerator(entry: InputEntry): boolean {
+  return (
+    entry.supercollider !== undefined ||
+    entry.generative !== undefined ||
+    entry.record !== undefined ||
+    entry.notes !== undefined
+  );
+}
+
 // The wiring ref an entry contributes to `sources`: kind-in-field in the
 // file (nested-tracks.md §18) flattens to one string here — `audio:`
 // names pass through (bare, or the //shared/asset: label), a `track:`
@@ -43,7 +57,7 @@ export function generatorName(entry: InputEntry, owner: string): string {
 // action key: refs are wiring, and the resolved plan is what hashes.
 export function entryRef(entry: InputEntry, owner: string): string {
   if (entry.track !== undefined) return trackRef(entry.track);
-  if (entry.supercollider !== undefined || entry.generative !== undefined) {
+  if (entry.supercollider !== undefined || entry.generative !== undefined || entry.notes !== undefined) {
     return genRef(generatorName(entry, owner));
   }
   if (entry.record !== undefined) return recordRef(generatorName(entry, owner));
@@ -58,7 +72,7 @@ export function entryLabel(entry: InputEntry): string {
   if (entry.supercollider !== undefined) return 'supercollider';
   if (entry.generative !== undefined) return 'generative';
   if (entry.record !== undefined) return 'record';
-  return entry.track ?? entry.audio ?? '?';
+  return entry.track ?? entry.audio ?? entry.notes ?? '?';
 }
 
 export interface PlacedClip {
@@ -180,6 +194,72 @@ export function placedWindow(
   return { start, duration: tempoMap.ticksToSamples(entry.at + entry.duration) - start };
 }
 
+// The window a loop tiles, in samples. Every repetition has a concrete
+// window: a loop tiles a window, so a looping entry declares a duration
+// even though an ordinary one need not (schema/track.ts). `check`
+// refuses the combination by name; this is the guard for anything that
+// reaches the planner another way.
+function loopWindow(entry: InputEntry, tempoMap: TempoMap): { start: number; end: number } {
+  const { start, duration } = placedWindow(entry, tempoMap);
+  if (duration === undefined) {
+    throw new Error(
+      `input "${entryLabel(entry)}" loops but declares no duration — a loop tiles a window`,
+    );
+  }
+  return { start, end: start + duration };
+}
+
+function anchorSample(entry: InputEntry, at: number, tempoMap: TempoMap): number {
+  return entry.anchor === 'absolute' ? at : tempoMap.ticksToSamples(at);
+}
+
+// Where each repetition of a loop with `every` starts, in the entry's
+// anchor units (clip-looping.md decision 3): ticks on a musical entry,
+// so the repetitions stay on the grid straight through tempo ramps, and
+// samples on an absolute one.
+export function loopStarts(entry: InputEntry, every: number, tempoMap: TempoMap): number[] {
+  const { end } = loopWindow(entry, tempoMap);
+  const starts: number[] = [];
+  for (let at = entry.at; anchorSample(entry, at, tempoMap) < end; at += every) starts.push(at);
+  return starts;
+}
+
+// What a placed part renders (sequencer.md §9). Each repetition of its
+// loop resolves where the repetition starts, as the part placed there by
+// hand would, so a tempo or meter change reaches the repetitions after
+// it. Repetitions that resolve alike play one render. The first render
+// takes the entry's generator name, and each other one that name and
+// the number of the first repetition that plays it, `<name>-<n>`.
+// `repetitions` names the render each repetition plays, in order.
+export function partRenders(
+  file: NotesFile,
+  entry: InputEntry,
+  name: string,
+  time: NotesTime,
+): { renders: { name: string; events: ResolvedNotes }[]; repetitions: string[] } {
+  const starts =
+    entry.loop?.enabled && entry.loop.every !== undefined ? loopStarts(entry, entry.loop.every, time.tempo) : [entry.at];
+  const renders: { name: string; events: ResolvedNotes }[] = [];
+  const renderByEvents = new Map<string, string>();
+  const repetitions = starts.map((at, k) => {
+    let events: ResolvedNotes;
+    try {
+      events = resolveNotes(file, placementAnchor({ anchor: entry.anchor, at }, time.tempo), time);
+    } catch (err) {
+      throw k === 0 ? err : new Error(`at repetition ${k + 1} of its loop: ${(err as Error).message}`);
+    }
+    const key = JSON.stringify(events);
+    let render = renderByEvents.get(key);
+    if (render === undefined) {
+      render = k === 0 ? name : `${name}-${k + 1}`;
+      renderByEvents.set(key, render);
+      renders.push({ name: render, events });
+    }
+    return render;
+  });
+  return { renders, repetitions };
+}
+
 // A placed track's window, projected the same way — the child's origin
 // Loop expansion (clip-looping.md §1.6): a looped entry becomes the same
 // resolved per-repetition windows equivalent hand-written entries would
@@ -199,29 +279,13 @@ export function expandLoop(
   // caller, validate included, which is all of them until a conversion
   // is in play.
   readOffset: number = entry.source_offset - entry.slip,
-  // Every repetition has a concrete window: a loop tiles a window, so a
-  // looping entry declares a duration even though an ordinary one need not
-  // (schema/track.ts). `check` refuses the combination by name; this is
-  // the guard for anything that reaches the planner another way.
 ): Omit<RenderedClip, 'input'>[] {
-  const { start, duration } = placedWindow(entry, tempoMap);
-  if (duration === undefined) {
-    throw new Error(
-      `input "${entryLabel(entry)}" loops but declares no duration — a loop tiles a window`,
-    );
-  }
-  const windowEnd = start + duration;
+  const { start, end: windowEnd } = loopWindow(entry, tempoMap);
 
   // Repetition boundaries on the stem timeline, in samples.
   const bounds: number[] = [];
   if (loop.every !== undefined) {
-    // Anchor units, like at/duration: musical loops repeat on the
-    // grid straight through tempo ramps.
-    for (let at = entry.at; ; at += loop.every) {
-      const sample = entry.anchor === 'absolute' ? at : tempoMap.ticksToSamples(at);
-      if (sample >= windowEnd) break;
-      bounds.push(sample);
-    }
+    bounds.push(...loopStarts(entry, loop.every, tempoMap).map((at) => anchorSample(entry, at, tempoMap)));
   } else {
     // Tile at the source's own length. A buildable's length is unknown at
     // plan time (validate already demands `every` there); an asset whose
@@ -293,10 +357,19 @@ export function planTrack(
   // track by the graph, so built-in-only chains' specs (and therefore
   // their action keys) never learn plugins exist.
   hosted?: HostedTrackContext,
+  // The render each repetition of a placed part plays, by the entry's
+  // ref (partRenders).
+  repetitionRefs: Map<string, string[]> = new Map(),
 ): StemSpec {
-  const refFor = (e: InputEntry): string => {
+  const converted = (raw: string): string => convertBySource.get(raw)?.ref ?? raw;
+  const refFor = (e: InputEntry): string => converted(entryRef(e, track.name));
+  const repetitionRef = (e: InputEntry, k: number): string => {
     const raw = entryRef(e, track.name);
-    return convertBySource.get(raw)?.ref ?? raw;
+    return converted(repetitionRefs.get(raw)?.[k] ?? raw);
+  };
+  const refsOf = (e: InputEntry): string[] => {
+    const raw = entryRef(e, track.name);
+    return (repetitionRefs.get(raw) ?? [raw]).map(converted);
   };
   const readOffsetFor = (e: InputEntry): number => {
     const scale = convertBySource.get(entryRef(e, track.name))?.scale ?? 1;
@@ -313,7 +386,7 @@ export function planTrack(
   // for the same reason they do. A converted source is buildable however
   // committed its origin: the stem's input is the conversion's output,
   // whose bytes do not exist until it runs.
-  const refs = [...new Set([...placeable.map(refFor), ...cables.map(cableRefFor)])];
+  const refs = [...new Set([...placeable.flatMap(refsOf), ...cables.map(cableRefFor)])];
   const committed = refs
     .filter((r) => sha256BySource.has(r))
     .sort((a, b) => {
@@ -344,8 +417,8 @@ export function planTrack(
     const loop = entry.loop?.enabled ? entry.loop : undefined;
     if (loop) {
       const frames = framesBySource.get(refFor(entry));
-      return expandLoop(entry, loop, tempoMap, frames, readOffsetFor(entry)).map((rep) => ({
-        input,
+      return expandLoop(entry, loop, tempoMap, frames, readOffsetFor(entry)).map((rep, k) => ({
+        input: inputIndex.get(repetitionRef(entry, k))!,
         ...rep,
       }));
     }

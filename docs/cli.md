@@ -431,10 +431,10 @@ and you monitor in your interface's mixer.
 
 Name several tracks to record them in one pass, audio, MIDI, or both:
 every take starts on the same sample and lands on its own track. A
-track whose record entry names an instrument records MIDI
-([keys.md](keys.md#record-what-you-play)). The audio tracks take
-`--input` channels in the order you name them, 1, 2, and on when you
-give none; `--loop` records one track only:
+track with an `instrument:` records MIDI
+([keys.md](keys.md#record-what-you-play)), and lands it in ticks. The
+audio tracks take `--input` channels in the order you name them, 1, 2,
+and on when you give none; `--loop` records one track only:
 
 ```sh
 field record tall-grass/track:vocal tall-grass/track:guitar tall-grass/track:keys --input 1,2
@@ -685,7 +685,7 @@ amended. Porting the rest is tracked there and in
 | `field transport <op>` | drive the running daemon |
 | `field ui <song>` | open a song in the UI window, served on `127.0.0.1` |
 | `field record <tracks...>` | record a take onto each track's `record:` entry, in one pass |
-| `field keys [targets...]` | play the keyboard as a MIDI source, and instruments or MIDI tracks from it |
+| `field keys [targets...]` | play the keyboard as a MIDI source, and instruments or the tracks that have them from it |
 | `field login` | log in to a remote and store the token |
 | `field logout` | forget the stored token |
 | `field clone <owner>/<project> [dir]` | clone a project and warm the build cache |

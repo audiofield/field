@@ -376,17 +376,16 @@ describe('landMidiTake', () => {
     writeFileSync(join(root, 'shared/instruments/pad.scd'), '// a voice\n');
   });
 
-  it('writes the notes file, pins it, and places the take by the output latency alone', async () => {
+  it('writes the take in ticks from where it started on the track, pins it, and chooses it', async () => {
     createTrack(root, 'creek', 'keys');
     // keys sits at bar 5 (384000 samples), so a take started at song
-    // sample 432000 begins one second into the track; only the output's
-    // 128 samples pull it back, because the player kept time with what
-    // they heard.
+    // sample 432000 begins one second into the track: beat 3 of keys' own
+    // bar 1, and 1920 ticks at 120 bpm.
     writeTrack('main', ['inputs:', '  - track: keys', '    at: [5]']);
-    writeTrack('keys', ['inputs:', '  - record:', '      instrument: pad']);
+    writeTrack('keys', ['instrument: pad', 'inputs:', '  - record:']);
     const manifest = writeMidiTransaction(
       'take-20261010-100000',
-      { track: '//songs/creek/track:keys', started_at_samples: 432000, output_latency: 128 },
+      { track: '//songs/creek/track:keys', started_at_samples: 432000 },
       [
         { at: 0, midi: [144, 60, 100] },
         { at: 6000, midi: [176, 64, 127] },
@@ -399,7 +398,7 @@ describe('landMidiTake', () => {
     expect(landed).toMatchObject({
       node: 'keys',
       file: 'audio/keys/take-20261010-100000.notes.yaml',
-      placedAt: 48000 - 128,
+      placedAt: 48000,
       frames: 48000,
       sampleRate: 48000,
       events: 4,
@@ -407,21 +406,21 @@ describe('landMidiTake', () => {
     expect(landed.row).toEqual({
       asset: 'take-20261010-100000',
       started_at_samples: 48000,
-      musical_position: [5, 3],
-      latency: 128,
+      started_at_ticks: 1920,
+      musical_position: [1, 3],
+      latency: 0,
       sources: ['Field Keys'],
       recorded_at: '2026-10-10T10:00:00.000-04:00',
     });
     expect(readFileSync(join(root, 'songs/creek/audio/keys/take-20261010-100000.notes.yaml'), 'utf8')).toBe(
       [
-        'sample_rate: 48000',
-        'length: 48000',
+        'length: 1920',
         'notes:',
-        '  - { at: 0, length: 24000, note: 60, velocity: 100 }',
+        '  - {at: 0, length: 960, note: 60, velocity: 100}',
         // Still held when the take stopped: it lasts to the end.
-        '  - { at: 12000, length: 36000, note: 64, velocity: 90 }',
+        '  - {at: 480, length: 1440, note: 64, velocity: 90}',
         'controls:',
-        '  - { at: 6000, cc: 64, value: 127 }',
+        '  - {at: 240, cc: 64, value: 127}',
         'bends: []',
         '',
       ].join('\n'),
@@ -435,40 +434,129 @@ describe('landMidiTake', () => {
     expect((await check(root)).diagnostics).toEqual([]);
   });
 
-  it('refuses a take of the other kind than the entry records', async () => {
+  it('counts started_at_ticks from the tick its record entry starts on', async () => {
+    createTrack(root, 'creek', 'keys');
+    writeTrack('keys', ['instrument: pad', 'inputs:', '  - record:', '    at: [3]']);
+    // Beat 3 of bar 3 is two beats after the entry's at.
+    const landed = await landAnyTake(
+      root,
+      writeMidiTransaction('take-20261010-100030', { track: '//songs/creek/track:keys', started_at_samples: 2 * 96000 + 48000 }, [
+        { at: 0, midi: [144, 60, 100] },
+        { at: 12000, midi: [128, 60, 0] },
+      ]),
+    );
+    expect(landed).toMatchObject({
+      placedAt: 2 * 96000 + 48000,
+      row: { started_at_samples: 48000, started_at_ticks: 1920, musical_position: [3, 3] },
+    });
+  });
+
+  it('takes the output latency off every note, and starts a note pressed that early with the take', async () => {
+    createTrack(root, 'creek', 'keys');
+    writeTrack('keys', ['instrument: pad', 'inputs:', '  - record:']);
+    // 600 samples of output latency is 24 ticks at 120 bpm: the player
+    // heard the playhead that late, so each note lands that much earlier.
+    const landed = await landAnyTake(
+      root,
+      writeMidiTransaction('take-20261010-100050', { track: '//songs/creek/track:keys', started_at_samples: 96000, output_latency: 600 }, [
+        { at: 0, midi: [144, 60, 100] }, // heard before the take began
+        { at: 100, midi: [144, 72, 80] }, // ended before the take began
+        { at: 500, midi: [128, 72, 0] },
+        { at: 12600, midi: [144, 64, 90] },
+        { at: 24600, midi: [128, 60, 0] },
+        { at: 36600, midi: [128, 64, 0] },
+      ]),
+    );
+    // The take starts where the capture did, at bar 2, which is where
+    // its notes count from.
+    expect(landed).toMatchObject({ placedAt: 96000, row: { musical_position: [2], latency: 600 } });
+    expect(readFileSync(join(root, 'songs/creek', landed.file), 'utf8')).toBe(
+      [
+        'length: 1896',
+        'notes:',
+        '  - {at: 0, length: 960, note: 60, velocity: 100}',
+        '  - {at: 480, length: 960, note: 64, velocity: 90}',
+        'controls: []',
+        'bends: []',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it('drops a note that ended before its track starts, and starts one still sounding there with the track', async () => {
+    createTrack(root, 'creek', 'keys');
+    // keys sits at bar 5, 384000 samples into the song, and the take starts
+    // 96000 samples before that.
+    writeTrack('main', ['inputs:', '  - track: keys', '    at: [5]']);
+    writeTrack('keys', ['instrument: pad', 'inputs:', '  - record:']);
+    const landed = await landAnyTake(
+      root,
+      writeMidiTransaction('take-20261010-100060', { track: '//songs/creek/track:keys', started_at_samples: 288000, frames: 192000 }, [
+        { at: 0, midi: [144, 60, 100] }, // over 48000 samples before the track starts
+        { at: 48000, midi: [128, 60, 0] },
+        { at: 72000, midi: [144, 62, 100] }, // over exactly as the track starts
+        { at: 96000, midi: [128, 62, 0] },
+        { at: 84000, midi: [144, 64, 90] }, // sounds across the track's start
+        { at: 120000, midi: [128, 64, 0] },
+        { at: 144000, midi: [144, 67, 80] }, // inside the track
+        { at: 168000, midi: [128, 67, 0] },
+      ]),
+    );
+    expect(readFileSync(join(root, 'songs/creek', landed.file), 'utf8')).toBe(
+      [
+        'length: 3840',
+        'notes:',
+        '  - {at: 0, length: 0, note: 62, velocity: 100}',
+        '  - {at: 0, length: 960, note: 64, velocity: 90}',
+        '  - {at: 1920, length: 960, note: 67, velocity: 80}',
+        'controls: []',
+        'bends: []',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it('refuses a take of the other kind than the track records', async () => {
     createTrack(root, 'creek', 'keys');
     writeTrack('keys', ['inputs:', '  - record:']);
     const midi = writeMidiTransaction('take-20261010-100100', { track: '//songs/creek/track:keys' }, []);
-    await expect(landAnyTake(root, midi)).rejects.toThrow('names no instrument to play it');
+    await expect(landAnyTake(root, midi)).rejects.toThrow('keys has no instrument to play it');
 
-    writeTrack('keys', ['inputs:', '  - record:', '      instrument: pad']);
+    writeTrack('keys', ['instrument: pad', 'inputs:', '  - record:']);
     const audio = writeTransaction('take-20261010-100200', { track: '//songs/creek/track:keys' });
     await expect(landAnyTake(root, audio)).rejects.toThrow('records MIDI for pad');
   });
 
   it('check refuses a missing instrument and a take of the wrong kind', async () => {
     createTrack(root, 'creek', 'keys');
-    writeTrack('keys', ['inputs:', '  - record:', '      instrument: pad']);
+    writeTrack('keys', ['instrument: pad', 'inputs:', '  - record:']);
     await landAnyTake(root, writeMidiTransaction('take-20261010-100300', { track: '//songs/creek/track:keys' }, []));
 
     // The instrument resolves by the supercollider rule's path checks.
     const instrumentProblem = async (instrument: string): Promise<string[]> => {
-      writeTrack('keys', ['inputs:', '  - record:', `      instrument: ${instrument}`]);
-      return (await check(root)).diagnostics.map((d) => d.message).filter((m) => m.includes(' instrument '));
+      writeTrack('keys', [`instrument: ${instrument}`, 'inputs:', '  - record:']);
+      return (await check(root)).diagnostics.map((d) => d.message).filter((m) => m.startsWith('instrument '));
     };
-    expect(await instrumentProblem('ghost')).toEqual([
-      'input 1 ("record") instrument file not found: shared/instruments/ghost.scd',
-    ]);
-    expect(await instrumentProblem('../synths/pad')).toEqual([
-      'input 1 ("record") instrument file path escapes the project: ../synths/pad.scd',
-    ]);
+    expect(await instrumentProblem('ghost')).toEqual(['instrument file not found: shared/instruments/ghost.scd']);
+    expect(await instrumentProblem('../synths/pad')).toEqual(['instrument file path escapes the project: ../synths/pad.scd']);
     mkdirSync(join(root, 'shared/instruments/folder.scd'));
-    expect(await instrumentProblem('folder')).toEqual([
-      'input 1 ("record") instrument file is not a regular file: shared/instruments/folder.scd',
-    ]);
+    expect(await instrumentProblem('folder')).toEqual(['instrument file is not a regular file: shared/instruments/folder.scd']);
     writeTrack('keys', ['inputs:', '  - record:']);
     expect((await check(root)).diagnostics.map((d) => d.message)).toContainEqual(
-      expect.stringContaining('take "take-20261010-100300" is a MIDI take'),
+      'take "take-20261010-100300" is a MIDI take, and keys has no instrument to play it',
+    );
+  });
+
+  it('check refuses an instrument on the record entry, naming the move to the track', async () => {
+    createTrack(root, 'creek', 'keys');
+    writeTrack('keys', ['inputs:', '  - record:', '      instrument: pad']);
+    expect((await check(root)).diagnostics).toContainEqual(
+      {
+        file: 'songs/creek/tracks/keys.yaml',
+        message:
+          "the instrument is the track's: move `instrument: pad` up beside the track's `name:`, and leave " +
+          '`- record:` bare (sequencer.md §3.4) at inputs.0.record',
+      },
     );
   });
 });

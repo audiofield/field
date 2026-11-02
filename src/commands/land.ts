@@ -8,9 +8,11 @@ import { generatorName, placedWindow } from '../generators/stem.js';
 import { sha256File } from '../hash.js';
 import { parseLabel, SONG_OUTPUT_NAME } from '../labels.js';
 import { takenSongNames } from '../model/namespace.js';
+import type { TrackTime } from '../graph/graph.js';
 import { loadProject, recordTakesPath, type LoadedProject, type LoadedSong } from '../model/project.js';
 import { recordTakesOrder, recordTakesSchema, type InputEntry, type RecordedTake } from '../schema/index.js';
-import { formatNotesFile, notesFromMessages, type CapturedMessage } from '../schema/notes.js';
+import { formatNotesFile, notesFromMessages, type CapturedMessage, type TimedNotes } from '../schema/notes.js';
+import { entryTick } from '../time/notes.js';
 import { MeterMap, TempoMap } from '../time/tempo.js';
 import { canonicalizeDocument, stringifyDocument } from '../yaml/emit.js';
 import { appendLedgerRow, openLedger } from './import.js';
@@ -31,6 +33,8 @@ export interface RecordNode {
   trackName: string;
   node: string; // the record node: the track's name, or <track>-<id>
   entry: InputEntry;
+  // The track's, which decides the kind of take (sequencer.md §3.4).
+  instrument?: string | undefined;
 }
 
 // The record entry a track carries, resolved from the label a take
@@ -58,7 +62,13 @@ export function recordNodeFor(project: LoadedProject, trackLabel: string): Recor
     );
   }
   const entry = entries[0]!;
-  return { song, trackName: track.data.name, node: generatorName(entry, track.data.name), entry };
+  return {
+    song,
+    trackName: track.data.name,
+    node: generatorName(entry, track.data.name),
+    entry,
+    instrument: track.data.instrument,
+  };
 }
 
 // Where a track's timeline begins on the song's: the sum of the `at`s
@@ -115,7 +125,9 @@ export interface LandedTake {
   asset: string; // the take's ledger name
   file: string; // song-relative
   row: RecordedTake;
-  placedAt: number; // track samples: the entry's window start + started_at_samples - latency
+  // Track samples: where a MIDI take's musical position falls, or the
+  // entry's window start + started_at_samples - latency for an audio take.
+  placedAt: number;
   placements: number; // how many times the song places the track
   frames: number;
   sampleRate: number;
@@ -157,6 +169,10 @@ interface Landing {
   windowStart: number;
   placements: number;
   position: number[] | undefined;
+  // Where the take started on the track, in seconds, and the track's own
+  // maps: what a MIDI take's ticks count from and through.
+  startSeconds: number;
+  time: TrackTime;
 }
 
 function beginLanding(root: string, take: AnyTake): Landing {
@@ -169,19 +185,19 @@ function beginLanding(root: string, take: AnyTake): Landing {
     throw new Error(`project has errors (field check) — fix them before landing ${take.id}`);
   }
   const node = recordNodeFor(project, take.track);
-  const { song, trackName, entry } = node;
+  const { song, trackName, entry, instrument } = node;
   const midi = 'kind' in take;
-  // The entry's instrument decides the kind of take it records
-  // (keyboard-instrument.md §12.2), so a take of the other kind has no
-  // business landing in it.
-  if (midi && entry.record?.instrument === undefined) {
+  // The track's instrument decides the kind of take it records
+  // (sequencer.md §3.4), so a take of the other kind has no business
+  // landing in it.
+  if (midi && instrument === undefined) {
     throw new Error(
-      `${take.id} is a MIDI take, and ${trackName}'s record entry names no instrument to play it — ` +
-        'give it one with `instrument: <name>` under `record:`',
+      `${take.id} is a MIDI take, and ${trackName} has no instrument to play it — ` +
+        'give the track one with `instrument: <name>`',
     );
   }
-  if (!midi && entry.record?.instrument !== undefined) {
-    throw new Error(`${take.id} is an audio take, and ${trackName}'s record entry records MIDI for ${entry.record.instrument}`);
+  if (!midi && instrument !== undefined) {
+    throw new Error(`${take.id} is an audio take, and ${trackName} records MIDI for ${instrument}`);
   }
   const songDir = join(root, song.dir);
   const track = song.tracks.find((t) => t.data.name === trackName)!.data;
@@ -209,13 +225,12 @@ function beginLanding(root: string, take: AnyTake): Landing {
   // The entry's window under the track's own map, as the graph projects
   // it (nested-tracks.md §13): a track's `time:` when it has one, else
   // the song's at the track's rate.
-  const tempoEvents = track.time?.tempo ?? song.time?.tempo;
-  const windowStart =
-    tempoEvents !== undefined
-      ? placedWindow(entry, new TempoMap(tempoEvents, trackRate)).start
-      : entry.anchor === 'absolute'
-        ? entry.at
-        : 0;
+  // A project without errors has the song's `time:`.
+  const time: TrackTime = {
+    tempo: new TempoMap(track.time?.tempo ?? song.time!.tempo, trackRate),
+    meter: new MeterMap(track.time?.meter ?? song.time!.meter),
+  };
+  const windowStart = placedWindow(entry, time.tempo).start;
   // What the song's map said at capture, when the bed was the song —
   // its live session, or an artifact of it (a stem, a take) — and not
   // when it was some other file.
@@ -240,6 +255,8 @@ function beginLanding(root: string, take: AnyTake): Landing {
     windowStart,
     placements: origin.placements,
     position,
+    startSeconds: startedOnBed / timelineRate - origin.seconds,
+    time,
   };
 }
 
@@ -335,26 +352,53 @@ export async function landTake(root: string, take: Take, options: LandOptions = 
   return landed(landing, file, row, header.frames, header.sampleRate);
 }
 
-// A MIDI take (keyboard-instrument.md §12.1, §12.2): the captured messages
-// pair into a notes file, written once by its one writer and pinned in the
-// ledger by hash like any take, with no WAV facts. Its latency is the
-// output latency alone: a player presses a key in time with what they
-// hear, which runs behind the playhead by that much.
+// A MIDI take (keyboard-instrument.md §12.1, sequencer.md §2.4): the
+// captured messages pair into notes, and every time becomes ticks from
+// the take's start through the track's tempo map, after the output
+// latency comes off, because a player presses a key in time with what
+// they hear, which runs behind the playhead by that much. A note pressed
+// that early in the take's first moments starts with the take, and one
+// that ended before the take or its track began is dropped. Its one
+// writer writes the file once, pinned in the ledger by hash like any take,
+// with no WAV facts. The row's started_at_ticks is where the take starts, counted
+// from the tick its record entry's window starts on, which is where its
+// notes play from, so the take moves with the entry; its
+// musical_position records where that was on the track, in the track's
+// own time.
 export async function landMidiTake(root: string, take: MidiTake): Promise<LandedTake> {
   const landing = beginLanding(root, take);
   const messages: CapturedMessage[] = readFileSync(join(root, take.file), 'utf8')
     .split('\n')
     .filter((line) => line.trim() !== '')
     .map((line) => midiTakeLineSchema.parse(JSON.parse(line)));
-  const notes = notesFromMessages(messages, take.frames!, take.sample_rate);
+  const { tempo, meter } = landing.time;
+  const heard = (at: number): number => landing.startSeconds + (at - take.output_latency) / take.sample_rate;
+  const tickAt = (seconds: number): number => Math.round(tempo.secondsToTicks(Math.max(0, seconds)));
+  const start = tickAt(landing.startSeconds);
+  const ticks = (at: number): number => Math.max(0, tickAt(heard(at)) - start);
+  const played = notesFromMessages(messages, take.frames!);
+  const notes: TimedNotes = {
+    length: ticks(take.frames!),
+    notes: played.notes
+      .filter((n) => heard(n.at + n.length) >= 0 && tickAt(heard(n.at + n.length)) >= start)
+      .map((n) => ({ ...n, at: ticks(n.at), length: ticks(n.at + n.length) - ticks(n.at) })),
+    controls: played.controls.map((c) => ({ ...c, at: ticks(c.at) })),
+    bends: played.bends.map((b) => ({ ...b, at: ticks(b.at) })),
+  };
   const { file, sha256, bytes } = await placeFile(landing, '.notes.yaml', (to) => writeFileSync(to, formatNotesFile(notes)));
 
   const row: RecordedTake = {
     ...sharedRow(landing, Math.round((take.output_latency * landing.trackRate) / take.sample_rate)),
+    started_at_ticks: start - entryTick(landing.node.entry, tempo),
+    musical_position: musicalPosition(meter, start),
     sources: take.sources,
   };
   finishLanding(landing, { name: take.id, file, sha256, bytes }, row);
-  return { ...landed(landing, file, row, take.frames!, take.sample_rate), events: messages.length };
+  return {
+    ...landed(landing, file, row, take.frames!, take.sample_rate),
+    placedAt: tempo.ticksToSamples(start),
+    events: messages.length,
+  };
 }
 
 // Lands either kind of take, by what its manifest says it is.

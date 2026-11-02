@@ -618,7 +618,7 @@ describe.skipIf(!binary)('MIDI takes through the daemon', () => {
   });
 
   it(
-    'field record: arms for MIDI on an entry with an instrument, and lands the take as a notes file',
+    'field record: arms for MIDI on a track with an instrument, and lands the take as a notes file',
     { timeout: 30_000 },
     async (ctx) => {
       process.env['FIELD_AUDIOD_NULL'] = '1';
@@ -634,7 +634,7 @@ describe.skipIf(!binary)('MIDI takes through the daemon', () => {
           ['name: main', 'inputs:', '  - audio: tone', '    anchor: absolute', '    at: 0', ''].join('\n'),
         );
         createTrack(root, 'creek', 'keys');
-        writeFileSync(join(root, 'songs/creek/tracks/keys.yaml'), 'name: keys\ninputs:\n  - record:\n      instrument: pad\n');
+        writeFileSync(join(root, 'songs/creek/tracks/keys.yaml'), 'name: keys\ninstrument: pad\ninputs:\n  - record:\n');
         writeFileSync(join(root, 'shared/instruments/pad.scd'), '// a voice\n');
         const project = loadProject(root);
 
@@ -697,8 +697,8 @@ describe.skipIf(!binary)('MIDI takes through the daemon', () => {
         expect(landed.row).toHaveProperty('sources', expect.arrayContaining([name]));
         expect(landed.row).not.toHaveProperty('device');
         const notes = readFileSync(join(root, 'songs/creek', landed.file), 'utf8');
-        expect(notes).toMatch(new RegExp(`\\{ at: \\d+, length: \\d+, note: ${NOTE}, velocity: 77, channel: 16 \\}`));
-        expect(notes).toContain('{ at: 0, cc: 113, value: 23, channel: 16 }');
+        expect(notes).toMatch(new RegExp(`\\{at: \\d+, length: \\d+, note: ${NOTE}, velocity: 77, channel: 16\\}`));
+        expect(notes).toContain('{at: 0, cc: 113, value: 23, channel: 16}');
         expect(existsSync(join(root, '.field/recording', take.id))).toBe(false);
         expect((await check(root)).diagnostics).toEqual([]);
       } finally {

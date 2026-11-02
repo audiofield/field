@@ -55,6 +55,9 @@ const musicalPosition = z.array(z.number().int().min(1)).min(1).max(3);
 const musicalSpan = z.array(z.number().int().min(0)).min(1).max(3);
 export const timePosition = z.union([ticks, musicalPosition]);
 export const timeSpan = z.union([z.number().int().positive(), musicalSpan]);
+// A span that may be empty, as a note's can: a drum pad's on and off can
+// land in one tick.
+export const timeLength = z.union([ticks, musicalSpan]);
 
 // The error names the set because the refusal is the documentation: a
 // raw "Invalid input" does not say what a rate may be, and `rate:` on a

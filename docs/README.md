@@ -57,6 +57,11 @@ the same files.
 - **Take** — one performance of something. Recorded takes and renders of
   nondeterministic nodes use the same machinery: numbered, auditioned,
   one active, none destroyed.
+- **Part** — notes you write, in bars and beats, in a file under the
+  song's `notes/`. A track's `notes:` entry places it, and the build
+  renders it through the track's instrument. A MIDI take is in the same
+  format, so you edit one by copying it into a part. See
+  [project-model.md](project-model.md) "Parts".
 - **Recipe** — a committed, seeded description of how a generated asset
   was produced (a SuperCollider program plus a seed, an ACE prompt plus
   model plus seed), with provenance. Recipes are reproducible; the

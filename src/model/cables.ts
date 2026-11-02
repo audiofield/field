@@ -84,6 +84,7 @@ export function entryName(entry: InputEntry, index: number): string {
   const target =
     entry.track ??
     entry.audio ??
+    entry.notes ??
     (entry.supercollider
       ? 'supercollider'
       : entry.generative

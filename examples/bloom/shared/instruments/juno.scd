@@ -6,7 +6,7 @@
 //
 // Under FIELD_MODE=voice its value is one voice, gated, which `field keys
 // juno` plays, with vibrato from the mod wheel (§14) and the knobs in
-// juno.knobs.yaml, and a record entry with `instrument: juno` renders
+// juno.knobs.yaml, and a track with `instrument: juno` renders
 // (keyboard-instrument.md §2.6).
 // Otherwise it runs under Field's sc-render contract and renders a held
 // C minor ninth chord for FIELD_DURATION.

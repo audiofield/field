@@ -7,8 +7,8 @@ import { init } from '../commands/init.js';
 import { resolveKeysTargets } from './targets.js';
 
 // What `field keys` arms from its targets (arming.md §2.1): a program by
-// name, a MIDI track, or the one MIDI track under a bus, refusing a bus
-// with several so you name the ones you mean.
+// name, a track with an instrument, or the one such track under a bus,
+// refusing a bus with several so you name the ones you mean.
 
 let root: string;
 
@@ -25,8 +25,8 @@ beforeEach(() => {
   writeFileSync(join(root, 'shared/instruments/juno.scd'), VOICE);
   writeFileSync(join(root, 'shared/instruments/bass.scd'), VOICE);
   for (const name of ['keys', 'bass', 'keys-bus', 'band', 'keys-loop', 'pad-sc']) createTrack(root, 'creek', name);
-  writeTrack('keys', ['inputs:', '  - record:', '      instrument: juno']);
-  writeTrack('bass', ['inputs:', '  - record:', '      instrument: bass']);
+  writeTrack('keys', ['instrument: juno', 'inputs:', '  - record:']);
+  writeTrack('bass', ['instrument: bass', 'inputs:', '  - record:']);
   writeTrack('keys-bus', [
     'inserts:',
     '  - effect: eq',
@@ -48,7 +48,7 @@ afterEach(() => {
 const program = (name: string): string => join(root, 'shared/instruments', `${name}.scd`);
 
 describe('field keys targets', () => {
-  it('arms a MIDI track by its record entry, with no takes yet', () => {
+  it('arms a track by its instrument, with no takes yet', () => {
     // createTrack places every track in main, so keys-bus, which places
     // keys, is on keys' way to the speakers.
     expect(resolveKeysTargets(['creek/track:keys'], root)).toEqual([
@@ -56,7 +56,7 @@ describe('field keys targets', () => {
     ]);
   });
 
-  it('arms the one MIDI track under a bus, and names the effects it does not hear yet', () => {
+  it('arms the one track with an instrument under a bus, and names the effects it does not hear yet', () => {
     expect(resolveKeysTargets(['creek/track:keys-bus'], root)).toEqual([
       { program: program('juno'), track: 'creek/keys', unheardEffects: ['keys-bus'] },
     ]);
@@ -69,14 +69,14 @@ describe('field keys targets', () => {
     ]);
   });
 
-  it('refuses a bus with several MIDI tracks under it, listing them', () => {
+  it('refuses a bus with several tracks with instruments under it, listing them', () => {
     expect(() => resolveKeysTargets(['creek/track:band'], root)).toThrow(
-      'field keys creek/track:band: 2 MIDI tracks are under band, and field keys plays the ones you name: ' +
+      'field keys creek/track:band: 2 tracks with instruments are under band, and field keys plays the ones you name: ' +
         'creek/track:keys, creek/track:bass',
     );
   });
 
-  it('counts a MIDI track reached by several paths once, with the effects of every path', () => {
+  it('counts a track reached by several paths once, with the effects of every path', () => {
     // keys-loop places keys twice, and once more through keys-bus.
     expect(resolveKeysTargets(['creek/track:keys-loop'], root)).toEqual([
       { program: program('juno'), track: 'creek/keys', unheardEffects: ['keys-bus'] },
@@ -92,8 +92,8 @@ describe('field keys targets', () => {
     }
   });
 
-  it('refuses a track with no MIDI track on it or under it', () => {
-    expect(() => resolveKeysTargets(['creek/track:pad-sc'], root)).toThrow('no MIDI track there');
+  it('refuses a track with no instrument on it or under it', () => {
+    expect(() => resolveKeysTargets(['creek/track:pad-sc'], root)).toThrow('no instrument there');
   });
 
   it('arms every target at once, instruments and tracks mixed, each once', () => {

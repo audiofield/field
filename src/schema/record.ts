@@ -13,14 +13,21 @@ import { labelName } from './common.js';
 // spelling — YAML's null preprocesses to the empty table, the way a bare
 // send label already does (track.ts sendSchema; §11 resolved 2026-09-06).
 //
-// `instrument` is the field that earned it (keyboard-instrument.md §12.2):
-// it decides the kind of take. With one, the entry records MIDI and the
-// build renders the chosen take through that instrument's voice; without,
-// it records audio. It resolves as `field keys` resolves an instrument.
-export const recordEntrySchema = z.preprocess(
-  (v) => v ?? {},
-  z.strictObject({ instrument: z.string().min(1).optional() }),
-);
+// The kind of take is the track's `instrument` to decide (sequencer.md
+// §3.4): MIDI with one, audio without. `instrument:` here is refused by
+// name, because an unrecognized key would not say where it goes.
+export const recordEntrySchema = z.preprocess((v, ctx) => {
+  const entry = v ?? {};
+  if (typeof entry !== 'object' || !('instrument' in entry)) return entry;
+  const { instrument, ...rest } = entry as Record<string, unknown>;
+  ctx.addIssue({
+    code: 'custom',
+    message:
+      `the instrument is the track's: move \`instrument: ${String(instrument)}\` up beside the ` +
+      "track's `name:`, and leave `- record:` bare (sequencer.md §3.4)",
+  });
+  return rest;
+}, z.strictObject({}));
 export type RecordEntry = z.infer<typeof recordEntrySchema>;
 
 // Take names are timestamps (§3): sortable, and two clones recording
@@ -66,11 +73,20 @@ export const audioTakeRowSchema = z.strictObject({
 // and it carries the MIDI sources the daemon listened to in place of an
 // audio take's device and input. `latency` is the output latency alone,
 // because a player presses a key in time with what they hear, and MIDI
-// has no input latency worth the name; placement subtracts it as for
-// audio.
+// has no input latency worth the name. A take in ticks (sequencer.md
+// §2.4) has the latency taken off its notes already, and plays from
+// `started_at_ticks`, where it starts in ticks counted from the whole
+// tick its record entry's window starts on. The two are authoritative,
+// so the take moves with its entry by the same musical distance and
+// follows a tempo edit. `started_at_samples`, `latency`, and
+// `musical_position`, where it started on its track in the track's own
+// time, are its record. A take whose notes file carries `sample_rate:`
+// places by sample arithmetic, as an audio take does, and has no
+// `started_at_ticks`.
 export const midiTakeRowSchema = z.strictObject({
   asset: takeName,
   started_at_samples: z.number().int(),
+  started_at_ticks: z.number().int().optional(),
   musical_position: musicalPosition,
   latency: z.number().int().min(0),
   sources: z.array(z.string().min(1)),
@@ -108,6 +124,7 @@ export const recordTakesOrder: KeyOrder = {
         keys: [
           'asset',
           'started_at_samples',
+          'started_at_ticks',
           'musical_position',
           'latency',
           'device',
