@@ -66,14 +66,13 @@ export async function scVoice(targets: string[], options: ScVoiceOptions, contex
   const knobFiles = new KnobFiles(loadKnobSources(voices, [], root));
 
   let quitting = false;
-  let stop!: (error?: Error) => void;
-  const stopped = new Promise<Error | undefined>((resolveStopped) => {
-    stop = (error) => {
+  let onSignal!: () => void;
+  const stopped = new Promise<undefined>((resolveStopped) => {
+    onSignal = () => {
       quitting = true;
-      resolveStopped(error);
+      resolveStopped(undefined);
     };
   });
-  const onSignal = (): void => stop();
   if (context.until !== undefined) void context.until.then(onSignal);
   else for (const signal of SIGNALS) process.on(signal, onSignal);
 
@@ -89,29 +88,41 @@ export async function scVoice(targets: string[], options: ScVoiceOptions, contex
     // A routed voice is heard on the daemon's device, so it is made there.
     const output = routing !== undefined ? routing.device : (options.device ?? (await systemOutput(root, platform)));
     const programs = routing?.programs ?? [...new Set(voices.map((v) => v.program))];
-    const host = await startVoices({
-      instruments: programs,
-      knobs: knobFiles.copies,
-      ...(options.source.length > 0 ? { sources: programs.map(() => options.source) } : {}),
-      ...(output !== undefined ? { device: output } : {}),
-      env,
-      routing,
-      state,
-      changed: () => {
-        if (!quitting) print(instrumentText(state));
-      },
-      stop,
-    });
-    const stopWatchingPrograms = host.reloadOnSave();
-    const stopWatchingKnobs = knobFiles.watch((path, result, reload) => {
-      if ('error' in result) print(`knobs not reloaded: ${knobFiles.errors.get(path)}`);
-      if (reload) void host.reload();
-    });
-    const error = await stopped;
-    stopWatchingPrograms();
-    stopWatchingKnobs();
-    // A host still booting closes too: quitting never waits for it.
-    await host.close();
+    const run = async (): Promise<Error | undefined> => {
+      let hostStopped!: (error: Error) => void;
+      const stoppedOnItsOwn = new Promise<Error>((resolveStopped) => {
+        hostStopped = resolveStopped;
+      });
+      const host = await startVoices({
+        instruments: programs,
+        knobs: knobFiles.copies,
+        ...(options.source.length > 0 ? { sources: programs.map(() => options.source) } : {}),
+        ...(output !== undefined ? { device: output } : {}),
+        env,
+        routing,
+        state,
+        changed: () => {
+          if (!quitting) print(instrumentText(state));
+        },
+        stop: hostStopped,
+      });
+      const stopWatchingPrograms = host.reloadOnSave();
+      const stopWatchingKnobs = knobFiles.watch((path, result, reload) => {
+        if ('error' in result) print(`knobs not reloaded: ${knobFiles.errors.get(path)}`);
+        if (reload) void host.reload();
+      });
+      const error = await Promise.race([stopped, stoppedOnItsOwn]);
+      stopWatchingPrograms();
+      stopWatchingKnobs();
+      // A host still booting closes too: quitting never waits for it.
+      await host.close();
+      return error;
+    };
+    // macOS can refuse a new process its MIDI client, and a new process
+    // clears that. field keys keeps its helper's client alive beside the
+    // host, which keeps that from happening, and this command does not.
+    let error = await run();
+    if (platform === 'darwin' && !quitting && error !== undefined && /the MIDI client did not start/.test(error.message)) error = await run();
     if (error !== undefined) throw error;
   } finally {
     for (const signal of SIGNALS) process.removeListener(signal, onSignal);

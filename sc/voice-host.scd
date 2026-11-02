@@ -40,13 +40,13 @@ var buses = [], routes = [], startRoutes, stopRoutes;
 // a note then has no server to sound on, so it is ignored.
 var server, voiceDefs, problem, voicers, booting = true;
 // Each source's uid, and the voices that play from it.
-var hearing, sourceProblem, heard;
+var hearing, sourceProblem, heard, midiProblem;
 var loadAll, addAll;
 var jsonValue, emit, fail, stopServer, deviceProblem, run, boot, restart;
 
 jsonValue = { |value|
 	if (value.isString or: { value.isKindOf(Symbol) }) {
-		"\"" ++ value.asString.replace("\\", "\\\\").replace("\"", "\\\"") ++ "\""
+		"\"" ++ value.asString.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") ++ "\""
 	} { value.asString }
 };
 emit = { |pairs|
@@ -260,12 +260,18 @@ run = {
 
 // A voice hears the sources there when the host starts, so a command
 // publishes its own, as `field keys` publishes Field Keys, first.
-MIDIClient.init(verbose: false);
-# hearing, sourceProblem = playsFrom.(instruments, MIDIClient.sources);
-# voiceDefs, problem = loadAll.();
-case
-	{ problem.notNil } { fail.(problem) }
-	{ sourceProblem.notNil } { fail.(sourceProblem) }
-	{ device.notNil and: { deviceProblem.(device).notNil } } { fail.(deviceProblem.(device)) }
-	{ run.() };
+// macOS can refuse a new process its MIDI client, which throws here, and
+// an error nothing catches leaves sclang running with no host.
+midiProblem = try { MIDIClient.init(verbose: false); nil } { |error| "the MIDI client did not start: " ++ error.errorString.replace("ERROR: ", "") };
+if (midiProblem.notNil) {
+	fail.(midiProblem);
+} {
+	# hearing, sourceProblem = playsFrom.(instruments, MIDIClient.sources);
+	# voiceDefs, problem = loadAll.();
+	case
+		{ problem.notNil } { fail.(problem) }
+		{ sourceProblem.notNil } { fail.(sourceProblem) }
+		{ device.notNil and: { deviceProblem.(device).notNil } } { fail.(deviceProblem.(device)) }
+		{ run.() };
+};
 )

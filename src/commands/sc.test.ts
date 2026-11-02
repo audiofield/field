@@ -219,6 +219,59 @@ describe.skipIf(process.platform === 'win32')('field sc voice outside a project'
     expect(await hostHandedFor()).toMatchObject({ device: 'Stub Out', helperClosed: true });
   });
 
+  // A stand-in sclang whose first `refusals` starts report a refused MIDI
+  // client and exit, and which then behaves as STUB does.
+  const refusedHost = (refusals: number): string => `#!/usr/bin/env node
+const { appendFileSync, existsSync, readFileSync } = require('node:fs');
+const starts = ${JSON.stringify(join(dir, 'host-starts'))};
+const before = existsSync(starts) ? readFileSync(starts, 'utf8').length : 0;
+appendFileSync(starts, '.');
+if (before < ${refusals}) {
+  console.log('@field {"error":"the MIDI client did not start: Primitive _InitMIDI failed"}');
+  process.exit(1);
+}
+${STUB.replace('#!/usr/bin/env node\n', '')}`;
+
+  async function voiceOn(platform: NodeJS.Platform): Promise<{ device: string | null }> {
+    const log = join(dir, 'host.json');
+    let quit!: () => void;
+    const until = new Promise<void>((resolve) => {
+      quit = resolve;
+    });
+    const lines: string[] = [];
+    const running = scVoice(
+      ['./pad.scd'],
+      { source: [], device: 'Given Out' },
+      { cwd: dir, env: { ...process.env, FIELD_SCLANG: join(dir, 'sclang'), STUB_LOG: log }, until, platform, print: (line) => lines.push(line) },
+    );
+    const settled = running.then(
+      () => true,
+      () => true,
+    );
+    for (let i = 0; i < 100 && !lines.some((l) => l.includes(' live at ')) && !(await Promise.race([settled, sleep(50).then(() => false)])); i++);
+    quit();
+    await running;
+    return JSON.parse(readFileSync(log, 'utf8'));
+  }
+
+  it('starts the host once more when macOS refuses it a MIDI client', { timeout: 30_000 }, async () => {
+    writeFileSync(join(dir, 'sclang'), refusedHost(1));
+    expect(await voiceOn('darwin')).toMatchObject({ device: 'Given Out' });
+    expect(readFileSync(join(dir, 'host-starts'), 'utf8')).toBe('..');
+  });
+
+  it('stops with the reason when macOS refuses a new host too', { timeout: 30_000 }, async () => {
+    writeFileSync(join(dir, 'sclang'), refusedHost(2));
+    await expect(voiceOn('darwin')).rejects.toThrow('the MIDI client did not start');
+    expect(readFileSync(join(dir, 'host-starts'), 'utf8')).toBe('..');
+  });
+
+  it('does not start the host again off macOS', { timeout: 30_000 }, async () => {
+    writeFileSync(join(dir, 'sclang'), refusedHost(1));
+    await expect(voiceOn('linux')).rejects.toThrow('the MIDI client did not start');
+    expect(readFileSync(join(dir, 'host-starts'), 'utf8')).toBe('.');
+  });
+
   it('starts the host with no device when the helper cannot start', { timeout: 30_000 }, async () => {
     writeFileSync(join(dir, 'field-audiod'), '#!/usr/bin/env node\nprocess.exit(1);\n');
     expect(await hostHandedFor()).toMatchObject({ device: null });

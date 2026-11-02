@@ -1005,6 +1005,11 @@ them settled these points:
   a refused helper starts once more, and a second refusal stops with the
   error, because with no device `scsynth` on macOS would open the
   default input and wait on the microphone permission.
+- **A voice host that macOS refuses a MIDI client fails, and
+  `field sc voice` starts it once more.** `MIDIClient.init` throws in a
+  refused `sclang`, and nothing else ends the host then. `field keys`
+  keeps its helper's client alive beside the host, and a review measured
+  no refusal that way, so it does not start the host again.
 - **A note's pitch comes from `~freq`, rounded to a MIDI note.** Every
   spelling of pitch reaches `~freq`, and `~midinote` misses `\freq`,
   `\ctranspose`, and `\harmonic`.

@@ -69,6 +69,8 @@ run it again. CoreMIDI has refused the first source a new process asked
 for, once, and a new process gets a new MIDI client. `field sc voice`,
 which starts the same helper to name the system output when no daemon
 can answer, tries once more by itself, and then stops with that error.
+It does the same when macOS refuses `sclang` its MIDI client as the voice
+host starts.
 
 ## Play
 
