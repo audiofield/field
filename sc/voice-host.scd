@@ -271,12 +271,14 @@ midiProblem = try { MIDIClient.init(verbose: false); nil } { |error| "the MIDI c
 if (midiProblem.notNil) {
 	fail.(midiProblem);
 } {
-	# hearing, sourceProblem = playsFrom.(instruments, MIDIClient.sources);
-	# voiceDefs, problem = loadAll.();
-	case
-		{ problem.notNil } { fail.(problem) }
-		{ sourceProblem.notNil } { fail.(sourceProblem) }
-		{ device.notNil and: { deviceProblem.(device).notNil } } { fail.(deviceProblem.(device)) }
-		{ run.() };
+	try {
+		# hearing, sourceProblem = playsFrom.(instruments, MIDIClient.sources);
+		# voiceDefs, problem = loadAll.();
+		case
+			{ problem.notNil } { fail.(problem) }
+			{ sourceProblem.notNil } { fail.(sourceProblem) }
+			{ device.notNil and: { deviceProblem.(device).notNil } } { fail.(deviceProblem.(device)) }
+			{ run.() };
+	} { |error| fail.(error.errorString.replace("ERROR: ", "")) };
 };
 )

@@ -73,8 +73,10 @@ It does the same when macOS refuses `sclang` its MIDI client as the voice
 host starts. On macOS, `field sc voice` also stops when the helper cannot
 run at all, such as when `field-audiod` is not built, because `scsynth`
 with no device would wait on the microphone permission. Name the output
-with `--device` to get past either. On Linux and Windows, it starts with
-no device when the helper cannot run.
+with `--device` to get past a helper failure. It does not help a refused
+`sclang`, which needs a new process with or without it. On Linux and
+Windows, `field sc voice` starts with no device when the helper cannot
+run.
 
 ## Play
 
