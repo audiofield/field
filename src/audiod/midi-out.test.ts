@@ -460,7 +460,8 @@ describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
           try {
             sources = (await client.armMidi('//songs/bed/track:voice')).sources;
           } catch (error) {
-            if (!/no MIDI sources to record from/.test(String(error))) throw error;
+            // JUCE lists a source that vanishes during the listing as <error>.
+            if (!/no MIDI sources to record from|cannot open any MIDI source/.test(String(error))) throw error;
           }
           return sources.includes(name('keys'));
         },
