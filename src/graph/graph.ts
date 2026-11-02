@@ -462,8 +462,7 @@ export function buildGraph(project: LoadedProject): Graph {
         // the ledger, so downstream it is an `audio:` placement like any
         // other, at the position it was sung. An entry with no chosen
         // take contributes nothing — silence (§4).
-        const meter = new MeterMap(track.time?.meter ?? songMeterEvents);
-        const planned = withTakes(track, song, { tempo: local, meter }, rate, sourceRate);
+        const planned = withTakes(track, song, local, rate, sourceRate);
         // Rates convert at the placement (multi-rate.md decision 4): a
         // source arriving at another rate gets a resample node between it
         // and this stem, named for the source and the rate it becomes —
@@ -592,7 +591,7 @@ export function buildGraph(project: LoadedProject): Graph {
 export function withTakes(
   track: Track,
   song: LoadedSong,
-  local: TrackTime,
+  local: TempoMap,
   trackRate: number,
   sourceRate: (ref: string) => number | undefined,
 ): Track {
@@ -602,11 +601,11 @@ export function withTakes(
     const name = generatorName(entry, track.name);
     const take = chosenTake(song.recordTakes.get(name)?.data);
     if (take === undefined) return [];
-    const window = placedWindow(entry, local.tempo);
+    const window = placedWindow(entry, local);
     const notes = song.takeNotes.get(take.asset);
     const at =
       isMidiTakeRow(take) && notes !== undefined && notes.data.sample_rate === undefined
-        ? local.tempo.ticksToSamples(takeAnchor(entry, take, local.tempo))
+        ? local.ticksToSamples(takeAnchor(entry, take, local))
         : window.start + take.started_at_samples - take.latency;
     // A MIDI take sounds through its render, the gen node the graph minted
     // for the entry (keyboard-instrument.md §12.3); an audio take is its
