@@ -95,7 +95,8 @@ drive voices the same way.
    sources. It opens the daemon input `seq:creek/keys` for the voice
    and reloads the session. A session compiled with a `seq:` input open
    on a track leaves out that track's notes renders, so you hear the
-   part once, live.
+   part once, live. It keeps the length those renders give the song, so
+   the transport plays the part out.
 7. While the transport plays, the daemon's callback finds the events
    due in each block, early by the output's lead, and a sender thread
    sends each one at its exact time on the virtual source

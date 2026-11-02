@@ -45,6 +45,7 @@ import { formatDiagnostic, loadProject, projectPath } from '../model/project.js'
 import { leaveOutNotes } from '../model/live-notes.js';
 import { applySolo } from '../model/solo.js';
 import type { SpecInsert } from '../generators/stem.js';
+import { RELEASE_TAIL_SECONDS, type VoiceRenderSpec } from '../generators/voice-render.js';
 import { toPluginWire } from '../audio/plugins.js';
 import { build, explain, type Explanation } from './build.js';
 import { buildGraph, type Graph, type GraphNode } from './graph.js';
@@ -73,6 +74,29 @@ interface StemLike {
   inserts?: SpecInsert[];
   length_samples?: number;
   loop?: boolean;
+}
+
+// Where each of these tracks' notes renders end, in the track's samples.
+// A track whose notes play live leaves its renders out of the session, and
+// the transport still has to play them out, so its content ends where they
+// would have. A render is its notes' length and the release tail, which
+// scsynth rounds up by less than a control block, and it never gets built.
+function notesRenderEnds(graph: Graph, songDir: string, tracks: string[]): Map<string, number> {
+  const ends = new Map<string, number>();
+  for (const track of tracks) {
+    const node = graph.nodes.get(`//${songDir}/track:${track}`);
+    if (node === undefined || node.kind !== 'rule') continue;
+    const spec = node.spec as unknown as StemLike;
+    for (const clip of spec.clips) {
+      const source = graph.nodes.get(formatLabel(node.deps[clip.input]!));
+      if (source === undefined || source.kind !== 'rule' || source.spec.type !== 'voice-render') continue;
+      const { events } = source.spec as VoiceRenderSpec;
+      const frames = Math.round((events.length / events.sample_rate + RELEASE_TAIL_SECONDS) * source.sampleRate);
+      const duration = clip.duration ?? Math.max(0, frames - clip.read_offset);
+      ends.set(track, Math.max(ends.get(track) ?? 0, clip.start + duration));
+    }
+  }
+  return ends;
 }
 
 function liveInsert(insert: SpecInsert, root: string): SessionInsert {
@@ -157,6 +181,7 @@ export async function compileSession(
   // An input named `seq:<song>/<track>` (audiod/live-inputs.ts) says the
   // track's notes play live through it.
   const liveNotes = (options.inputs ?? []).filter(({ input }) => input.startsWith('seq:')).map(({ track }) => track);
+  const claimedEnds = liveNotes.length > 0 ? notesRenderEnds(buildGraph(project), song.dir, liveNotes) : new Map<string, number>();
   leaveOutNotes(song, new Set(liveNotes));
   const graph: Graph = buildGraph(project);
 
@@ -414,7 +439,7 @@ export async function compileSession(
     const chain = (shape.spec.inserts ?? []).map((insert) => liveInsert(insert, root));
 
     // Resolve every window; recurse into children first.
-    let contentEnd = 0;
+    let contentEnd = claimedEnds.get(name) ?? 0;
     let maxInputLatency = 0;
     const inputs: SessionTrack['inputs'] = [];
     const pending: { index: number; ownLatency: number }[] = [];

@@ -121,6 +121,33 @@ async function keysInputs(input: string) {
 // The stand-in is an extensionless script with a #! line, which Windows
 // cannot start, so sclangCommand refuses it there.
 describe.skipIf(process.platform === 'win32')('a seq: input at session compile', () => {
+  it('keeps the length the renders give the song, so the transport plays the part out', async () => {
+    const { session: live } = await compileSession(root, 'creek', { inputs: [{ track: 'keys', input: 'seq:creek/keys' }] });
+    expect(renders()).toBe(0);
+    const { session: rendered } = await compileSession(root, 'creek');
+    expect(renders()).toBe(2);
+    // The take starts at bar 2 and the part at bar 2, a quarter note or a
+    // half note long, each with a 4-second tail.
+    expect(rendered.length_samples).toBeGreaterThan(96000 + 4 * 48000);
+    expect(live.length_samples).toBe(rendered.length_samples);
+  });
+
+  it('keeps a track above it as long too', async () => {
+    createTrack(root, 'creek', 'band');
+    writeFileSync(join(root, 'songs/creek/tracks/band.yaml'), 'name: band\ninputs:\n  - track: keys\n    at: [3]\n');
+    writeFileSync(join(root, 'songs/creek/tracks/main.yaml'), 'name: main\ninputs:\n  - track: band\n');
+    const { session: live } = await compileSession(root, 'creek', { inputs: [{ track: 'keys', input: 'seq:creek/keys' }] });
+    const { session: rendered } = await compileSession(root, 'creek');
+    expect(live.length_samples).toBe(rendered.length_samples);
+  });
+
+  it('leaves a declared length alone', async () => {
+    const songYaml = join(root, 'songs/creek/song.yaml');
+    writeFileSync(songYaml, `${readFileSync(songYaml, 'utf8')}length: [40]\n`);
+    const { session: live } = await compileSession(root, 'creek', { inputs: [{ track: 'keys', input: 'seq:creek/keys' }] });
+    expect(live.length_samples).toBe(39 * 96000 + 96000);
+  });
+
   it("leaves out the track's notes renders and keeps its audio, where a keys: input keeps them all", async () => {
     const live = await keysInputs('seq:creek/keys');
     expect(renders()).toBe(0);
