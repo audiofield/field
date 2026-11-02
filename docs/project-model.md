@@ -472,7 +472,7 @@ bends: []
 
 | Field | Meaning |
 | --- | --- |
-| `length` | The part's span from its start. Optional: omitted, the part ends where its last note ends. A looping entry that omits `every` repeats at `length`. |
+| `length` | The part's span from its start. Optional: omitted, the part ends where its last note ends. A looping entry that omits `every` repeats at `length`. The render stops 4 seconds after `length`, so a note that starts later never sounds, and `field check` does not refuse it. |
 | `notes` | Each note: `at`, a position in the part; `length`, a span, which may be 0; `note`, a MIDI number from 0 to 127 or a name in scientific pitch, where `C4` is 60, with `#` or `b`; `velocity`, 1 to 127, 100 when omitted; and `channel`, 1 to 16, 1 when omitted. |
 | `controls` | Each controller change: `at`, `cc`, `value`, and `channel`. |
 | `bends` | Each pitch bend: `at`, `value` from 0 to 16383 with 8192 at rest, and `channel`. |
