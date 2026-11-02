@@ -282,6 +282,14 @@ std::unique_ptr<juce::MidiOutput> createVirtualSource (const juce::String& name)
 juce::String midiClientRefusalNote()
 {
 #if JUCE_MAC
+    // A refused process keeps being refused, and a healthy one with no ports
+    // gets a client, so asking again tells the two apart.
+    MIDIClientRef probe = 0;
+    if (MIDIClientCreate (CFSTR ("field-audiod refusal probe"), nullptr, nullptr, &probe) == noErr)
+    {
+        MIDIClientDispose (probe);
+        return {};
+    }
     return ". macOS can refuse a process its first MIDI client, and only a new daemon process clears that: "
            "run field transport quit, then try again";
 #else

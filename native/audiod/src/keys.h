@@ -32,7 +32,8 @@ int runMidiMonitor (const juce::String& name, bool destination);
 std::unique_ptr<juce::MidiOutput> createVirtualSource (const juce::String& name);
 
 // What to add to an error that a refused MIDI client could cause, because
-// JUCE then creates no source and lists no ports. Empty off macOS.
+// JUCE then creates no source and lists no ports. Empty off macOS, and when
+// a further MIDI client in this process succeeds.
 juce::String midiClientRefusalNote();
 
 // Reads a MIDI message of 1 to 3 bytes, starting with a status byte,
