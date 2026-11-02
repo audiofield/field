@@ -534,8 +534,8 @@ and how to copy one into a part you can edit, see
 [project-model.md](project-model.md) "MIDI takes" and "Parts".
 
 Name several tracks to record them in one pass: every track with an
-instrument that you name records the same notes, and an audio track records its own input,
-so you can sing and play at once:
+instrument that you name records the same notes, and an audio track
+records its own input, so you can sing and play at once:
 
 ```console
 $ field record creek/track:vox creek/track:keys --at 17

@@ -432,9 +432,9 @@ and you monitor in your interface's mixer.
 Name several tracks to record them in one pass, audio, MIDI, or both:
 every take starts on the same sample and lands on its own track. A
 track with an `instrument:` records MIDI
-([keys.md](keys.md#record-what-you-play)), and lands it in ticks. The audio tracks take
-`--input` channels in the order you name them, 1, 2, and on when you
-give none; `--loop` records one track only:
+([keys.md](keys.md#record-what-you-play)), and lands it in ticks. The
+audio tracks take `--input` channels in the order you name them, 1, 2,
+and on when you give none; `--loop` records one track only:
 
 ```sh
 field record tall-grass/track:vocal tall-grass/track:guitar tall-grass/track:keys --input 1,2
