@@ -545,9 +545,9 @@ transport plays starts as though it played from there.
 `source` or `destination`, the messages it `sent`, those it sent more
 than a millisecond after their time as `late`, and those its full queue
 `dropped`. A destination on macOS also reports `early`, the messages
-handed to CoreMIDI ahead of their time. The counts include the note-offs
-and clock messages the daemon adds. A daemon that does this lists
-`midi-out` in `hello.features`.
+handed to CoreMIDI ahead of their time. The counts include the note-offs,
+pedal lifts, bend centers, and clock messages the daemon adds. A daemon
+that does this lists `midi-out` in `hello.features`.
 
 `field-audiod --midi-out-selftest` checks the callback's selection, the
 lead and an input's margin, held notes, the clock's transport messages,

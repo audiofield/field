@@ -689,7 +689,7 @@ void MidiOutputs::send (Output& output, const juce::uint8* bytes, int size, doub
             output.centeredAt[channel] = ms;
         return;
     }
-    const auto note =(size_t) ((bytes[0] & 0x0f) * 128 + (bytes[1] & 0x7f));
+    const auto note = (size_t) ((bytes[0] & 0x0f) * 128 + (bytes[1] & 0x7f));
     if (kind == 0x90 && bytes[2] > 0)
         output.held[note] = true;
     else if (kind == 0x80 || kind == 0x90)
