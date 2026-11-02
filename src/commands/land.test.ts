@@ -483,6 +483,39 @@ describe('landMidiTake', () => {
     );
   });
 
+  it('drops a note that ended before its track starts, and starts one still sounding there with the track', async () => {
+    createTrack(root, 'creek', 'keys');
+    // keys sits at bar 5, 384000 samples into the song, and the take starts
+    // 96000 samples before that.
+    writeTrack('main', ['inputs:', '  - track: keys', '    at: [5]']);
+    writeTrack('keys', ['instrument: pad', 'inputs:', '  - record:']);
+    const landed = await landAnyTake(
+      root,
+      writeMidiTransaction('take-20261010-100060', { track: '//songs/creek/track:keys', started_at_samples: 288000, frames: 192000 }, [
+        { at: 0, midi: [144, 60, 100] }, // over 48000 samples before the track starts
+        { at: 48000, midi: [128, 60, 0] },
+        { at: 72000, midi: [144, 62, 100] }, // over exactly as the track starts
+        { at: 96000, midi: [128, 62, 0] },
+        { at: 84000, midi: [144, 64, 90] }, // sounds across the track's start
+        { at: 120000, midi: [128, 64, 0] },
+        { at: 144000, midi: [144, 67, 80] }, // inside the track
+        { at: 168000, midi: [128, 67, 0] },
+      ]),
+    );
+    expect(readFileSync(join(root, 'songs/creek', landed.file), 'utf8')).toBe(
+      [
+        'length: 3840',
+        'notes:',
+        '  - {at: 0, length: 0, note: 62, velocity: 100}',
+        '  - {at: 0, length: 960, note: 64, velocity: 90}',
+        '  - {at: 1920, length: 960, note: 67, velocity: 80}',
+        'controls: []',
+        'bends: []',
+        '',
+      ].join('\n'),
+    );
+  });
+
   it('refuses a take of the other kind than the track records', async () => {
     createTrack(root, 'creek', 'keys');
     writeTrack('keys', ['inputs:', '  - record:']);

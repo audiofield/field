@@ -358,9 +358,9 @@ export async function landTake(root: string, take: Take, options: LandOptions = 
 // latency comes off, because a player presses a key in time with what
 // they hear, which runs behind the playhead by that much. A note pressed
 // that early in the take's first moments starts with the take, and one
-// that ended before the take began is dropped. Its one writer writes the
-// file once, pinned in the ledger by hash like any take, with no WAV
-// facts. The row's started_at_ticks is where the take starts, counted
+// that ended before the take or its track began is dropped. Its one
+// writer writes the file once, pinned in the ledger by hash like any take,
+// with no WAV facts. The row's started_at_ticks is where the take starts, counted
 // from the tick its record entry's window starts on, which is where its
 // notes play from, so the take moves with the entry; its
 // musical_position records where that was on the track, in the track's
@@ -380,7 +380,7 @@ export async function landMidiTake(root: string, take: MidiTake): Promise<Landed
   const notes: TimedNotes = {
     length: ticks(take.frames!),
     notes: played.notes
-      .filter((n) => tickAt(heard(n.at + n.length)) >= start)
+      .filter((n) => heard(n.at + n.length) >= 0 && tickAt(heard(n.at + n.length)) >= start)
       .map((n) => ({ ...n, at: ticks(n.at), length: ticks(n.at + n.length) - ticks(n.at) })),
     controls: played.controls.map((c) => ({ ...c, at: ticks(c.at) })),
     bends: played.bends.map((b) => ({ ...b, at: ticks(b.at) })),
