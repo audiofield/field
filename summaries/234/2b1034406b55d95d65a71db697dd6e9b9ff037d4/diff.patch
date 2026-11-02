@@ -1,0 +1,3849 @@
+diff --git a/docs/architecture.md b/docs/architecture.md
+index dadbc614..4dfaf5f2 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -136,11 +136,15 @@ MIDI is hardware-facing too, so it lives here as well
+ spawns `field-audiod --keys`, a short-lived mode separate from the
+ daemon that owns the `Field Keys` virtual MIDI source and, on macOS,
+ reports the active keyboard layout. `--midi-monitor` prints what a
+-named MIDI source sends. Neither touches the transport or the control
++named MIDI source sends, or what reaches a virtual destination it
++publishes. Neither touches the transport or the control
+ socket. The daemon itself records MIDI: armed for a MIDI take, it
+ listens to every MIDI source and stamps each message on the clock the
+ audio callback keeps, so a MIDI take lines up with the song as an
+-audio take does.
++audio take does. It sends MIDI on that clock too: a MIDI output plays a
++schedule of messages and MIDI clock from the audio callback, to a
++virtual source it publishes or to a hardware port
++([audio-engine.md](audio-engine.md) "MIDI outputs").
+ 
+ The real-time audio callback never depends on TypeScript or Python: GC
+ pauses and JIT are disqualifying when a 64-sample buffer at 96kHz gives
+diff --git a/docs/audio-engine.md b/docs/audio-engine.md
+index b29c7beb..ea94f65d 100644
+--- a/docs/audio-engine.md
++++ b/docs/audio-engine.md
+@@ -4,10 +4,11 @@
+ device I/O, a sample-accurate transport, audition of built labels, live
+ evaluation of the session graph with the build cache as automatic track
+ freezing ([projects/realtime/readme.md](projects/realtime/readme.md)),
+-hosted plugins, and the input side of recording — arm, record, stop, a
++hosted plugins, the input side of recording — arm, record, stop, a
+ crash-safe transaction and its recovery — described in
+ [architecture.md](architecture.md) and under
+-[Capture as built](#capture-as-built) below. Takes land in the project
++[Capture as built](#capture-as-built) below, and MIDI outputs that send
++scheduled MIDI and MIDI clock on time ([MIDI outputs](#midi-outputs)). Takes land in the project
+ and build in place
+ ([projects/recording/readme.md](projects/recording/readme.md));
+ monitoring through the engine is `field record --monitoring host`
+@@ -313,7 +314,9 @@ rides it now instead of being refused. A file bed loops only whole.
+ §12.4). The daemon opens every MIDI input the system lists at that
+ moment and no audio input, so arming for MIDI never asks for the
+ microphone; a source that appears later, such as a restarted
+-`field keys`, is not heard until the next arm. It answers
++`field keys`, is not heard until the next arm. It leaves out the
++virtual sources of its own [MIDI outputs](#midi-outputs), so a take
++records what you play and not the part playing beside it. It answers
+ `{kind: "midi", sources, sample_rate, output_latency}`, where `sources`
+ names the inputs it opened. With no MIDI input to open, `arm` refuses
+ and tells you to start `field keys` or connect a controller. `disarm`
+@@ -434,3 +437,132 @@ where it was in the track's own time
+ ([project-model.md](project-model.md) "MIDI takes"). `field record
+ --recover <id>` lands what it recovers, and `field record --land <id>`
+ lands a finalized transaction nothing landed.
++
++## MIDI outputs
++
++The daemon sends MIDI on time from schedules
++([sequencer.md](projects/sequencer/readme.md) §2.5). Like the click, a
++schedule is samples and bytes: the CLI projects the tempo map into it,
++and the daemon never learns what a note or a bar is. The `midi_out` op
++opens an output under a name, or replaces the schedule of the output
++open under that name:
++
++```json
++{ "op": "midi_out", "name": "seq:creek/keys", "source": "Field Seq creek/keys",
++  "rate": 48000, "lead": 192, "lead_input": "seq:creek/keys",
++  "events": [ { "sample": 1536000, "midi": [144, 48, 110] },
++              { "sample": 1560000, "midi": [128, 48, 0] } ] }
++{ "ok": true, "name": "seq:creek/keys", "events": 2 }
++```
++
++| Field | Meaning |
++| --- | --- |
++| `name` | The output's name, which `midi_out_close` and `status` use. |
++| `source` | The name of a virtual MIDI source the daemon publishes for the output. |
++| `destination` | Instead of `source`: the name of an existing MIDI output port, such as a hardware synth's. An output takes one or the other. |
++| `rate` | The rate `sample` counts in: the bed's, as the click's `rate` is. |
++| `events` | Each `{sample, midi}`, a message of 1 to 3 bytes that starts with a status byte, in time order. At one sample, put note-offs first, then controller changes and bends, then note-ons. SysEx is refused. |
++| `lead` | Samples to send each event early, for the time the receiver takes before its sound reaches the daemon. |
++| `lead_input` | Optional. An input whose reader margin, a block plus 256 frames, the output leads by too. The input can open after the output. |
++| `clock` | Optional. `{pulses}`, the samples of MIDI clock pulses, described below. |
++
++A replaced schedule keeps the output's port, so whatever listens to a
++source stays connected. The daemon refuses a replacement that names
++another port, a second output on a source or destination already in
++use, and a 65th output. `midi_out_close` with the `name` closes an
++output, and an output closes on its own when the connection that opened
++it drops, as an input does. Windows has no virtual MIDI sources, so
++there the daemon refuses a `source` and sends only to destinations.
++
++macOS can refuse a process its first MIDI client, and JUCE asks for that
++client once per process. A daemon refused that way cannot publish a
++source under any name until it exits, and asking it again does not help.
++JUCE also lists no ports then, so a real port reads as missing. So on
++macOS, when a further MIDI client also fails, the `midi_out` error for a
++source mentions the refusal, and so do the errors for a destination and
++a MIDI `arm` when the daemon lists no ports. Run `field transport quit`,
++and the next command that needs a daemon starts a new one.
++
++Each block, the callback takes the events whose sample falls in the
++block's lookahead window: the block's span on the bed's timeline, moved
++later by the lead. A window that crosses the end of a loop, the live
++session's region or its own, or a looping file's, continues at the
++loop's start, so the first notes after a wrap leave on time. The
++callback pushes each event onto the output's queue, with no allocation
++and no lock, with its time: the block's start on the high-resolution
++clock MIDI capture stamps against, plus the event's offset, less the
++lead. An event that the lead puts before the block's start, which only
++the first block after play or a jump has, leaves at the block's start,
++so the first notes after play or a locate leave late by up to the lead.
++A converted session moves the bed in steps of its own, and a block's
++position can land past the end of the last block's window. What lies
++between them, a loop's wrap included, also leaves at the block's start,
++so a block's step never skips an event. A schedule is built off the
++audio thread, swapped in by pointer at a block's start, and freed off
++it.
++
++A sender thread, at realtime priority, sends each event to a virtual
++source at its time. On macOS it hands a destination's events to
++CoreMIDI as soon as they are queued, each stamped with its host time,
++which CoreMIDI delivers it at; `getMillisecondCounterHiRes()` and
++CoreMIDI's host time both count `mach_absolute_time()`. Elsewhere it
++sends a destination's events at their times, as it does a source's.
++
++The daemon keeps the notes each output has started, and sends a
++note-off for each on stop, pause, a locate, a loop wrap, a replaced
++schedule, `midi_out_close`, and the end of the connection that opened
++the output. A note that a locate lands inside is not started again. Each
++of those also lifts a sustain pedal (control change 64) the schedule
++left down, because a note the pedal sustains sounds on after its
++note-off. Each also centers a pitch bend the schedule left off center,
++because a bend stays on the receiver and detunes the next note. A pedal
++pressed before a loop's start, or a bend sent there, therefore ends at
++the first wrap and is not sent again, so later passes through the loop
++can sound different from the first. Before the note-offs of anything but
++a wrap, the daemon unschedules what CoreMIDI still holds for a
++destination with `MIDIFlushOutput`, so nothing queued for a bed that
++stopped or jumped reaches the synth. It flushes only when CoreMIDI holds
++something, because a flush reaches a virtual destination as a System
++Reset (`0xFF`). The callback queues only the events of the block it is
++in, so CoreMIDI holds some only when blocks run back to back.
++
++An output's `clock` lists the samples of its MIDI clock pulses (`0xF8`),
++24 to the quarter note, which the CLI projects from the tempo map as it
++projects the click. Pulses go out only while the transport plays,
++through the same window and lead as events, and around them the daemon
++sends the transport's changes:
++
++| When the transport | The daemon sends |
++| --- | --- |
++| Plays from pulse 0 | Start (`0xFA`) |
++| Plays from anywhere else | Song Position Pointer (`0xF2`), then Continue (`0xFB`) |
++| Locates or wraps the loop while playing | Stop (`0xFC`), Song Position Pointer, then Continue |
++| Stops or pauses | Stop |
++
++Replacing a schedule while the transport plays moves the gear only when
++the pulses change. New pulses send Stop, Song Position Pointer, and
++Continue, as a locate to the transport's position does, and the same
++pulses send nothing. A schedule with no clock sends Stop.
++
++Song Position Pointer counts sixteenth notes, 6 pulses each. It names
++the first sixteenth at or after the transport's position, `ceil(i / 6)`
++for the next pulse `i`, and the pulses resume at pulse 6 times that, so
++the gear's count and the song's agree. An output that opens while the
++transport plays starts as though it played from there.
++
++`status` lists the open outputs as `outputs`: each one's `name`, its
++`source` or `destination`, the messages it `sent`, those it sent more
++than a millisecond after their time as `late`, and those its full queue
++`dropped`. A destination on macOS also reports `early`, the messages
++handed to CoreMIDI ahead of their time. The counts include the note-offs,
++pedal lifts, bend centers, and clock messages the daemon adds. A daemon
++that does this lists `midi-out` in `hello.features`.
++
++`field-audiod --midi-out-selftest` checks the callback's selection, the
++lead and an input's margin, held notes, the clock's transport messages,
++and a stop with events handed to CoreMIDI early, against a fake clock
++and fake sinks. In null-output mode, `FIELD_AUDIOD_CAPTURE_OUTPUTS=1`
++lets a MIDI take hear the daemon's own outputs, so a test can measure a
++schedule's timing in the daemon that sends it, and on macOS the null
++clock runs as a realtime thread, as a device's callback does, so its
++blocks start on time on a loaded machine.
+diff --git a/docs/keys.md b/docs/keys.md
+index 6e606c89..2b08a6d6 100644
+--- a/docs/keys.md
++++ b/docs/keys.md
+@@ -114,12 +114,28 @@ only `field`; run it from your Field checkout, or through
+ ```console
+ $ native/audiod/build/field-audiod_artefacts/Release/field-audiod --midi-monitor "Field Keys"
+ {"ready":true,"name":"Field Keys"}
+-{"midi":[144,60,100]}
+-{"midi":[128,60,0]}
++{"midi":[144,60,100],"host_ms":5702312.481}
++{"midi":[128,60,0],"host_ms":5702519.027}
+ ```
+ 
+ The monitor prints every MIDI message from the source you name, so it
+-also checks a USB controller: give it the controller's name.
++also checks a USB controller: give it the controller's name. Each line
++gives the message's bytes and `host_ms`, when it arrived, in
++milliseconds on the high-resolution clock the daemon stamps MIDI
++against.
++
++With `--destination`, the monitor publishes a virtual MIDI destination
++under the name instead, and prints each message sent to it, which checks
++a daemon MIDI output with a `destination`
++([audio-engine.md](audio-engine.md) "MIDI outputs"). On macOS each line
++adds `timestamp_ms`, the host time the message carries, which CoreMIDI
++delivers it at:
++
++```console
++$ native/audiod/build/field-audiod_artefacts/Release/field-audiod --midi-monitor "Test Synth" --destination
++{"ready":true,"name":"Test Synth"}
++{"midi":[144,48,110],"host_ms":5731020.112,"timestamp_ms":5731020.004}
++```
+ 
+ ## Turn knobs
+ 
+diff --git a/docs/projects/sequencer/readme.md b/docs/projects/sequencer/readme.md
+index 8e81ce59..64c0fec5 100644
+--- a/docs/projects/sequencer/readme.md
++++ b/docs/projects/sequencer/readme.md
+@@ -858,3 +858,116 @@ The first seven rows of §4 pass, each in a test:
+ | The four `field check` errors | `src/graph/parts.test.ts`, "refuses a notes entry with no instrument, a missing part, a note name that is not one, and an instrument on record:" |
+ | A MIDI take, then a tempo edit, then its entry moved; a take in samples | `src/commands/land.test.ts`, "writes the take in ticks" and "counts started_at_ticks from the tick its record entry starts on"; `src/generators/voice-render.test.ts`, "follows a tempo edit there", "moves with its record entry by the same musical distance", and "plays a take recorded in samples as it was recorded" |
+ | A take copied into a part at its position | `src/graph/parts.test.ts`, "has the take's action key when it is placed at the take's position" |
++
++## 10 MIDI outputs, as built
++
++Chunk 4 built §2.5 in `native/audiod/src/midi_out.cpp` and
++`midi_out.h`, with `midi_out` and `midi_out_close` in
++`src/audiod/protocol.ts` and `src/audiod/client.ts`. audio-engine.md
++"MIDI outputs" describes it as it runs. Building it settled these
++points, each measured on macOS 27 with JUCE 8.0.4:
++
++- **The claim about the clocks holds.** JUCE's
++  `getMillisecondCounterHiRes()` multiplies `mach_absolute_time()` by
++  the timebase (`juce_SystemStats_mac.mm`), and JUCE's own CoreMIDI
++  sender stamps with `AudioGetCurrentHostTime()`, the same count
++  (`juce_CoreMidi_mac.mm`). The daemon converts with JUCE's
++  `secondsToHighResolutionTicks`, which counts it too.
++- **CoreMIDI holds at most a block, not a block and the lead.** An event
++  leaves `lead` samples before its own sample, and the window holds the
++  samples from `lead` to `lead` plus the block's span ahead of the
++  block's start, so every event the callback queues falls due within
++  the block it was queued in. A stop seen at the next block's start
++  finds CoreMIDI holding nothing, unless blocks ran back to back.
++- **A flush reaches a virtual destination as a System Reset.**
++  `MIDIFlushOutput` unschedules what is pending, and also delivers
++  `0xFF`, stamped 0, to the destination's owner, even when nothing was
++  pending. So the daemon flushes only when it has handed CoreMIDI a
++  message due after the moment it ends the notes. What a hardware
++  port's driver does on a flush was not observed, because no hardware
++  was attached.
++- **CoreMIDI delivers to a virtual destination at the time stamped on
++  a message, not when it arrives.** So a destination's arrival times
++  cannot show that the sender handed a message over early. `status`
++  reports `early` for a destination on macOS, the messages handed to
++  CoreMIDI ahead of their time, and the destination test asserts it.
++- **A block's window starts where the last one ended.** The callback
++  compares each block's position with the last one's plus that block's
++  advance, along the loop in force. A different position is a jump, as
++  a locate is: the daemon ends the notes and, with a clock, sends Stop,
++  Song Position Pointer, and Continue. The advance is exact for a live
++  session the device plays at its own rate. A file at the device's rate
++  reads through JUCE's `ResamplingAudioSource`, which takes 3 samples
++  more than a block on its first block after a flush, so a position 3
++  samples from the expected one still continues. Converted delivery
++  renders in steps of its own and a resampled file reads through a
++  buffer, so for them a position within a block and 1024 samples of the
++  expected one still continues. A block in which the pull missed the live lock is
++  skipped, because the bed did not move in it. A window holds a wrap at
++  its end and not one at its start, so a wrap exactly where one block's
++  window meets the next, as in a loop a whole number of blocks long with
++  no lead, ends the notes and moves the clock once.
++- **A position past the last window's end sends the stretch between
++  them.** Converted delivery steps the bed by 512 samples, so a block's
++  position can land past where the last window ended, and at lead 0 a
++  44.1 kHz session on a 48 kHz device lost 8% of its events that way
++  until the window reached back to cover the stretch, along the wrap if
++  the step crossed one.
++- **An event that the lead or a step puts before its block's start
++  leaves at the block's start**, and does not count as late. Only the
++  first block after play or a jump, and a block after a step, have such
++  events, so `late` counts only the sender's misses.
++- **Each output has its own queue,** so one output's events never wait
++  behind another's. The callback wakes the sender with a semaphore,
++  which takes no lock: a Mach semaphore on macOS, a POSIX one on
++  Linux, and a Windows semaphore. The sender is a JUCE realtime thread.
++- **The lead input binds by name, whenever it opens.** `field seq`
++  opens its output before the voice's input, so the daemon binds an
++  output to its `lead_input` when either one opens. The margin is the
++  ring reader's own, a block plus 256 frames, read on the audio thread
++  each block; a capture input has none. The binding rides the schedule,
++  so binding a new input swaps in a schedule that shares the old one's
++  events, and leaves the notes sounding.
++- **A daemon whose first MIDI client macOS refuses stays refused.**
++  Only a new daemon process clears it, and the errors that a refusal can
++  cause say so. A review measured `MIDIClientCreate` returning `-304` in
++  8 of 200 fresh processes with no other MIDI client alive, and it kept
++  returning `-304` through 40 calls over 4 seconds in one process. So
++  JUCE's keeping its first answer is not the whole cause, and a client of
++  the daemon's own would not clear it. A later run on this machine saw
++  the refusal in 0 of 300 processes, so the rate depends on what else is
++  alive.
++- **The daemon refuses** a replacement that names another port, a
++  second output on a source or destination already in use, SysEx, and
++  a 65th output.
++- **Capture leaves out an output by its source's identifier**, which
++  JUCE gives a virtual source and lists it under alike on macOS and
++  Linux. §4's timing row records a take from an output's source in the
++  daemon that sends it, which that exclusion forbids. A test seam
++  honoured only with null output, `FIELD_AUDIOD_CAPTURE_OUTPUTS=1`, lets
++  the take hear it, as the other `FIELD_AUDIOD_*` seams bend one rule
++  for a test.
++- **The null clock runs as a realtime thread on macOS.** As an ordinary
++  thread on a loaded machine its blocks started up to 2 ms late, and
++  because an output and a take both time from block starts, captures
++  strayed up to 114 samples from their schedule. Under the
++  time-constraint policy a device's callback runs at, the worst was 11
++  samples and the median 5. Linux keeps the null clock's priority,
++  because raising it takes privileges a CI runner lacks, so the timing
++  row there depends on the runner's load.
++- **`--midi-monitor` prints `host_ms`** on each line, the arrival on the
++  daemon's clock. With `--destination` it publishes a virtual
++  destination: through CoreMIDI on macOS, adding `timestamp_ms`, and
++  through JUCE's ALSA port on Linux, with the arrival alone. Windows
++  refuses.
++
++The tests are `src/audiod/midi-out.test.ts` and
++`field-audiod --midi-out-selftest`, which it runs. They cover §4's
++rows on schedule timing through a MIDI take across a wrap with none
++late, note-offs in every case, the lead and `lead_input` with a fake
++clock, capture leaving out the outputs, a destination's timestamps
++against a source's arrivals across a wrap with every event handed over
++early, no event handed over early reaching the destination after a
++stop with a fake CoreMIDI, and the clock's transport messages through
++`--midi-monitor`. Only macOS ran them. Linux and Windows were not built
++here; CI builds and tests them. The clock's projection row is chunk 5's.
+diff --git a/native/audiod/CMakeLists.txt b/native/audiod/CMakeLists.txt
+index 3e99cf9b..ff91c2d3 100644
+--- a/native/audiod/CMakeLists.txt
++++ b/native/audiod/CMakeLists.txt
+@@ -48,6 +48,7 @@ target_sources(field-audiod PRIVATE
+   src/click.cpp
+   src/keys.cpp
+   src/keyboard-layout.cpp
++  src/midi_out.cpp
+   src/dsp/biquad.cpp
+   src/dsp/limiter.cpp
+   src/dsp/hall.cpp
+diff --git a/native/audiod/src/keys.cpp b/native/audiod/src/keys.cpp
+index 0b4101bf..8e49c544 100644
+--- a/native/audiod/src/keys.cpp
++++ b/native/audiod/src/keys.cpp
+@@ -1,10 +1,15 @@
+ #include "keys.h"
+ 
+ #include "keyboard-layout.h"
++#include "midi_out.h"
+ 
+ #include <juce_audio_devices/juce_audio_devices.h>
+ #include <juce_events/juce_events.h>
+ 
++#if JUCE_MAC
++#include <CoreMIDI/CoreMIDI.h>
++#endif
++
+ #if defined(_WIN32)
+ #define WIN32_LEAN_AND_MEAN
+ #define NOMINMAX
+@@ -21,6 +26,7 @@
+ #include <iostream>
+ #include <memory>
+ #include <mutex>
++#include <optional>
+ #include <string>
+ #include <thread>
+ #include <utility>
+@@ -88,38 +94,89 @@ juce::String readMidiLine (const juce::String& line, juce::MidiMessage& message)
+         || ! parsed["midi"].isArray())
+         return "expected a line like {\"midi\":[144,60,100]}, got " + line;
+ 
+-    const auto& bytes = *parsed["midi"].getArray();
+-    if (bytes.isEmpty() || bytes.size() > 3)
+-        return "a MIDI message is 1 to 3 bytes, got " + juce::String (bytes.size()) + " in " + line;
+-
+     juce::uint8 data[3] {};
+-    for (int i = 0; i < bytes.size(); ++i)
+-    {
+-        const auto& byte = bytes.getReference (i);
+-        if (! (byte.isInt() || byte.isInt64()) || (juce::int64) byte < 0 || (juce::int64) byte > 255)
+-            return "a MIDI byte is an integer from 0 to 255, got " + juce::JSON::toString (byte, true)
+-                   + " in " + line;
+-        data[i] = (juce::uint8) (int) byte;
+-    }
+-    if (data[0] < 0x80)
+-        return "a MIDI message starts with a status byte, 128 or above, got "
+-               + juce::String (data[0]) + " in " + line;
+-
+-    message = juce::MidiMessage (data, bytes.size());
++    int size = 0;
++    if (const auto error = readMidiBytes (parsed["midi"], data, size); error.isNotEmpty())
++        return error + " in " + line;
++    message = juce::MidiMessage (data, size);
+     return {};
+ }
+ 
++void printMessage (const juce::uint8* data, int size, double hostMs, std::optional<double> timestampMs = {})
++{
++    juce::Array<juce::var> bytes;
++    for (int i = 0; i < size; ++i)
++        bytes.add ((int) data[i]);
++    auto line = jsonObject ({ { "midi", bytes }, { "host_ms", hostMs } });
++    if (timestampMs)
++        line.getDynamicObject()->setProperty ("timestamp_ms", *timestampMs);
++    printLine (line);
++}
++
+ class MidiPrinter final : public juce::MidiInputCallback
+ {
+ public:
+     void handleIncomingMidiMessage (juce::MidiInput*, const juce::MidiMessage& message) override
+     {
+-        juce::Array<juce::var> bytes;
+-        for (int i = 0; i < message.getRawDataSize(); ++i)
+-            bytes.add ((int) message.getRawData()[i]);
+-        printLine (jsonObject ({ { "midi", bytes } }));
++        // Read here rather than taken from the message, as the daemon's
++        // capture does: JUCE's ALSA input stamps with another clock.
++        printMessage (message.getRawData(), message.getRawDataSize(), juce::Time::getMillisecondCounterHiRes());
++    }
++};
++
++#if JUCE_MAC
++// A virtual destination through CoreMIDI itself, because JUCE's MidiInput
++// stamps each message with its arrival and drops the time it carries.
++class TimestampedDestination
++{
++public:
++    explicit TimestampedDestination (const juce::String& name)
++    {
++        const auto cfName = name.toCFString();
++        if (MIDIClientCreate (CFSTR ("field-audiod --midi-monitor"), nullptr, nullptr, &client) == noErr)
++            MIDIDestinationCreateWithProtocol (client, cfName, kMIDIProtocol_1_0, &endpoint,
++                                               ^(const MIDIEventList* list, void*) { print (list); });
++        CFRelease (cfName);
+     }
++    ~TimestampedDestination()
++    {
++        if (endpoint != 0)
++            MIDIEndpointDispose (endpoint);
++        if (client != 0)
++            MIDIClientDispose (client);
++    }
++    bool published() const { return endpoint != 0; }
++
++private:
++    static void print (const MIDIEventList* list)
++    {
++        const double hostMs = juce::Time::getMillisecondCounterHiRes();
++        const auto* packet = &list->packet[0];
++        for (UInt32 p = 0; p < list->numPackets; ++p, packet = MIDIEventPacketNext (packet))
++            for (UInt32 w = 0; w < packet->wordCount;)
++            {
++                // Universal MIDI Packets, as a MIDI 1.0 destination receives
++                // them: type 1 a system message and type 2 a channel voice
++                // message, one word each; other types are skipped by their
++                // length.
++                const UInt32 word = packet->words[w];
++                const UInt32 type = word >> 28;
++                const juce::uint8 data[3] { (juce::uint8) (word >> 16), (juce::uint8) ((word >> 8) & 0x7f), (juce::uint8) (word & 0x7f) };
++                const int status = data[0] & 0xf0;
++                if (type == 1)
++                    printMessage (data, data[0] == 0xf2 ? 3 : (data[0] == 0xf1 || data[0] == 0xf3) ? 2 : 1, hostMs,
++                                  msForHostTime (packet->timeStamp));
++                else if (type == 2)
++                    printMessage (data, status == 0xc0 || status == 0xd0 ? 2 : 3, hostMs, msForHostTime (packet->timeStamp));
++                constexpr UInt32 words[16] { 1, 1, 1, 2, 2, 4, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4 };
++                w += words[type];
++            }
++    }
++
++    MIDIClientRef client = 0;
++    MIDIEndpointRef endpoint = 0;
+ };
++#endif
+ 
+ std::unique_ptr<juce::MidiInput> openSource (const juce::String& name, juce::MidiInputCallback& callback)
+ {
+@@ -184,8 +241,62 @@ juce::String defaultOutputDevice()
+ }
+ 
+ std::atomic<bool> stopRequested { false };
++
++void runUntilStopped()
++{
++    while (! stopRequested && ! stdinEnded())
++        juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
++}
+ } // namespace
+ 
++juce::String readMidiBytes (const juce::var& value, juce::uint8 (&data)[3], int& size)
++{
++    const auto* bytes = value.getArray();
++    if (bytes == nullptr || bytes->isEmpty() || bytes->size() > 3)
++        return "a MIDI message is 1 to 3 bytes, got " + juce::String (bytes == nullptr ? 0 : bytes->size());
++    for (int i = 0; i < bytes->size(); ++i)
++    {
++        const auto& byte = bytes->getReference (i);
++        if (! (byte.isInt() || byte.isInt64()) || (juce::int64) byte < 0 || (juce::int64) byte > 255)
++            return "a MIDI byte is an integer from 0 to 255, got " + juce::JSON::toString (byte, true);
++        data[i] = (juce::uint8) (int) byte;
++    }
++    if (data[0] < 0x80)
++        return "a MIDI message starts with a status byte, 128 or above, got " + juce::String (data[0]);
++    size = bytes->size();
++    return {};
++}
++
++std::unique_ptr<juce::MidiOutput> createVirtualSource (const juce::String& name)
++{
++    // JUCE declares createNewDevice only where the OS lets a process
++    // publish a MIDI port (macOS, Linux); Windows has no virtual ports.
++#if JUCE_WINDOWS
++    juce::ignoreUnused (name);
++    return nullptr;
++#else
++    return juce::MidiOutput::createNewDevice (name);
++#endif
++}
++
++juce::String midiClientRefusalNote()
++{
++#if JUCE_MAC
++    // A refused process keeps being refused, and a healthy one with no ports
++    // gets a client, so asking again tells the two apart.
++    MIDIClientRef probe = 0;
++    if (MIDIClientCreate (CFSTR ("field-audiod refusal probe"), nullptr, nullptr, &probe) == noErr)
++    {
++        MIDIClientDispose (probe);
++        return {};
++    }
++    return ". macOS can refuse a process its first MIDI client, and only a new daemon process clears that: "
++           "run field transport quit, then try again";
++#else
++    return {};
++#endif
++}
++
+ int runKeys (const juce::String& name)
+ {
+     juce::ScopedJuceInitialiser_GUI juceInit;
+@@ -195,14 +306,9 @@ int runKeys (const juce::String& name)
+     const KeyboardLayoutWatcher watcher (printKeyboardLayout);
+     printKeyboardLayout();
+ 
+-    // JUCE declares createNewDevice only where the OS lets a process
+-    // publish a MIDI port (macOS, Linux); Windows has no virtual ports, so
+-    // there the helper refuses below with the same message as a failure.
+-#if JUCE_WINDOWS
+-    std::unique_ptr<juce::MidiOutput> source;
+-#else
+-    auto source = juce::MidiOutput::createNewDevice (name);
+-#endif
++    // Windows has no virtual ports, so there the helper refuses below
++    // with the same message as a failure.
++    auto source = createVirtualSource (name);
+     if (source == nullptr)
+     {
+         printError ("cannot create a virtual MIDI source named " + name + " on this system");
+@@ -246,33 +352,58 @@ int runKeys (const juce::String& name)
+     return exitCode;
+ }
+ 
+-int runMidiMonitor (const juce::String& name)
++int runMidiMonitor (const juce::String& name, bool destination)
+ {
+     juce::ScopedJuceInitialiser_GUI juceInit;
+     auto* messageManager = juce::MessageManager::getInstance();
++    std::signal (SIGTERM, [] (int) { stopRequested = true; });
++    std::signal (SIGINT, [] (int) { stopRequested = true; });
++
++    if (destination)
++    {
++#if JUCE_MAC
++        TimestampedDestination published (name);
++        const bool ready = published.published();
++#elif JUCE_WINDOWS
++        const bool ready = false; // no virtual ports
++#else
++        // JUCE's virtual destination (ALSA), with the arrival time alone:
++        // the time a message carries is CoreMIDI's.
++        MidiPrinter printer;
++        auto published = juce::MidiInput::createNewDevice (name, &printer);
++        if (published != nullptr)
++            published->start();
++        const bool ready = published != nullptr;
++#endif
++        if (! ready)
++        {
++            printError ("cannot create a virtual MIDI destination named " + name + " on this system");
++            return 1;
++        }
++        printLine (jsonObject ({ { "ready", true }, { "name", name } }));
++        runUntilStopped();
++        return 0;
++    }
+ 
+     MidiPrinter printer;
+     const auto giveUpAt = juce::Time::currentTimeMillis() + 5000;
+     auto input = openSource (name, printer);
+-    while (input == nullptr && juce::Time::currentTimeMillis() < giveUpAt)
++    while (input == nullptr && ! stopRequested && juce::Time::currentTimeMillis() < giveUpAt)
+     {
+         messageManager->runDispatchLoopUntil (100);
+         input = openSource (name, printer);
+     }
++    if (input == nullptr && stopRequested)
++        return 0;
+     if (input == nullptr)
+     {
+         printError ("no MIDI source named " + name);
+         return 1;
+     }
+ 
+-    std::signal (SIGTERM, [] (int) { stopRequested = true; });
+-    std::signal (SIGINT, [] (int) { stopRequested = true; });
+     input->start();
+     printLine (jsonObject ({ { "ready", true }, { "name", name } }));
+-
+-    while (! stopRequested && ! stdinEnded())
+-        messageManager->runDispatchLoopUntil (100);
+-
++    runUntilStopped();
+     input->stop();
+     return 0;
+ }
+diff --git a/native/audiod/src/keys.h b/native/audiod/src/keys.h
+index b2a0db60..7b1fb43d 100644
+--- a/native/audiod/src/keys.h
++++ b/native/audiod/src/keys.h
+@@ -1,19 +1,42 @@
+ // The native half of `field keys` (keyboard-instrument.md §2.5): a
+ // virtual MIDI source driven by NDJSON on stdin, and a monitor that
+-// prints what a named source sends. Both are short-lived subprocesses,
++// prints what a named source sends, or what a virtual destination it
++// publishes receives. Both are short-lived subprocesses,
+ // apart from the daemon's transport and socket, and both speak NDJSON on
+ // stdout and nothing else.
+ #pragma once
+ 
+ #include <juce_core/juce_core.h>
+ 
++#include <memory>
++
++namespace juce
++{
++class MidiOutput;
++}
++
+ namespace field
+ {
+ // Reports the keyboard layout (macOS), publishes the source, sends each
+ // {"midi":[...]} line from stdin, and closes the source at end of input.
+ int runKeys (const juce::String& name);
+ 
+-// Prints each message from the source named `name` until end of input,
+-// SIGTERM, or SIGINT.
+-int runMidiMonitor (const juce::String& name);
++// Prints each message from the source named `name`, with the host time
++// it arrived at, until end of input, SIGTERM, or SIGINT. With
++// `destination`, publishes a virtual destination of that name instead
++// and prints each message sent to it, with the time stamped on it too.
++int runMidiMonitor (const juce::String& name, bool destination);
++
++// Publishes a virtual MIDI source, as `--keys` does and a MIDI output
++// does (sequencer.md §2.5), or returns null where the system cannot.
++std::unique_ptr<juce::MidiOutput> createVirtualSource (const juce::String& name);
++
++// What to add to an error that a refused MIDI client could cause, because
++// JUCE then creates no source and lists no ports. Empty off macOS, and when
++// a further MIDI client in this process succeeds.
++juce::String midiClientRefusalNote();
++
++// Reads a MIDI message of 1 to 3 bytes, starting with a status byte,
++// into `data`. Returns why it is not one, or empty.
++juce::String readMidiBytes (const juce::var& bytes, juce::uint8 (&data)[3], int& size);
+ } // namespace field
+diff --git a/native/audiod/src/live.h b/native/audiod/src/live.h
+index 14e54283..8494157a 100644
+--- a/native/audiod/src/live.h
++++ b/native/audiod/src/live.h
+@@ -50,6 +50,10 @@ class LiveInput
+ public:
+     virtual ~LiveInput() = default;
+     virtual void read (float* left, float* right, int n) = 0;
++    // The frames the reader holds back beyond what it plays, which a MIDI
++    // output with this input as its `lead_input` leads by too
++    // (sequencer.md §2.5). Audio thread, as read() is.
++    virtual juce::int64 readerMargin() const { return 0; }
+ };
+ 
+ // The sources a session's input windows name, by name.
+diff --git a/native/audiod/src/main.cpp b/native/audiod/src/main.cpp
+index 72cf1c87..0c717fc8 100644
+--- a/native/audiod/src/main.cpp
++++ b/native/audiod/src/main.cpp
+@@ -4,6 +4,7 @@
+ #include "hosting.h"
+ #include "keys.h"
+ #include "live.h"
++#include "midi_out.h"
+ #include "render.h"
+ #include "ring_input.h"
+ #include "server.h"
+@@ -78,6 +79,7 @@ class Heartbeat : public juce::Timer
+         // finalizes here, on the message thread, and a loop opens its
+         // next standby.
+         player.serviceCapture();
++        player.serviceMidiOutputs();
+ 
+         auto status = player.status();
+ 
+@@ -153,6 +155,7 @@ int main (int argc, char* argv[])
+     std::vector<std::string> renderLiveInputs; // with --render-live: name=file.wav, each an input
+     bool ringSelfTest = false;
+     bool captureSelfTest = false;
++    bool midiOutSelfTest = false;
+     int ringFeedId = 0;
+     std::string ringFeedWav;
+     juce::String scanFormat;
+@@ -165,6 +168,7 @@ int main (int argc, char* argv[])
+     juce::String captureOut;
+     std::optional<juce::String> keysName;
+     std::optional<juce::String> monitorName;
++    bool monitorDestination = false;
+     bool nullOutput = false;
+     int idleSeconds = 300;
+ 
+@@ -203,12 +207,16 @@ int main (int argc, char* argv[])
+             keysName = juce::String::fromUTF8 (argv[++i]);
+         else if (arg == "--midi-monitor" && i + 1 < argc)
+             monitorName = juce::String::fromUTF8 (argv[++i]);
++        else if (arg == "--destination" && monitorName)
++            monitorDestination = true; // with --midi-monitor: publish a virtual destination
+         else if (arg == "--null-output")
+             nullOutput = true;
+         else if (arg == "--ring-selftest")
+             ringSelfTest = true;
+         else if (arg == "--capture-selftest")
+             captureSelfTest = true;
++        else if (arg == "--midi-out-selftest")
++            midiOutSelfTest = true;
+         else if (arg == "--ring-feed" && i + 2 < argc)
+         {
+             const juce::String id (argv[++i]);
+@@ -236,9 +244,10 @@ int main (int argc, char* argv[])
+                           "<paramsJson> <out>\n"
+                           "       field-audiod --ring-selftest\n"
+                           "       field-audiod --capture-selftest\n"
++                          "       field-audiod --midi-out-selftest\n"
+                           "       field-audiod --ring-feed <ring> <file.wav>\n"
+                           "       field-audiod --keys <name>\n"
+-                          "       field-audiod --midi-monitor <name>\n");
++                          "       field-audiod --midi-monitor <name> [--destination]\n");
+             return 2;
+         }
+     }
+@@ -250,7 +259,7 @@ int main (int argc, char* argv[])
+     if (keysName)
+         return field::runKeys (*keysName);
+     if (monitorName)
+-        return field::runMidiMonitor (*monitorName);
++        return field::runMidiMonitor (*monitorName, monitorDestination);
+ 
+     // Scanning is a subprocess tree for the same isolation reasons as
+     // --render: the parent iterates candidates and spawns itself with
+@@ -355,6 +364,19 @@ int main (int argc, char* argv[])
+         return 0;
+     }
+ 
++    // The MIDI outputs' own check (midi_out.h): the callback's selection
++    // and the sender's, against a fake clock and fake sinks.
++    if (midiOutSelfTest)
++    {
++        if (auto error = field::runMidiOutSelfTest(); ! error.empty())
++        {
++            std::fprintf (stderr, "field-audiod: MIDI output self-test failed: %s\n", error.c_str());
++            return 1;
++        }
++        std::printf ("{\"ok\":true}\n");
++        return 0;
++    }
++
+     // An input without SuperCollider (ring_input.h): a file into a ring.
+     if (ringFeedId > 0)
+     {
+@@ -490,6 +512,7 @@ int main (int argc, char* argv[])
+     // Rings outlive the process unless unlinked, and the exit below skips
+     // the destructors that would unlink them.
+     player.closeInputs();
++    player.closeMidiOutputs();
+     // A daemon that hosted a plugin (a live session's chain) has the
+     // same static-teardown hazard the render subprocess measured: a
+     // loaded plugin module's memory in the DeletedAtShutdown list. The
+diff --git a/native/audiod/src/midi_out.cpp b/native/audiod/src/midi_out.cpp
+new file mode 100644
+index 00000000..3e238c4c
+--- /dev/null
++++ b/native/audiod/src/midi_out.cpp
+@@ -0,0 +1,1577 @@
++#include "midi_out.h"
++
++#include "keys.h"
++#include "live.h"
++
++#include <juce_audio_devices/juce_audio_devices.h>
++
++#if JUCE_MAC
++#include <CoreMIDI/CoreMIDI.h>
++#include <mach/mach.h>
++#elif JUCE_WINDOWS
++#define WIN32_LEAN_AND_MEAN
++#define NOMINMAX
++#include <windows.h>
++#else
++#include <ctime>
++#endif
++
++#include <algorithm>
++#include <chrono>
++#include <cmath>
++#include <initializer_list>
++#include <limits>
++#include <thread>
++
++namespace field
++{
++namespace
++{
++constexpr double never = std::numeric_limits<double>::infinity();
++constexpr juce::int64 unbounded = std::numeric_limits<juce::int64>::max();
++constexpr int queueCapacity = 8192;
++constexpr double lateMs = 1.0;
++constexpr int noteSlots = 16 * 128;
++// A loop much shorter than a block wraps more than once in it; past this
++// many wraps the rest of the block's window is left out.
++constexpr int maxLaps = 16;
++constexpr juce::uint8 sustainPedal = 64; // the control change's number
++constexpr juce::uint8 bendCenterLow = 0x00, bendCenterHigh = 0x40;
++constexpr juce::uint8 clockPulse = 0xf8, clockStart = 0xfa, clockContinue = 0xfb, clockStop = 0xfc, songPosition = 0xf2;
++
++juce::DynamicObject::Ptr obj() { return new juce::DynamicObject(); }
++
++juce::var failure (const juce::String& message)
++{
++    auto o = obj();
++    o->setProperty ("error", message);
++    return juce::var (o.get());
++}
++
++bool isNumber (const juce::var& v) { return v.isInt() || v.isInt64() || v.isDouble(); }
++bool isWhole (const juce::var& v) { return isNumber (v) && (double) v == std::floor ((double) v); }
++
++// How far the bed moved from `from` to `to`, along the wrap in force, or
++// -1 when it could only have got there by a jump.
++juce::int64 distance (juce::int64 from, juce::int64 to, const MidiBlock& block)
++{
++    if (to >= from)
++        return to - from;
++    if (block.wrapTo > block.wrapFrom && from < block.wrapTo && to >= block.wrapFrom)
++        return (block.wrapTo - from) + (to - block.wrapFrom);
++    return -1;
++}
++} // namespace
++
++struct MidiOutputs::Schedule
++{
++    double rate = 0.0;
++    juce::int64 lead = 0;
++    std::shared_ptr<const std::vector<Event>> events;
++    bool clock = false;
++    std::shared_ptr<const std::vector<juce::int64>> pulses;
++    std::shared_ptr<LiveInput> leadInput;
++};
++
++struct MidiOutputs::Entry
++{
++    // A message leaves at `ms`. A wrap ends the held notes at `ms`. A cut
++    // ends them at once, and what was queued for after it never leaves.
++    enum class Kind : juce::uint8
++    {
++        message,
++        wrap,
++        cut
++    };
++    double ms = 0.0;
++    Kind kind = Kind::message;
++    juce::uint8 size = 0;
++    juce::uint8 bytes[3] {};
++
++    static Entry message (double ms, const juce::uint8* bytes, int size)
++    {
++        Entry entry { ms, Kind::message, (juce::uint8) size, {} };
++        std::copy (bytes, bytes + size, entry.bytes);
++        return entry;
++    }
++    static Entry message (double ms, std::initializer_list<juce::uint8> bytes)
++    {
++        return message (ms, bytes.begin(), (int) bytes.size());
++    }
++    static Entry wrap (double ms) { return { ms, Kind::wrap, 0, {} }; }
++    static Entry cut (double ms) { return { ms, Kind::cut, 0, {} }; }
++};
++
++struct MidiOutputs::Output
++{
++    ~Output()
++    {
++        delete next.load();
++        delete current;
++        delete spent.load();
++    }
++
++    juce::String name;
++    MidiTarget target;
++    const void* owner = nullptr;
++    int slot = 0;
++    std::unique_ptr<MidiSink> sink;
++    bool schedules = false;
++    // Message thread: the schedule last published, which a new binding of
++    // the lead input copies.
++    juce::String leadInputName;
++    Schedule published;
++
++    // A schedule passes from the message thread to the callback through
++    // `next`, and back through `spent` once the callback has let it go.
++    std::atomic<Schedule*> next { nullptr };
++    Schedule* current = nullptr;
++    std::atomic<Schedule*> spent { nullptr };
++
++    // Audio thread: where the last block was, how far it expected to
++    // advance, and how far ahead of it the window reached.
++    bool rolling = false;
++    bool pushed = false;
++    juce::int64 lastPosition = 0;
++    juce::int64 lastAdvance = 0;
++    juce::int64 takenAhead = 0;
++    // A new schedule's pulses count the song differently from the ones the
++    // gear followed, so the next block moves the gear as a locate does.
++    bool pulsesMoved = false;
++    // Pulses before this sample wait for the next transport message.
++    juce::int64 pulseFloor = 0;
++
++    juce::AbstractFifo fifo { queueCapacity };
++    std::vector<Entry> queue = std::vector<Entry> ((size_t) queueCapacity);
++
++    // The sender thread's, and the message thread's once the output is
++    // off the sender: the notes it holds, when each one's last note-off
++    // was stamped for, and the latest time a scheduling sink was handed.
++    std::array<bool, noteSlots> held {};
++    std::array<double, noteSlots> offAt {};
++    // Each channel's sustain pedal and pitch bend, and when the last release
++    // or return to center was stamped for.
++    std::array<bool, 16> pedalDown {};
++    std::array<double, 16> pedalUpAt {};
++    std::array<bool, 16> bent {};
++    std::array<double, 16> centeredAt {};
++    double handedUntil = 0.0;
++
++    std::atomic<juce::int64> sent { 0 };
++    std::atomic<juce::int64> late { 0 };
++    std::atomic<juce::int64> early { 0 };
++    std::atomic<juce::int64> dropped { 0 };
++};
++
++MidiOutputs::MidiOutputs (SinkFactory sinks, std::function<void()> wake, std::function<void()> wait)
++    : makeSink (std::move (sinks)), wakeSender (std::move (wake)), waitOut (std::move (wait))
++{
++}
++
++MidiOutputs::~MidiOutputs() { closeAll(); }
++
++juce::var MidiOutputs::open (const juce::var& request, const void* owner, const InputFinder& findInput)
++{
++    const auto name = request.getProperty ("name", juce::var());
++    if (! name.isString() || name.toString().isEmpty())
++        return failure ("midi_out needs a name");
++    const auto source = request.getProperty ("source", juce::var());
++    const auto destination = request.getProperty ("destination", juce::var());
++    if (source.isVoid() == destination.isVoid())
++        return failure ("midi_out takes a source or a destination, and not both");
++    const auto port = source.isVoid() ? destination : source;
++    if (! port.isString() || port.toString().isEmpty())
++        return failure ("midi_out's source or destination is a MIDI port's name");
++    const MidiTarget target { port.toString(), ! source.isVoid() };
++
++    const auto rate = request.getProperty ("rate", juce::var());
++    if (! isNumber (rate) || (double) rate <= 0.0)
++        return failure ("midi_out needs a positive rate");
++    const auto lead = request.getProperty ("lead", juce::var());
++    if (! isWhole (lead) || (double) lead < 0.0)
++        return failure ("midi_out's lead is a whole number of samples, 0 or more");
++    const auto leadInput = request.getProperty ("lead_input", juce::var());
++    if (! leadInput.isVoid() && (! leadInput.isString() || leadInput.toString().isEmpty()))
++        return failure ("midi_out's lead_input is an input's name");
++
++    const auto* list = request.getProperty ("events", juce::var()).getArray();
++    if (list == nullptr)
++        return failure ("midi_out needs an events array");
++    auto events = std::make_shared<std::vector<Event>>();
++    events->reserve ((size_t) list->size());
++    for (int i = 0; i < list->size(); ++i)
++    {
++        const auto& item = list->getReference (i);
++        const auto where = "midi_out's events[" + juce::String (i) + "]";
++        const auto sample = item.getProperty ("sample", juce::var());
++        if (! isWhole (sample) || (double) sample < 0.0)
++            return failure (where + " needs a sample, a whole number 0 or more");
++        Event event { (juce::int64) (double) sample, {}, 0 };
++        int size = 0;
++        if (auto error = readMidiBytes (item.getProperty ("midi", juce::var()), event.bytes, size); error.isNotEmpty())
++            return failure (where + ": " + error);
++        if (event.bytes[0] == 0xf0 || event.bytes[0] == 0xf7)
++            return failure (where + ": SysEx is not a message an output schedules");
++        event.size = (juce::uint8) size;
++        if (! events->empty() && event.sample < events->back().sample)
++            return failure (where + " comes before the event ahead of it: events are in time order");
++        events->push_back (event);
++    }
++
++    auto pulses = std::make_shared<std::vector<juce::int64>>();
++    const auto clock = request.getProperty ("clock", juce::var());
++    if (! clock.isVoid())
++    {
++        const auto* samples = clock.getProperty ("pulses", juce::var()).getArray();
++        const juce::String shape = "midi_out's clock is {pulses}, its samples in order, each a whole number 0 or more";
++        if (samples == nullptr)
++            return failure (shape);
++        pulses->reserve ((size_t) samples->size());
++        for (const auto& sample : *samples)
++        {
++            if (! isWhole (sample) || (double) sample < 0.0 || (! pulses->empty() && (juce::int64) (double) sample < pulses->back()))
++                return failure (shape);
++            pulses->push_back ((juce::int64) (double) sample);
++        }
++    }
++
++    Schedule schedule;
++    schedule.rate = (double) rate;
++    schedule.lead = (juce::int64) (double) lead;
++    schedule.events = events;
++    schedule.clock = ! clock.isVoid();
++    schedule.pulses = pulses;
++    const auto leadInputName = leadInput.toString();
++    if (leadInputName.isNotEmpty())
++        schedule.leadInput = findInput (leadInputName);
++
++    if (auto* existing = find (name.toString()))
++    {
++        if (existing->target.name != target.name || existing->target.source != target.source)
++            return failure ("output \"" + existing->name + "\" sends " + (existing->target.source ? "from source " : "to destination ")
++                            + existing->target.name + ": close it before naming another port");
++        // The same pulses keep their pointer, which is how the callback
++        // tells that the gear's count still holds.
++        if (*schedule.pulses == *existing->published.pulses)
++            schedule.pulses = existing->published.pulses;
++        existing->leadInputName = leadInputName;
++        existing->published = schedule;
++        delete existing->spent.exchange (nullptr);
++        delete existing->next.exchange (new Schedule (schedule));
++    }
++    else
++    {
++        for (const auto& output : outputs)
++            if (output->target.name == target.name && output->target.source == target.source)
++                return failure ("output \"" + output->name + "\" already sends " + (target.source ? "from source " : "to destination ")
++                                + target.name);
++        int slot = 0;
++        while (slot < maxOutputs && blockSlots[(size_t) slot].load() != nullptr)
++            ++slot;
++        if (slot == maxOutputs)
++            return failure ("the daemon has " + juce::String (maxOutputs) + " MIDI outputs open already");
++        juce::String error;
++        auto sink = makeSink (target, error);
++        if (sink == nullptr)
++            return failure (error);
++        auto output = std::make_unique<Output>();
++        output->name = name.toString();
++        output->target = target;
++        output->owner = owner;
++        output->slot = slot;
++        output->schedules = sink->schedules();
++        output->sink = std::move (sink);
++        output->leadInputName = leadInputName;
++        output->published = schedule;
++        output->current = new Schedule (schedule);
++        senderSlots[(size_t) slot] = output.get();
++        blockSlots[(size_t) slot] = output.get();
++        slotsUsed = std::max (slotsUsed.load(), slot + 1);
++        outputs.push_back (std::move (output));
++    }
++
++    auto result = obj();
++    result->setProperty ("name", name);
++    result->setProperty ("events", (int) events->size());
++    if (schedule.clock)
++        result->setProperty ("pulses", (int) pulses->size());
++    return juce::var (result.get());
++}
++
++juce::String MidiOutputs::close (const juce::String& name)
++{
++    auto* output = find (name);
++    if (output == nullptr)
++        return "no MIDI output named \"" + name + "\"";
++    closeWhere ([output] (const Output& o) { return &o == output; });
++    return {};
++}
++
++void MidiOutputs::closeOwnedBy (const void* owner)
++{
++    if (owner != nullptr)
++        closeWhere ([owner] (const Output& o) { return o.owner == owner; });
++}
++
++void MidiOutputs::closeAll()
++{
++    closeWhere ([] (const Output&) { return true; });
++}
++
++void MidiOutputs::closeWhere (const std::function<bool (const Output&)>& match)
++{
++    std::vector<std::unique_ptr<Output>> closing;
++    for (auto it = outputs.begin(); it != outputs.end();)
++    {
++        if (match (**it))
++        {
++            blockSlots[(size_t) (*it)->slot] = nullptr;
++            senderSlots[(size_t) (*it)->slot] = nullptr;
++            closing.push_back (std::move (*it));
++            it = outputs.erase (it);
++        }
++        else
++        {
++            ++it;
++        }
++    }
++    if (closing.empty())
++        return;
++    waitOut();
++    const double now = juce::Time::getMillisecondCounterHiRes();
++    for (auto& output : closing)
++    {
++        // What the callback queued and the sender never took was for a
++        // bed this output no longer follows.
++        output->fifo.reset();
++        endHeldNotes (*output, now, now, true);
++        if (output->rolling && output->current->clock)
++            send (*output, &clockStop, 1, now, now);
++    }
++}
++
++void MidiOutputs::bindLeadInput (const juce::String& name, const std::shared_ptr<LiveInput>& input)
++{
++    for (auto& output : outputs)
++    {
++        if (output->leadInputName != name || output->published.leadInput == input)
++            continue;
++        output->published.leadInput = input;
++        delete output->spent.exchange (nullptr);
++        delete output->next.exchange (new Schedule (output->published));
++    }
++}
++
++void MidiOutputs::reclaim()
++{
++    for (auto& output : outputs)
++        delete output->spent.exchange (nullptr);
++}
++
++bool MidiOutputs::publishes (const juce::String& sourceIdentifier) const
++{
++    return sourceIdentifier.isNotEmpty()
++           && std::any_of (outputs.begin(), outputs.end(), [&] (const std::unique_ptr<Output>& output)
++                           { return output->sink->sourceIdentifier() == sourceIdentifier; });
++}
++
++juce::Array<juce::var> MidiOutputs::describe() const
++{
++    juce::Array<juce::var> list;
++    for (const auto& output : outputs)
++    {
++        auto entry = obj();
++        entry->setProperty ("name", output->name);
++        entry->setProperty (output->target.source ? "source" : "destination", output->target.name);
++        entry->setProperty ("sent", output->sent.load());
++        entry->setProperty ("late", output->late.load());
++        if (output->schedules)
++            entry->setProperty ("early", output->early.load());
++        entry->setProperty ("dropped", output->dropped.load());
++        list.add (juce::var (entry.get()));
++    }
++    return list;
++}
++
++MidiOutputs::Output* MidiOutputs::find (const juce::String& name) const
++{
++    for (const auto& output : outputs)
++        if (output->name == name)
++            return output.get();
++    return nullptr;
++}
++
++// ---- Audio thread -----------------------------------------------------------
++
++void MidiOutputs::play (const MidiBlock& block) noexcept
++{
++    bool pushed = false;
++    for (int i = 0, used = slotsUsed.load(); i < used; ++i)
++        if (auto* output = blockSlots[(size_t) i].load())
++        {
++            output->pushed = false;
++            play (*output, block);
++            pushed = pushed || output->pushed;
++        }
++    if (pushed)
++        wakeSender();
++}
++
++void MidiOutputs::play (Output& output, const MidiBlock& block) noexcept
++{
++    if (output.spent.load() == nullptr)
++        if (auto* incoming = output.next.exchange (nullptr))
++        {
++            auto* outgoing = output.current;
++            output.current = incoming;
++            // Read before `spent` hands `outgoing` to the thread that frees it.
++            const bool newEvents = incoming->events != outgoing->events;
++            const bool newPulses = incoming->clock && incoming->pulses != outgoing->pulses;
++            const bool clockEnded = outgoing->clock && ! incoming->clock;
++            output.spent.store (outgoing);
++            if (output.rolling)
++            {
++                output.pulsesMoved = output.pulsesMoved || newPulses;
++                // A new binding of the lead input keeps the notes; new notes
++                // end the old ones'. Moving the gear ends them on its own.
++                if (newEvents && ! output.pulsesMoved)
++                    push (output, Entry::cut (block.startMs));
++                if (clockEnded)
++                    push (output, Entry::message (block.startMs, { clockStop }));
++            }
++        }
++    if (block.missed)
++        return;
++    const auto& schedule = *output.current;
++    if (! block.rolling)
++    {
++        if (output.rolling)
++        {
++            push (output, Entry::cut (block.startMs));
++            if (schedule.clock)
++                push (output, Entry::message (block.startMs, { clockStop }));
++        }
++        output.rolling = false;
++        output.pulsesMoved = false;
++        return;
++    }
++
++    juce::int64 lead = schedule.lead;
++    if (schedule.leadInput != nullptr)
++        lead += (juce::int64) std::llround ((double) schedule.leadInput->readerMargin() * block.bedPerFrame);
++    juce::int64 from = 0;
++    if (! output.rolling)
++    {
++        if (schedule.clock)
++            resumeClock (output, block.position, block.startMs, false);
++    }
++    else if (const auto moved = distance (output.lastPosition, block.position, block);
++             ! output.pulsesMoved && moved >= 0 && std::abs (moved - output.lastAdvance) <= block.slack)
++    {
++        // Negative when the position landed past the last window's end.
++        from = output.takenAhead - moved;
++    }
++    else
++    {
++        push (output, Entry::cut (block.startMs));
++        if (schedule.clock)
++            resumeClock (output, block.position, block.startMs, true);
++    }
++    const juce::int64 to = lead + block.advance;
++    take (output, block, from, to, lead);
++    output.takenAhead = std::max (from, to);
++    output.lastPosition = block.position;
++    output.lastAdvance = block.advance;
++    output.rolling = true;
++    output.pulsesMoved = false;
++}
++
++void MidiOutputs::take (Output& output, const MidiBlock& block, juce::int64 from, juce::int64 to, juce::int64 lead) noexcept
++{
++    const auto& schedule = *output.current;
++    const auto& events = *schedule.events;
++    const auto& pulses = *schedule.pulses;
++    // An event `offset` samples ahead of the block's position leaves the
++    // lead before it would sound, and no earlier than the block's start.
++    const auto msAt = [&] (juce::int64 offset)
++    { return block.startMs + (double) std::max<juce::int64> (0, offset - lead) * 1000.0 / schedule.rate; };
++    const bool wraps = block.wrapTo > block.wrapFrom;
++    juce::int64 offset = std::min<juce::int64> (0, from); // how far ahead of the block's position this stretch starts
++    juce::int64 segment = block.position + offset; // where this stretch of the timeline starts
++    // A window behind the position starts before the wrap the bed crossed.
++    if (from < 0 && wraps && block.position < output.lastPosition && segment < block.wrapFrom)
++        segment += block.wrapTo - block.wrapFrom;
++    for (int lap = 0; lap < maxLaps; ++lap)
++    {
++        const juce::int64 end = wraps && segment < block.wrapTo ? block.wrapTo : unbounded;
++        const juce::int64 lo = segment + std::max<juce::int64> (0, from - offset);
++        const juce::int64 hi = end == unbounded || to - offset < end - segment ? segment + (to - offset) : end;
++        auto event = std::lower_bound (events.begin(), events.end(), lo,
++                                       [] (const Event& e, juce::int64 s) { return e.sample < s; });
++        auto pulse = std::lower_bound (pulses.begin(), pulses.end(), std::max (lo, output.pulseFloor));
++        for (;;)
++        {
++            const bool haveEvent = event != events.end() && event->sample < hi;
++            const bool havePulse = schedule.clock && pulse != pulses.end() && *pulse < hi;
++            if (havePulse && (! haveEvent || *pulse <= event->sample))
++            {
++                push (output, Entry::message (msAt (offset + *pulse - segment), { clockPulse }));
++                ++pulse;
++            }
++            else if (haveEvent)
++            {
++                push (output, Entry::message (msAt (offset + event->sample - segment), event->bytes, event->size));
++                ++event;
++            }
++            else
++                break;
++        }
++        if (end == unbounded)
++            return;
++        offset += end - segment;
++        if (offset > to)
++            return;
++        // A window holds a wrap at its end and not one at its start, so a
++        // wrap where one block's window meets the next is pushed once.
++        if (offset > from)
++        {
++            const double ms = msAt (offset);
++            push (output, Entry::wrap (ms));
++            if (schedule.clock)
++            {
++                push (output, Entry::message (ms, { clockStop }));
++                positionClock (output, (size_t) (std::lower_bound (pulses.begin(), pulses.end(), block.wrapFrom) - pulses.begin()), ms);
++            }
++        }
++        segment = block.wrapFrom;
++    }
++}
++
++void MidiOutputs::resumeClock (Output& output, juce::int64 position, double ms, bool jump) noexcept
++{
++    const auto& pulses = *output.current->pulses;
++    const auto next = (size_t) (std::lower_bound (pulses.begin(), pulses.end(), position) - pulses.begin());
++    if (jump)
++        push (output, Entry::message (ms, { clockStop }));
++    if (! jump && next == 0)
++    {
++        push (output, Entry::message (ms, { clockStart }));
++        output.pulseFloor = 0;
++        return;
++    }
++    positionClock (output, next, ms);
++}
++
++void MidiOutputs::positionClock (Output& output, size_t pulse, double ms) noexcept
++{
++    // Song Position Pointer counts sixteenth notes, six pulses each, in
++    // 14 bits. It names the first sixteenth at or after the pulse, and the
++    // clock resumes on that sixteenth's pulse, so the gear's count and
++    // the song's agree.
++    const int sixteenth = (int) std::min<size_t> (16383, (pulse + 5) / 6);
++    push (output, Entry::message (ms, { songPosition, (juce::uint8) (sixteenth & 0x7f), (juce::uint8) (sixteenth >> 7) }));
++    push (output, Entry::message (ms, { clockContinue }));
++    const auto& pulses = *output.current->pulses;
++    const auto resumeAt = (size_t) sixteenth * 6;
++    output.pulseFloor = resumeAt < pulses.size() ? pulses[resumeAt] : unbounded;
++}
++
++void MidiOutputs::push (Output& output, const Entry& entry) noexcept
++{
++    int start1, size1, start2, size2;
++    output.fifo.prepareToWrite (1, start1, size1, start2, size2);
++    if (size1 + size2 == 0)
++    {
++        output.dropped.fetch_add (1);
++        return;
++    }
++    output.queue[(size_t) (size1 > 0 ? start1 : start2)] = entry;
++    output.fifo.finishedWrite (1);
++    output.pushed = true;
++}
++
++// ---- Sender thread ----------------------------------------------------------
++
++double MidiOutputs::service (double nowMs)
++{
++    double next = never;
++    for (int i = 0, used = slotsUsed.load(); i < used; ++i)
++        if (auto* output = senderSlots[(size_t) i].load())
++            next = std::min (next, service (*output, nowMs));
++    return next;
++}
++
++double MidiOutputs::service (Output& output, double nowMs)
++{
++    const int ready = output.fifo.getNumReady();
++    if (ready == 0)
++        return never;
++    int start1, size1, start2, size2;
++    output.fifo.prepareToRead (ready, start1, size1, start2, size2);
++    const auto at = [&] (int k) -> const Entry&
++    { return output.queue[(size_t) (k < size1 ? start1 + k : start2 + k - size1)]; };
++
++    int done = 0;
++    int lastCut = -1;
++    for (int k = 0; k < ready; ++k)
++        if (at (k).kind == Entry::Kind::cut)
++            lastCut = k;
++    if (lastCut >= 0)
++    {
++        // What was due before the cut leaves, late if it must; what was
++        // queued for after it was for a bed that stopped or jumped.
++        const double cutMs = at (lastCut).ms;
++        for (; done < lastCut; ++done)
++            if (at (done).ms <= cutMs)
++                deliver (output, at (done), nowMs);
++        endHeldNotes (output, cutMs, nowMs, true);
++        ++done;
++    }
++    double next = never;
++    for (; done < ready; ++done)
++    {
++        const auto& entry = at (done);
++        if (! output.schedules && entry.ms > nowMs)
++        {
++            next = entry.ms;
++            break;
++        }
++        deliver (output, entry, nowMs);
++    }
++    output.fifo.finishedRead (done);
++    return next;
++}
++
++void MidiOutputs::deliver (Output& output, const Entry& entry, double nowMs)
++{
++    switch (entry.kind)
++    {
++        case Entry::Kind::message:
++            send (output, entry.bytes, entry.size, entry.ms, nowMs);
++            break;
++        case Entry::Kind::wrap:
++            endHeldNotes (output, entry.ms, nowMs, false);
++            break;
++        case Entry::Kind::cut:
++            endHeldNotes (output, entry.ms, nowMs, true);
++            break;
++    }
++}
++
++void MidiOutputs::send (Output& output, const juce::uint8* bytes, int size, double ms, double nowMs)
++{
++    output.sink->send (bytes, size, ms);
++    output.sent.fetch_add (1);
++    if (nowMs - ms > lateMs)
++        output.late.fetch_add (1);
++    if (output.schedules)
++    {
++        output.handedUntil = std::max (output.handedUntil, ms);
++        if (ms > nowMs)
++            output.early.fetch_add (1);
++    }
++    if (size < 3)
++        return;
++    const int kind = bytes[0] & 0xf0;
++    if (kind == 0xb0 && bytes[1] == sustainPedal)
++    {
++        const auto channel = (size_t) (bytes[0] & 0x0f);
++        output.pedalDown[channel] = bytes[2] >= 64;
++        if (! output.pedalDown[channel])
++            output.pedalUpAt[channel] = ms;
++        return;
++    }
++    if (kind == 0xe0)
++    {
++        const auto channel = (size_t) (bytes[0] & 0x0f);
++        output.bent[channel] = bytes[1] != bendCenterLow || bytes[2] != bendCenterHigh;
++        if (! output.bent[channel])
++            output.centeredAt[channel] = ms;
++        return;
++    }
++    const auto note = (size_t) ((bytes[0] & 0x0f) * 128 + (bytes[1] & 0x7f));
++    if (kind == 0x90 && bytes[2] > 0)
++        output.held[note] = true;
++    else if (kind == 0x80 || kind == 0x90)
++    {
++        output.held[note] = false;
++        output.offAt[note] = ms;
++    }
++}
++
++void MidiOutputs::endHeldNotes (Output& output, double ms, double nowMs, bool flush)
++{
++    // A flush reaches a virtual destination as a System Reset (0xFF), so
++    // the daemon flushes only when CoreMIDI still holds what it handed
++    // over. Then a note whose note-off it unscheduled is held again.
++    const bool flushing = flush && output.schedules && output.handedUntil > nowMs;
++    if (flushing)
++        output.sink->flush();
++    for (size_t note = 0; note < output.held.size(); ++note)
++    {
++        if (! output.held[note] && ! (flushing && output.offAt[note] > nowMs))
++            continue;
++        const juce::uint8 off[3] { (juce::uint8) (0x80 | (note / 128)), (juce::uint8) (note % 128), 0 };
++        send (output, off, 3, ms, nowMs);
++    }
++    // A note the pedal sustains sounds on after its note-off.
++    for (size_t channel = 0; channel < output.pedalDown.size(); ++channel)
++    {
++        if (! output.pedalDown[channel] && ! (flushing && output.pedalUpAt[channel] > nowMs))
++            continue;
++        const juce::uint8 up[3] { (juce::uint8) (0xb0 | channel), sustainPedal, 0 };
++        send (output, up, 3, ms, nowMs);
++    }
++    // A bend stays on the receiver and detunes the next note.
++    for (size_t channel = 0; channel < output.bent.size(); ++channel)
++    {
++        if (! output.bent[channel] && ! (flushing && output.centeredAt[channel] > nowMs))
++            continue;
++        const juce::uint8 center[3] { (juce::uint8) (0xe0 | channel), bendCenterLow, bendCenterHigh };
++        send (output, center, 3, ms, nowMs);
++    }
++}
++
++// ---- Wakeup and the sender thread -------------------------------------------
++
++#if JUCE_MAC
++Wakeup::Wakeup() { semaphore_create (mach_task_self(), &semaphore, SYNC_POLICY_FIFO, 0); }
++Wakeup::~Wakeup() { semaphore_destroy (mach_task_self(), semaphore); }
++void Wakeup::signal() noexcept { semaphore_signal (semaphore); }
++void Wakeup::waitUntil (double deadlineMs) noexcept
++{
++    if (std::isinf (deadlineMs))
++    {
++        semaphore_wait (semaphore);
++        return;
++    }
++    const double wait = deadlineMs - juce::Time::getMillisecondCounterHiRes();
++    if (wait <= 0.0)
++        return;
++    const mach_timespec_t span { (unsigned int) (wait / 1000.0), (clock_res_t) (std::fmod (wait, 1000.0) * 1.0e6) };
++    semaphore_timedwait (semaphore, span);
++}
++#elif JUCE_WINDOWS
++Wakeup::Wakeup() { semaphore = CreateSemaphoreW (nullptr, 0, 0x7fffffff, nullptr); }
++Wakeup::~Wakeup() { CloseHandle ((HANDLE) semaphore); }
++void Wakeup::signal() noexcept { ReleaseSemaphore ((HANDLE) semaphore, 1, nullptr); }
++void Wakeup::waitUntil (double deadlineMs) noexcept
++{
++    if (std::isinf (deadlineMs))
++    {
++        WaitForSingleObject ((HANDLE) semaphore, INFINITE);
++        return;
++    }
++    const double wait = deadlineMs - juce::Time::getMillisecondCounterHiRes();
++    if (wait > 0.0)
++        WaitForSingleObject ((HANDLE) semaphore, (DWORD) std::ceil (wait));
++}
++#else
++Wakeup::Wakeup() { sem_init (&semaphore, 0, 0); }
++Wakeup::~Wakeup() { sem_destroy (&semaphore); }
++void Wakeup::signal() noexcept { sem_post (&semaphore); }
++void Wakeup::waitUntil (double deadlineMs) noexcept
++{
++    if (std::isinf (deadlineMs))
++    {
++        sem_wait (&semaphore);
++        return;
++    }
++    const double wait = deadlineMs - juce::Time::getMillisecondCounterHiRes();
++    if (wait <= 0.0)
++        return;
++    // sem_timedwait takes a time on the realtime clock.
++    timespec until {};
++    clock_gettime (CLOCK_REALTIME, &until);
++    const auto nanoseconds = (long long) until.tv_nsec + (long long) (wait * 1.0e6);
++    until.tv_sec += (time_t) (nanoseconds / 1'000'000'000);
++    until.tv_nsec = (long) (nanoseconds % 1'000'000'000);
++    sem_timedwait (&semaphore, &until);
++}
++#endif
++
++MidiSender::MidiSender (MidiOutputs& o) : juce::Thread ("audiod MIDI sender"), outputs (o) {}
++
++MidiSender::~MidiSender()
++{
++    signalThreadShouldExit();
++    wakeup.signal();
++    stopThread (2000);
++}
++
++void MidiSender::start()
++{
++    if (isThreadRunning())
++        return;
++    if (! startRealtimeThread (RealtimeOptions {}.withMaximumProcessingTimeMs (1.0)))
++        startThread (Priority::highest);
++}
++
++void MidiSender::waitOutPass()
++{
++    if (! isThreadRunning())
++        return;
++    const auto seen = passes.load();
++    for (int i = 0; i < 300 && passes.load() < seen + 2; ++i)
++    {
++        wakeup.signal();
++        std::this_thread::sleep_for (std::chrono::milliseconds (1));
++    }
++}
++
++void MidiSender::run()
++{
++    while (! threadShouldExit())
++    {
++        const double next = outputs.service (juce::Time::getMillisecondCounterHiRes());
++        passes.fetch_add (1);
++        wakeup.waitUntil (next);
++    }
++}
++
++// ---- Sinks ------------------------------------------------------------------
++
++namespace
++{
++// A virtual source the daemon publishes, or a destination JUCE opens,
++// which sends each message as it is handed one.
++class PortSink final : public MidiSink
++{
++public:
++    PortSink (std::unique_ptr<juce::MidiOutput> port, bool published) : output (std::move (port)), source (published) {}
++    bool schedules() const override { return false; }
++    void send (const juce::uint8* bytes, int size, double) override { output->sendMessageNow (juce::MidiMessage (bytes, size)); }
++    juce::String sourceIdentifier() const override { return source ? output->getIdentifier() : juce::String(); }
++
++private:
++    std::unique_ptr<juce::MidiOutput> output;
++    bool source;
++};
++
++#if JUCE_MAC
++MIDIClientRef daemonClient()
++{
++    static const MIDIClientRef client = []
++    {
++        MIDIClientRef created = 0;
++        MIDIClientCreate (CFSTR ("field-audiod"), nullptr, nullptr, &created);
++        return created;
++    }();
++    return client;
++}
++
++// A destination through CoreMIDI itself, because JUCE's MidiOutput stamps
++// every message with the time it is sent: CoreMIDI schedules each message
++// for the host time stamped on it.
++class CoreMidiSink final : public MidiSink
++{
++public:
++    CoreMidiSink (MIDIPortRef p, MIDIEndpointRef e) : port (p), endpoint (e) {}
++    ~CoreMidiSink() override { MIDIPortDispose (port); }
++    bool schedules() const override { return true; }
++    void send (const juce::uint8* bytes, int size, double ms) override
++    {
++        // One MIDI 1.0 message as a 32-bit Universal MIDI Packet: type 1
++        // for a system message, type 2 for a channel voice message.
++        const UInt32 word = ((bytes[0] >= 0xf0 ? 0x1u : 0x2u) << 28) | ((UInt32) bytes[0] << 16)
++                            | ((UInt32) (size > 1 ? bytes[1] : 0) << 8) | (UInt32) (size > 2 ? bytes[2] : 0);
++        MIDIEventList list {};
++        auto* packet = MIDIEventListInit (&list, kMIDIProtocol_1_0);
++        MIDIEventListAdd (&list, sizeof (list), packet, hostTimeForMs (ms), 1, &word);
++        MIDISendEventList (port, endpoint, &list);
++    }
++    void flush() override { MIDIFlushOutput (endpoint); }
++
++private:
++    MIDIPortRef port;
++    MIDIEndpointRef endpoint;
++};
++#endif
++} // namespace
++
++std::unique_ptr<MidiSink> makeMidiSink (const MidiTarget& target, juce::String& error)
++{
++    if (target.source)
++    {
++        if (auto port = createVirtualSource (target.name))
++            return std::make_unique<PortSink> (std::move (port), true);
++        error = "cannot create a virtual MIDI source named " + target.name + " on this system" + midiClientRefusalNote();
++        return nullptr;
++    }
++    const auto devices = juce::MidiOutput::getAvailableDevices();
++    for (int i = 0; i < devices.size(); ++i)
++    {
++        if (devices[i].name != target.name)
++            continue;
++#if JUCE_MAC
++        // JUCE lists one device per CoreMIDI destination, in CoreMIDI's
++        // order, so the index is the endpoint's; listing again makes sure
++        // none came or went in between.
++        const auto endpoint = MIDIGetDestination ((ItemCount) i);
++        MIDIPortRef port = 0;
++        if (endpoint != 0 && juce::MidiOutput::getAvailableDevices() == devices
++            && MIDIOutputPortCreate (daemonClient(), CFSTR ("field-audiod"), &port) == noErr)
++            return std::make_unique<CoreMidiSink> (port, endpoint);
++#else
++        if (auto port = juce::MidiOutput::openDevice (devices[i].identifier))
++            return std::make_unique<PortSink> (std::move (port), false);
++#endif
++        error = "cannot open the MIDI destination " + target.name;
++        return nullptr;
++    }
++    error = "no MIDI destination named " + target.name;
++    if (devices.isEmpty())
++        error += midiClientRefusalNote();
++    return nullptr;
++}
++
++#if JUCE_MAC
++juce::uint64 hostTimeForMs (double ms) { return (juce::uint64) juce::Time::secondsToHighResolutionTicks (ms / 1000.0); }
++double msForHostTime (juce::uint64 hostTime) { return juce::Time::highResolutionTicksToSeconds ((juce::int64) hostTime) * 1000.0; }
++#endif
++
++// ---- --midi-out-selftest ----------------------------------------------------
++
++namespace
++{
++struct Logged
++{
++    std::vector<juce::uint8> bytes;
++    double ms = 0.0;
++    double handedAt = 0.0;
++};
++
++// Records what it is handed. A scheduling one plays CoreMIDI: a flush
++// drops what was stamped for after the clock.
++class FakeSink final : public MidiSink
++{
++public:
++    FakeSink (bool schedulesAhead, const double& now, std::vector<Logged>& sent, int& flushed)
++        : scheduling (schedulesAhead), clock (now), log (sent), flushes (flushed)
++    {
++    }
++    bool schedules() const override { return scheduling; }
++    void send (const juce::uint8* bytes, int size, double ms) override { log.push_back ({ { bytes, bytes + size }, ms, clock }); }
++    void flush() override
++    {
++        ++flushes;
++        log.erase (std::remove_if (log.begin(), log.end(), [this] (const Logged& l) { return l.ms > clock; }), log.end());
++    }
++
++private:
++    const bool scheduling;
++    const double& clock;
++    std::vector<Logged>& log;
++    int& flushes;
++};
++
++class FakeInput final : public LiveInput
++{
++public:
++    void read (float* left, float* right, int n) override
++    {
++        std::fill (left, left + n, 0.0f);
++        std::fill (right, right + n, 0.0f);
++    }
++    juce::int64 readerMargin() const override { return margin; }
++    juce::int64 margin = 0;
++};
++
++constexpr double testRate = 48000.0;
++constexpr int testBlock = 512;
++double msOf (juce::int64 sample) { return (double) sample * 1000.0 / testRate; }
++bool closeTo (double a, double b) { return std::abs (a - b) < 1.0e-6; }
++
++struct Harness
++{
++    explicit Harness (bool schedulesAhead = false) : scheduling (schedulesAhead) {}
++
++    juce::String open (const juce::String& json)
++    {
++        const auto result = outputs.open (juce::JSON::parse (json), nullptr,
++                                          [this] (const juce::String&) { return std::static_pointer_cast<LiveInput> (input); });
++        return result.getProperty ("error", juce::var()).toString();
++    }
++    void block (juce::int64 position, double ms, bool rolling = true, juce::int64 wrapFrom = 0, juce::int64 wrapTo = 0)
++    {
++        MidiBlock b;
++        b.startMs = ms;
++        b.rolling = rolling;
++        b.position = position;
++        b.advance = advance;
++        b.slack = slack;
++        b.wrapFrom = wrapFrom;
++        b.wrapTo = wrapTo;
++        outputs.play (b);
++    }
++    void serve (double now)
++    {
++        clock = now;
++        outputs.service (now);
++    }
++    std::vector<std::vector<juce::uint8>> sent (size_t from = 0) const
++    {
++        std::vector<std::vector<juce::uint8>> bytes;
++        for (size_t i = from; i < log.size(); ++i)
++            bytes.push_back (log[i].bytes);
++        return bytes;
++    }
++
++    const bool scheduling;
++    juce::int64 advance = testBlock;
++    juce::int64 slack = 0;
++    double clock = 0.0;
++    std::vector<Logged> log;
++    int flushes = 0;
++    std::shared_ptr<FakeInput> input = std::make_shared<FakeInput>();
++    MidiOutputs outputs { [this] (const MidiTarget&, juce::String&) { return std::make_unique<FakeSink> (scheduling, clock, log, flushes); },
++                          [] {},
++                          [] {} };
++};
++
++using Bytes = std::vector<std::vector<juce::uint8>>;
++
++// One long note on channel 16, from sample 0 to 4000.
++const juce::String heldNote = R"({"name":"held","source":"Held","rate":48000,"lead":0,"events":[
++    {"sample":0,"midi":[159,60,100]},{"sample":4000,"midi":[143,60,0]}]})";
++const Bytes on60 { { 0x9f, 60, 100 } };
++
++std::string checkLead()
++{
++    // Each event leaves the lead plus the input's margin before its time,
++    // in the block whose window, the block's span moved later by both,
++    // holds it.
++    Harness h;
++    h.input->margin = 768;
++    if (auto error = h.open (R"({"name":"lead","source":"Lead","rate":48000,"lead":192,"lead_input":"seq:lead","events":[
++            {"sample":10000,"midi":[159,60,100]},{"sample":10500,"midi":[143,60,0]},
++            {"sample":11000,"midi":[159,61,100]},{"sample":11400,"midi":[143,61,0]}]})");
++        error.isNotEmpty())
++        return "lead: " + error.toStdString();
++    const juce::int64 samples[] { 10000, 10500, 11000, 11400 };
++    for (juce::int64 p = 0; p < 12800; p += testBlock)
++    {
++        const auto before = h.log.size();
++        h.block (p, msOf (p));
++        h.serve (1.0e9);
++        for (auto i = before; i < h.log.size(); ++i)
++        {
++            const auto s = samples[i];
++            if (s - 960 < p || s - 960 >= p + testBlock)
++                return "lead: the event at " + std::to_string (s) + " left in the block at " + std::to_string (p);
++            if (! closeTo (h.log[i].ms, msOf (s - 960)))
++                return "lead: the event at " + std::to_string (s) + " left at " + std::to_string (h.log[i].ms) + " ms";
++        }
++    }
++    if (h.log.size() != 4)
++        return "lead: " + std::to_string (h.log.size()) + " events left, not 4";
++
++    // The margin grows with the block: nothing leaves twice, and nothing
++    // is skipped.
++    Harness grows;
++    grows.input->margin = 768;
++    grows.open (R"({"name":"lead","source":"Lead","rate":48000,"lead":192,"lead_input":"seq:lead","events":[
++        {"sample":10000,"midi":[159,60,100]},{"sample":10500,"midi":[143,60,0]},
++        {"sample":11000,"midi":[159,61,100]},{"sample":11400,"midi":[143,61,0]}]})");
++    for (juce::int64 p = 0; p < 12800; p += testBlock)
++    {
++        if (p == 9216)
++            grows.input->margin = 1280;
++        grows.block (p, msOf (p));
++    }
++    grows.serve (1.0e9);
++    if (grows.sent() != Bytes { { 0x9f, 60, 100 }, { 0x8f, 60, 0 }, { 0x9f, 61, 100 }, { 0x8f, 61, 0 } })
++        return "lead: a growing margin sent " + std::to_string (grows.log.size()) + " messages, not the 4 events once each";
++    return {};
++}
++
++std::string checkFlush()
++{
++    // A destination's events go to CoreMIDI as soon as they are queued.
++    // A stop that comes while CoreMIDI still holds some, as when the
++    // callback runs blocks back to back, unschedules them before the
++    // note-offs, and none of them reaches the destination after it.
++    Harness h (true);
++    if (auto error = h.open (R"({"name":"dest","destination":"Synth","rate":48000,"lead":0,"events":[
++            {"sample":100,"midi":[159,60,100]},{"sample":200,"midi":[159,62,100]},
++            {"sample":300,"midi":[143,60,0]},{"sample":400,"midi":[143,62,0]}]})");
++        error.isNotEmpty())
++        return "flush: " + error.toStdString();
++    h.block (0, 1000.0);
++    h.serve (1000.01);
++    if (h.log.size() != 4 || std::any_of (h.log.begin(), h.log.end(), [] (const Logged& l) { return l.handedAt >= l.ms; }))
++        return "flush: the events were not handed over ahead of their times";
++    h.block (testBlock, 1003.0, false);
++    h.serve (1003.0);
++    if (h.flushes != 1)
++        return "flush: a stop with events still scheduled did not flush";
++    if (std::any_of (h.log.begin(), h.log.end(), [] (const Logged& l) { return l.ms > 1003.0; }))
++        return "flush: an event handed over early reached the destination after the stop";
++    if (h.sent() != Bytes { { 0x9f, 60, 100 }, { 0x8f, 60, 0 }, { 0x8f, 62, 0 } })
++        return "flush: after the stop, the destination did not get the first note-on, then a note-off for both notes";
++
++    // A stop after everything it handed over has sounded flushes nothing.
++    h.log.clear();
++    h.block (0, 2000.0);
++    h.serve (2000.01);
++    h.block (testBlock, 2000.0 + msOf (testBlock), false);
++    h.serve (2000.0 + msOf (testBlock));
++    if (h.flushes != 1 || h.log.size() != 4)
++        return "flush: a stop with nothing still scheduled flushed, or sent more than the 4 events";
++    return {};
++}
++
++std::string checkHeld()
++{
++    {
++        Harness h;
++        h.open (heldNote);
++        h.block (0, 0.0);
++        h.serve (0.0);
++        h.block (testBlock, msOf (testBlock), false);
++        h.serve (msOf (testBlock));
++        if (h.sent() != Bytes { { 0x9f, 60, 100 }, { 0x8f, 60, 0 } })
++            return "held: a stop did not end the note";
++    }
++    {
++        // A locate lands inside the note: it ends, and does not start again.
++        Harness h;
++        h.open (heldNote);
++        h.block (0, 0.0);
++        h.serve (0.0);
++        for (juce::int64 p = 2048; p < 4608; p += testBlock)
++        {
++            h.block (p, msOf (p - 1536));
++            h.serve (msOf (p - 1536));
++        }
++        h.serve (1.0e9);
++        if (h.sent() != Bytes { { 0x9f, 60, 100 }, { 0x8f, 60, 0 }, { 0x8f, 60, 0 } })
++            return "held: a locate did not end the note, or started it again";
++    }
++    {
++        // A wrap ends the note, and the loop's start begins it again, at
++        // the wrap's time.
++        Harness h;
++        h.open (heldNote);
++        for (juce::int64 p = 0; p < 3000; p += testBlock)
++            h.block (p, msOf (p), true, 0, 3000);
++        h.serve (1.0e9);
++        if (h.sent() != Bytes { { 0x9f, 60, 100 }, { 0x8f, 60, 0 }, { 0x9f, 60, 100 } })
++            return "held: a wrap did not end the note and start it again";
++        if (! closeTo (h.log[1].ms, msOf (3000)) || ! closeTo (h.log[2].ms, msOf (3000)))
++            return "held: the wrap's note-off and note-on did not leave at the wrap";
++    }
++    {
++        // A loop two blocks long wraps where one block's window ends and
++        // the next one's starts: each wrap still ends the note, once.
++        Harness h;
++        h.open (heldNote);
++        for (juce::int64 p = 0; p < 6 * testBlock; p += testBlock)
++            h.block (p % 1024, msOf (p), true, 0, 1024);
++        h.serve (1.0e9);
++        const Bytes onOff { { 0x9f, 60, 100 }, { 0x8f, 60, 0 } };
++        if (h.sent() != Bytes { onOff[0], onOff[1], onOff[0], onOff[1], onOff[0], onOff[1] })
++            return "held: a wrap at a block's end did not end the note before the loop's start began it again";
++        if (! closeTo (h.log[1].ms, msOf (1024)) || ! closeTo (h.log[3].ms, msOf (2048)) || ! closeTo (h.log[5].ms, msOf (3072)))
++            return "held: a wrap at a block's end did not end the note at the wrap";
++
++        // With a lead the same wrap falls inside a window, and still ends
++        // the note once.
++        Harness led;
++        led.open (heldNote.replace ("\"lead\":0", "\"lead\":192"));
++        for (juce::int64 p = 0; p < 6 * testBlock; p += testBlock)
++            led.block (p % 1024, msOf (p), true, 0, 1024);
++        led.serve (1.0e9);
++        if (led.sent() != Bytes { onOff[0], onOff[1], onOff[0], onOff[1], onOff[0], onOff[1], onOff[0] })
++            return "held: with a lead, a wrap at a block's end did not end the note exactly once";
++    }
++    {
++        Harness h;
++        h.open (heldNote);
++        h.block (0, 0.0);
++        h.serve (0.0);
++        h.open (R"({"name":"held","source":"Held","rate":48000,"lead":0,"events":[{"sample":1000,"midi":[159,62,100]}]})");
++        h.block (testBlock, msOf (testBlock));
++        h.serve (1.0e9);
++        if (h.sent() != Bytes { { 0x9f, 60, 100 }, { 0x8f, 60, 0 }, { 0x9f, 62, 100 } })
++            return "held: a replaced schedule did not end the old one's note before the new one's";
++        if (auto error = h.open (R"({"name":"held","destination":"Held","rate":48000,"lead":0,"events":[]})"); error.isEmpty())
++            return "held: a replacement naming another port was accepted";
++    }
++    {
++        Harness h;
++        h.open (heldNote);
++        h.block (0, 0.0);
++        h.serve (0.0);
++        h.outputs.close ("held");
++        if (h.sent() != Bytes { { 0x9f, 60, 100 }, { 0x8f, 60, 0 } })
++            return "held: closing the output did not end the note";
++    }
++    {
++        // A bend stays on the receiver and detunes the next note, so whatever
++        // ends the notes also centers it.
++        const juce::String bent = R"({"name":"bend","source":"Bend","rate":48000,"lead":0,"events":[{"sample":0,"midi":[239,0,96]}]})";
++        const Bytes centered { { 0xef, 0, 96 }, { 0xef, 0, 64 } };
++
++        Harness stops;
++        stops.open (bent);
++        stops.block (0, 0.0);
++        stops.serve (0.0);
++        stops.block (testBlock, msOf (testBlock), false);
++        stops.serve (1.0e9);
++        if (stops.sent() != centered)
++            return "held: a stop did not center the pitch bend";
++
++        Harness closes;
++        closes.open (bent);
++        closes.block (0, 0.0);
++        closes.serve (1.0e9);
++        closes.outputs.close ("bend");
++        if (closes.sent() != centered)
++            return "held: closing the output did not center the pitch bend";
++
++        Harness wraps;
++        wraps.open (bent);
++        wraps.block (0, 0.0, true, 0, 1024);
++        wraps.block (testBlock, msOf (testBlock), true, 0, 1024);
++        wraps.serve (1.0e9);
++        if (wraps.sent() != centered)
++            return "held: a wrap did not center the pitch bend";
++
++        // A bend the schedule centered itself stays as it is.
++        Harness centeredBySchedule;
++        centeredBySchedule.open (R"({"name":"bend","source":"Bend","rate":48000,"lead":0,"events":[
++            {"sample":0,"midi":[239,0,96]},{"sample":200,"midi":[239,0,64]}]})");
++        centeredBySchedule.block (0, 0.0);
++        centeredBySchedule.serve (0.0);
++        centeredBySchedule.block (testBlock, msOf (testBlock), false);
++        centeredBySchedule.serve (1.0e9);
++        if (centeredBySchedule.sent() != centered)
++            return "held: a stop centered a bend the schedule had already centered";
++
++        // CoreMIDI still holds the schedule's own centering, which the flush
++        // unschedules, so the daemon sends it again.
++        Harness flushed (true);
++        flushed.open (R"({"name":"bend","destination":"Bend","rate":48000,"lead":0,"events":[
++            {"sample":0,"midi":[239,0,96]},{"sample":400,"midi":[239,0,64]}]})");
++        flushed.block (0, 1000.0);
++        flushed.serve (1000.01);
++        flushed.block (testBlock, 1003.0, false);
++        flushed.serve (1003.0);
++        if (flushed.flushes != 1 || flushed.sent() != centered || ! closeTo (flushed.log[1].ms, 1003.0))
++            return "held: a flush that unscheduled the bend's centering did not center it";
++    }
++    {
++        // A note the pedal sustains still sounds after its note-off, so
++        // whatever ends the notes also lifts the pedal.
++        const juce::String pedalled = R"({"name":"pedal","source":"Pedal","rate":48000,"lead":0,"events":[
++            {"sample":0,"midi":[191,64,127]},{"sample":100,"midi":[159,60,100]},{"sample":200,"midi":[143,60,0]}]})";
++        const Bytes lifted { { 0xbf, 64, 127 }, { 0x9f, 60, 100 }, { 0x8f, 60, 0 }, { 0xbf, 64, 0 } };
++
++        Harness stops;
++        stops.open (pedalled);
++        stops.block (0, 0.0);
++        stops.serve (0.0);
++        stops.block (testBlock, msOf (testBlock), false);
++        stops.serve (1.0e9);
++        if (stops.sent() != lifted)
++            return "held: a stop did not lift the sustain pedal";
++
++        Harness locates;
++        locates.open (pedalled);
++        locates.block (0, 0.0);
++        locates.serve (0.0);
++        locates.block (48000, msOf (testBlock));
++        locates.serve (1.0e9);
++        if (locates.sent() != lifted)
++            return "held: a locate did not lift the sustain pedal";
++
++        Harness closes;
++        closes.open (pedalled);
++        closes.block (0, 0.0);
++        closes.serve (1.0e9);
++        closes.outputs.close ("pedal");
++        if (closes.sent() != lifted)
++            return "held: closing the output did not lift the sustain pedal";
++
++        Harness wraps;
++        wraps.open (pedalled);
++        wraps.block (0, 0.0, true, 0, 1024);
++        wraps.block (testBlock, msOf (testBlock), true, 0, 1024);
++        wraps.serve (1.0e9);
++        if (wraps.sent() != lifted)
++            return "held: a wrap did not lift the sustain pedal";
++
++        // A pedal the schedule lifted itself stays as it is.
++        Harness liftedBySchedule;
++        liftedBySchedule.open (R"({"name":"pedal","source":"Pedal","rate":48000,"lead":0,"events":[
++            {"sample":0,"midi":[191,64,127]},{"sample":200,"midi":[191,64,0]}]})");
++        liftedBySchedule.block (0, 0.0);
++        liftedBySchedule.serve (0.0);
++        liftedBySchedule.block (testBlock, msOf (testBlock), false);
++        liftedBySchedule.serve (1.0e9);
++        if (liftedBySchedule.sent() != Bytes { { 0xbf, 64, 127 }, { 0xbf, 64, 0 } })
++            return "held: a stop lifted a pedal the schedule had already lifted";
++
++        // CoreMIDI still holds the schedule's own release, which the flush
++        // unschedules, so the daemon sends it again.
++        Harness flushed (true);
++        flushed.open (R"({"name":"pedal","destination":"Pedal","rate":48000,"lead":0,"events":[
++            {"sample":0,"midi":[191,64,127]},{"sample":400,"midi":[191,64,0]}]})");
++        flushed.block (0, 1000.0);
++        flushed.serve (1000.01);
++        flushed.block (testBlock, 1003.0, false);
++        flushed.serve (1003.0);
++        if (flushed.flushes != 1 || flushed.sent() != Bytes { { 0xbf, 64, 127 }, { 0xbf, 64, 0 } } || ! closeTo (flushed.log[1].ms, 1003.0))
++            return "held: a flush that unscheduled the pedal's release did not lift the pedal";
++    }
++    return {};
++}
++
++std::string checkClock()
++{
++    // Pulses every 1000 samples, 24 to the quarter note at 120 bpm.
++    juce::String pulses;
++    for (int i = 0; i < 1200; ++i)
++        pulses << (i > 0 ? "," : "") << juce::String (i * 1000);
++    Harness h;
++    if (auto error = h.open (R"({"name":"clock","source":"Clock","rate":48000,"lead":0,"events":[],"clock":{"pulses":[)" + pulses + "]}}");
++        error.isNotEmpty())
++        return "clock: " + error.toStdString();
++    double ms = 0.0;
++    const auto play = [&] (juce::int64 position, int blocks, bool rolling = true, juce::int64 wrapFrom = 0, juce::int64 wrapTo = 0)
++    {
++        const auto first = h.log.size();
++        for (int i = 0; i < blocks; ++i)
++        {
++            h.block (position, ms, rolling, wrapFrom, wrapTo);
++            position = wrapTo > wrapFrom && position + testBlock >= wrapTo ? wrapFrom + (position + testBlock - wrapTo) : position + testBlock;
++            ms += msOf (testBlock);
++        }
++        h.serve (1.0e9);
++        return first;
++    };
++    // The messages from `first` on that are not pulses, and the time of
++    // the first pulse among them.
++    const auto transport = [&] (size_t first)
++    {
++        Bytes messages;
++        for (auto i = first; i < h.log.size(); ++i)
++            if (h.log[i].bytes != std::vector<juce::uint8> { clockPulse })
++                messages.push_back (h.log[i].bytes);
++        return messages;
++    };
++    const auto firstPulseMs = [&] (size_t first)
++    {
++        for (auto i = first; i < h.log.size(); ++i)
++            if (h.log[i].bytes == std::vector<juce::uint8> { clockPulse })
++                return h.log[i].ms;
++        return -1.0;
++    };
++
++    auto at = play (0, 4);
++    if (transport (at) != Bytes { { clockStart } } || ! closeTo (firstPulseMs (at), 0.0))
++        return "clock: playing from the top did not send Start, then pulse 0";
++    at = play (4 * testBlock, 3, false);
++    if (h.sent (at) != Bytes { { clockStop } })
++        return "clock: a stop did not send Stop alone, or a pulse went out while stopped";
++
++    const double bar3 = ms;
++    at = play (192000, 2);
++    if (transport (at) != Bytes { { songPosition, 32, 0 }, { clockContinue } } || ! closeTo (firstPulseMs (at), bar3))
++        return "clock: playing from bar 3 did not send Song Position Pointer 32 and Continue, then pulse 192 at once";
++
++    const double beat2 = ms;
++    at = play (792000, 2);
++    if (transport (at) != Bytes { { clockStop }, { songPosition, 4, 1 }, { clockContinue } } || ! closeTo (firstPulseMs (at), beat2))
++        return "clock: a locate to beat 2 of bar 9 did not send Stop, Song Position Pointer 132, and Continue, then pulse 792";
++
++    play (792000 + 2 * testBlock, 1, false);
++    const double between = ms;
++    at = play (193500, 10);
++    if (transport (at) != Bytes { { songPosition, 33, 0 }, { clockContinue } } || ! closeTo (firstPulseMs (at), between + msOf (4500)))
++        return "clock: playing from between sixteenths did not resume on the next one's pulse";
++
++    play (193500 + 10 * testBlock, 1, false);
++    const double wrapStart = ms;
++    at = play (815000, 3, true, 768000, 816000);
++    const double wrapMs = wrapStart + msOf (1000);
++    if (transport (at) != Bytes { { songPosition, 8, 1 }, { clockContinue }, { clockStop }, { songPosition, 0, 1 }, { clockContinue } })
++        return "clock: a wrap did not send Stop, the loop start's Song Position Pointer, and Continue";
++    if (! closeTo (firstPulseMs (at), wrapMs))
++        return "clock: after the wrap, the first pulse was not the loop start's, at the wrap";
++
++    at = play (768000 + 2 * testBlock - 1000, 2, false);
++    if (h.sent (at) != Bytes { { clockStop } })
++        return "clock: a pause did not send Stop alone";
++
++    const double alignedStart = ms;
++    at = play (816000 - testBlock, 2, true, 768000, 816000);
++    if (transport (at) != Bytes { { songPosition, 8, 1 }, { clockContinue }, { clockStop }, { songPosition, 0, 1 }, { clockContinue } })
++        return "clock: a wrap at a block's end did not send Stop, the loop start's Song Position Pointer, and Continue";
++    if (! closeTo (firstPulseMs (at), alignedStart + msOf (testBlock)))
++        return "clock: after a wrap at a block's end, the first pulse was not the loop start's, at the wrap";
++    return {};
++}
++
++std::string checkReplacedClock()
++{
++    const auto schedule = [] (int every)
++    {
++        juce::String pulses;
++        for (int i = 0; i < 100; ++i)
++            pulses << (i > 0 ? "," : "") << juce::String (i * every);
++        return R"({"name":"clock","source":"Clock","rate":48000,"lead":0,"events":[],"clock":{"pulses":[)" + pulses + "]}}";
++    };
++    Harness h;
++    if (auto error = h.open (schedule (1000)); error.isNotEmpty())
++        return "replaced clock: " + error.toStdString();
++    juce::int64 position = 0;
++    const auto play = [&] (int blocks)
++    {
++        const auto first = h.log.size();
++        for (int i = 0; i < blocks; ++i, position += testBlock)
++            h.block (position, msOf (position));
++        h.serve (1.0e9);
++        return first;
++    };
++    const auto transport = [&] (size_t first)
++    {
++        Bytes messages;
++        for (auto i = first; i < h.log.size(); ++i)
++            if (h.log[i].bytes != std::vector<juce::uint8> { clockPulse })
++                messages.push_back (h.log[i].bytes);
++        return messages;
++    };
++
++    play (94);
++
++    // The same pulses in a new schedule keep the gear's count.
++    h.open (schedule (1000));
++    auto at = play (2);
++    if (! transport (at).empty() || at == h.log.size())
++        return "replaced clock: the same pulses in a new schedule stopped the clock or moved the gear";
++
++    // Pulses half as fast put sample 49152 at pulse 25, and the next
++    // sixteenth is pulse 30, at sample 60000.
++    h.open (schedule (2000));
++    at = play (2);
++    if (h.sent (at) != Bytes { { clockStop }, { songPosition, 5, 0 }, { clockContinue } })
++        return "replaced clock: new pulses did not send Stop, the new position, and Continue alone";
++    at = play (20);
++    if (h.sent (at) != Bytes { { clockPulse } } || ! closeTo (h.log[at].ms, msOf (60000)))
++        return "replaced clock: the pulses did not resume on the new position's sixteenth";
++
++    // A schedule with no clock ends the clock.
++    h.open (R"({"name":"clock","source":"Clock","rate":48000,"lead":0,"events":[]})");
++    at = play (2);
++    if (h.sent (at) != Bytes { { clockStop } })
++        return "replaced clock: a schedule with no clock did not send Stop";
++    return {};
++}
++
++// Converted delivery moves the bed in steps of its own, so a block's
++// position can land past the end of the last block's window.
++std::string checkSteps()
++{
++    constexpr int steps = 512;
++    constexpr int blockAdvance = 470;
++    const auto schedule = [] (juce::int64 length)
++    {
++        juce::String events;
++        for (juce::int64 s = 0; s < length; s += 100)
++            events << (s > 0 ? "," : "") << "{\"sample\":" << juce::String (s) << ",\"midi\":[159," << juce::String ((s / 100) % 128) << ",100]}";
++        return R"({"name":"steps","source":"Steps","rate":44100,"lead":0,"events":[)" + events + "]}";
++    };
++    {
++        Harness h;
++        h.advance = blockAdvance;
++        h.slack = 8192;
++        if (auto error = h.open (schedule (10000)); error.isNotEmpty())
++            return "steps: " + error.toStdString();
++        juce::int64 position = 0;
++        double ms = 0.0;
++        for (int i = 0; i < 30; ++i)
++        {
++            h.block (position, ms);
++            position += i % 3 == 2 ? 0 : (i % 3 + 1) * steps;
++            ms += 10.0;
++        }
++        h.serve (1.0e9);
++        if (h.log.size() != 100)
++            return "steps: " + std::to_string (h.log.size()) + " of the 100 notes left";
++        for (size_t i = 0; i < h.log.size(); ++i)
++            if (h.log[i].bytes[1] != (juce::uint8) i)
++                return "steps: the notes left out of order at note " + std::to_string (i);
++    }
++    {
++        // A step that carries the bed over the loop's end sends what it
++        // skipped and the wrap, once, at the block's start, and then what
++        // lies from the loop's start to the block's position.
++        Harness h;
++        h.advance = blockAdvance;
++        h.slack = 8192;
++        h.open (R"({"name":"steps","source":"Steps","rate":44100,"lead":0,"events":[
++            {"sample":100,"midi":[159,60,100]},{"sample":4800,"midi":[159,61,100]}],"clock":{"pulses":[0,4900]}})");
++        h.block (0, 0.0, true, 0, 5000);
++        h.block (4096, 10.0, true, 0, 5000);
++        const double stepped = 20.0;
++        h.block (120, stepped, true, 0, 5000);
++        h.serve (1.0e9);
++        const Bytes wanted { { clockStart }, { clockPulse }, { 0x9f, 60, 100 }, { 0x9f, 61, 100 }, { clockPulse }, { 0x8f, 60, 0 }, { 0x8f, 61, 0 },
++                             { clockStop }, { songPosition, 0, 0 }, { clockContinue }, { clockPulse }, { 0x9f, 60, 100 } };
++        if (h.sent() != wanted)
++            return "steps: a step over the loop's end did not send what it skipped, the wrap, and the loop's start";
++        if (! closeTo (h.log[5].ms, stepped))
++            return "steps: the wrap a step skipped over did not leave at the block's start";
++    }
++    {
++        // A locate back before the loop's start is a jump, not a step over
++        // the loop's end, and sends what lies from there.
++        Harness h;
++        h.open (R"({"name":"steps","source":"Steps","rate":48000,"lead":0,"events":[
++            {"sample":1100,"midi":[159,60,100]},{"sample":8100,"midi":[159,61,100]}]})");
++        h.block (8000, 0.0, true, 5000, 9000);
++        h.block (1000, 10.0, true, 5000, 9000);
++        h.serve (1.0e9);
++        if (h.sent() != Bytes { { 0x9f, 61, 100 }, { 0x8f, 61, 0 }, { 0x9f, 60, 100 } })
++            return "steps: a locate before the loop's start did not send what lies from there";
++    }
++    return {};
++}
++
++std::string checkRequests()
++{
++    Harness h;
++    const char* refused[] {
++        R"({"source":"A","rate":48000,"lead":0,"events":[]})",
++        R"({"name":"a","rate":48000,"lead":0,"events":[]})",
++        R"({"name":"a","source":"A","destination":"B","rate":48000,"lead":0,"events":[]})",
++        R"({"name":"a","source":"A","rate":0,"lead":0,"events":[]})",
++        R"({"name":"a","source":"A","rate":48000,"lead":-1,"events":[]})",
++        R"({"name":"a","source":"A","rate":48000,"lead":0})",
++        R"({"name":"a","source":"A","rate":48000,"lead":0,"events":[{"sample":10,"midi":[144,60,1]},{"sample":5,"midi":[128,60,0]}]})",
++        R"({"name":"a","source":"A","rate":48000,"lead":0,"events":[{"sample":0,"midi":[60,1]}]})",
++        R"({"name":"a","source":"A","rate":48000,"lead":0,"events":[{"sample":0,"midi":[240,1,247]}]})",
++        R"({"name":"a","source":"A","rate":48000,"lead":0,"events":[],"clock":{"pulses":[10,5]}})",
++    };
++    for (const auto* request : refused)
++        if (h.open (request).isEmpty())
++            return std::string ("requests: accepted ") + request;
++    if (auto error = h.open (R"({"name":"a","source":"A","rate":48000,"lead":0,"events":[]})"); error.isNotEmpty())
++        return "requests: " + error.toStdString();
++    if (h.open (R"({"name":"b","source":"A","rate":48000,"lead":0,"events":[]})").isEmpty())
++        return "requests: a second output from the same source was accepted";
++    return {};
++}
++} // namespace
++
++std::string runMidiOutSelfTest()
++{
++    for (auto* check : { checkLead, checkFlush, checkHeld, checkClock, checkReplacedClock, checkSteps, checkRequests })
++        if (auto error = check(); ! error.empty())
++            return error;
++    return {};
++}
++
++} // namespace field
+diff --git a/native/audiod/src/midi_out.h b/native/audiod/src/midi_out.h
+new file mode 100644
+index 00000000..39838341
+--- /dev/null
++++ b/native/audiod/src/midi_out.h
+@@ -0,0 +1,235 @@
++#pragma once
++
++#include <juce_core/juce_core.h>
++
++#include <array>
++#include <atomic>
++#include <functional>
++#include <memory>
++#include <string>
++#include <vector>
++
++#if JUCE_MAC
++#include <mach/semaphore.h>
++#elif ! JUCE_WINDOWS
++#include <semaphore.h>
++#endif
++
++// MIDI outputs (sequencer.md §2.5): schedules of MIDI messages on the
++// bed's timeline that the daemon sends on time, from a virtual source it
++// publishes or to a port that exists, such as a hardware synth's, with
++// MIDI clock beside them. Like the click, a schedule is samples and
++// bytes: the CLI projects the tempo map into it, and the daemon never
++// learns what a note or a bar is.
++//
++// Three threads share an output. The message thread opens, replaces, and
++// closes it. The audio callback finds the messages due in each block's
++// lookahead window and pushes them, each with its time on
++// juce::Time::getMillisecondCounterHiRes(), onto the output's lock-free
++// queue, with no allocation and no lock. The sender thread sends each
++// message at its time, or hands it to CoreMIDI ahead of its time when
++// the sink schedules what it is given.
++
++namespace field
++{
++class LiveInput;
++
++// Where an output's messages go.
++class MidiSink
++{
++public:
++    virtual ~MidiSink() = default;
++    // True when the sink takes a message ahead of its time and schedules
++    // it for the time stamped on it, as CoreMIDI does for a destination;
++    // false when it sends each message as it is handed one.
++    virtual bool schedules() const = 0;
++    virtual void send (const juce::uint8* bytes, int size, double ms) = 0;
++    // Unschedules what send handed over for later.
++    virtual void flush() {}
++    // The identifier MIDI capture lists the sink's virtual source under,
++    // or empty when it publishes none.
++    virtual juce::String sourceIdentifier() const { return {}; }
++};
++
++struct MidiTarget
++{
++    juce::String name;
++    bool source = false; // publish a virtual source of this name, rather than open a destination
++};
++
++// What one block of the callback plays, as the player's pull found it.
++struct MidiBlock
++{
++    double startMs = 0.0;
++    // The pull missed the live lock, so the block is silence and the bed
++    // did not move.
++    bool missed = false;
++    bool rolling = false;
++    juce::int64 position = 0; // where the block starts on the bed's timeline, wrapped
++    juce::int64 advance = 0; // the bed samples the block plays
++    // How far the next block's position may stray from this one's plus
++    // its advance before it counts as a jump: 0 when the bed advances
++    // exactly, as an unconverted live session does.
++    juce::int64 slack = 0;
++    // The wrap in force: the clock jumps from wrapTo back to wrapFrom.
++    // None when wrapTo <= wrapFrom.
++    juce::int64 wrapFrom = 0;
++    juce::int64 wrapTo = 0;
++    double bedPerFrame = 1.0; // bed samples per device frame, for an input's margin
++};
++
++class MidiOutputs
++{
++public:
++    // Builds the sink an output sends through, or says why it cannot.
++    using SinkFactory = std::function<std::unique_ptr<MidiSink> (const MidiTarget&, juce::String& error)>;
++    // Finds an open input by name, for `lead_input`.
++    using InputFinder = std::function<std::shared_ptr<LiveInput> (const juce::String&)>;
++
++    // `waitOut` returns once the callback and the sender have each
++    // finished a pass begun after the call, so an output either of them
++    // held can be freed.
++    MidiOutputs (SinkFactory makeSink, std::function<void()> wakeSender, std::function<void()> waitOut);
++    ~MidiOutputs();
++
++    // ---- Message thread -------------------------------------------------
++
++    // The `midi_out` op: opens an output, or replaces the schedule of the
++    // one open under the name, keeping its sink. Returns {error} or
++    // {name, events} and, with a clock, {pulses}.
++    juce::var open (const juce::var& request, const void* owner, const InputFinder& findInput);
++    // Each ends the output's notes, stops its clock, and closes its sink.
++    juce::String close (const juce::String& name);
++    void closeOwnedBy (const void* owner);
++    void closeAll();
++
++    // An input opened under a name an output leads by.
++    void bindLeadInput (const juce::String& name, const std::shared_ptr<LiveInput>& input);
++
++    // Frees the schedules the callback has swapped out.
++    void reclaim();
++
++    bool publishes (const juce::String& sourceIdentifier) const;
++    bool empty() const { return outputs.empty(); }
++    // Each output's name, its source or destination, and its counters.
++    juce::Array<juce::var> describe() const;
++
++    // ---- Audio thread ---------------------------------------------------
++
++    void play (const MidiBlock& block) noexcept;
++
++    // ---- Sender thread --------------------------------------------------
++
++    // Sends or hands over what is due by `nowMs`. Returns when the next
++    // queued message is due, or infinity when nothing waits.
++    double service (double nowMs);
++
++    static constexpr int maxOutputs = 64;
++
++private:
++    struct Event
++    {
++        juce::int64 sample = 0;
++        juce::uint8 bytes[3] {};
++        juce::uint8 size = 0;
++    };
++    struct Schedule;
++    struct Entry;
++    struct Output;
++
++    void play (Output& output, const MidiBlock& block) noexcept;
++    // Pushes what lies `from` to `to` samples ahead of the block's
++    // position, continuing at the wrap's start past its end. A negative
++    // `from` reaches back behind the position, and what lies there leaves
++    // at the block's start.
++    void take (Output& output, const MidiBlock& block, juce::int64 from, juce::int64 to, juce::int64 lead) noexcept;
++    void push (Output& output, const Entry& entry) noexcept;
++    // The clock's transport messages when the output starts rolling at
++    // `position`, or jumps there while rolling.
++    void resumeClock (Output& output, juce::int64 position, double ms, bool jump) noexcept;
++    // Song Position Pointer for pulse `pulse`, then Continue, and the
++    // pulse the clock resumes at.
++    void positionClock (Output& output, size_t pulse, double ms) noexcept;
++    double service (Output& output, double nowMs);
++    void deliver (Output& output, const Entry& entry, double nowMs);
++    void send (Output& output, const juce::uint8* bytes, int size, double ms, double nowMs);
++    // Sends a note-off for every note the output holds, lifts each sustain
++    // pedal it holds down, and centers each pitch bend it left off center.
++    // With `flush`, first unschedules what a scheduling sink still holds.
++    void endHeldNotes (Output& output, double ms, double nowMs, bool flush);
++    Output* find (const juce::String& name) const;
++    void closeWhere (const std::function<bool (const Output&)>& match);
++
++    SinkFactory makeSink;
++    std::function<void()> wakeSender;
++    std::function<void()> waitOut;
++    // Owned here, on the message thread; the callback and the sender
++    // reach them through their own slots.
++    std::vector<std::unique_ptr<Output>> outputs;
++    std::array<std::atomic<Output*>, maxOutputs> blockSlots {};
++    std::array<std::atomic<Output*>, maxOutputs> senderSlots {};
++    std::atomic<int> slotsUsed { 0 }; // one past the highest slot ever filled
++};
++
++// Wakes a thread without a lock, which the audio callback can do, and
++// sleeps one until a time on the high-resolution clock or a wakeup.
++class Wakeup
++{
++public:
++    Wakeup();
++    ~Wakeup();
++    Wakeup (const Wakeup&) = delete;
++    Wakeup& operator= (const Wakeup&) = delete;
++    void signal() noexcept;
++    void waitUntil (double deadlineMs) noexcept;
++
++private:
++#if JUCE_MAC
++    semaphore_t semaphore {};
++#elif JUCE_WINDOWS
++    void* semaphore = nullptr; // HANDLE, spelled void* to keep windows.h out of this header
++#else
++    sem_t semaphore {};
++#endif
++};
++
++// The thread that sends each output's messages, at realtime priority so
++// it wakes on time.
++class MidiSender final : private juce::Thread
++{
++public:
++    explicit MidiSender (MidiOutputs& outputs);
++    ~MidiSender() override;
++    void start();
++    void wake() noexcept { wakeup.signal(); }
++    // Returns once the thread has finished a pass begun after the call,
++    // or at once when it is not running. Message thread.
++    void waitOutPass();
++
++private:
++    void run() override;
++
++    MidiOutputs& outputs;
++    Wakeup wakeup;
++    std::atomic<juce::uint64> passes { 0 };
++};
++
++// The sinks the daemon sends through: a virtual source it publishes, or
++// an existing destination, which on macOS goes through CoreMIDI with
++// each message stamped with its host time.
++std::unique_ptr<MidiSink> makeMidiSink (const MidiTarget& target, juce::String& error);
++
++#if JUCE_MAC
++// CoreMIDI's host time and getMillisecondCounterHiRes() both count
++// mach_absolute_time().
++juce::uint64 hostTimeForMs (double ms);
++double msForHostTime (juce::uint64 hostTime);
++#endif
++
++// --midi-out-selftest: the callback's selection, the lead and an input's
++// margin, held notes, the clock's transport messages, and a stop with
++// messages handed over early, against a fake clock and fake sinks.
++// Empty string when every scenario holds.
++std::string runMidiOutSelfTest();
++
++} // namespace field
+diff --git a/native/audiod/src/player.cpp b/native/audiod/src/player.cpp
+index 51b3fe6a..459bbd0b 100644
+--- a/native/audiod/src/player.cpp
++++ b/native/audiod/src/player.cpp
+@@ -2,12 +2,15 @@
+ 
+ #include "capture.h"
+ #include "capture_input.h"
++#include "keys.h"
+ #include "live.h"
+ #include "ring_input.h"
+ #include "version.h"
+ 
+ #if JUCE_MAC
+ #include <CoreAudio/CoreAudio.h>
++#include <mach/mach.h>
++#include <mach/thread_policy.h>
+ #endif
+ 
+ #include <algorithm>
+@@ -53,6 +56,22 @@ juce::DynamicObject::Ptr obj() { return new juce::DynamicObject(); }
+ constexpr int nullBlockSize = 512;
+ constexpr double nullSampleRate = 48000.0;
+ 
++// The null clock stands in for a device, whose callback Core Audio runs
++// on a realtime thread, so it wakes on time on a loaded machine as a
++// device's does: MIDI outputs and MIDI capture time each message from
++// the start of its block. Elsewhere it keeps the priority it starts
++// with, since raising it takes privileges a CI runner does not have.
++void scheduleAsAudioThread()
++{
++#if JUCE_MAC
++    const auto ticks = [] (double seconds) { return (uint32_t) juce::Time::secondsToHighResolutionTicks (seconds); };
++    const double block = nullBlockSize / nullSampleRate;
++    thread_time_constraint_policy_data_t policy { ticks (block), ticks (block / 2), ticks (block), 1 };
++    thread_policy_set (pthread_mach_thread_np (pthread_self()), THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t) &policy,
++                       THREAD_TIME_CONSTRAINT_POLICY_COUNT);
++#endif
++}
++
+ // Hosted teardown needs a free message thread, exactly like hosted
+ // construction: ~AudioUnitPluginInstance posts its dispose to the
+ // message thread and waits for it unconditionally, so a caller holding
+@@ -89,7 +108,14 @@ Player::Player (bool useNullOutput)
+       latchStallMs (useNullOutput
+                         ? juce::SystemStats::getEnvironmentVariable ("FIELD_AUDIOD_LATCH_STALL_MS", "0").getIntValue()
+                         : 0),
+-      captureBlock (std::make_shared<field::CaptureBlock>())
++      captureOwnOutputs (useNullOutput && juce::SystemStats::getEnvironmentVariable ("FIELD_AUDIOD_CAPTURE_OUTPUTS", "0") == "1"),
++      captureBlock (std::make_shared<field::CaptureBlock>()),
++      midiOutputs (field::makeMidiSink, [this] { midiSender.wake(); },
++                   [this]
++                   {
++                       waitOutBlocks();
++                       midiSender.waitOutPass();
++                   })
+ {
+     formatManager.registerBasicFormats();
+ }
+@@ -100,6 +126,9 @@ Player::~Player()
+     // the callback can still acknowledge; what it cannot reach is left
+     // as a recoverable transaction by ~Capture.
+     stopRecording();
++    // Here, not in the outputs' destructor: closing waits out the sender,
++    // a member destroyed before them.
++    closeMidiOutputs();
+     closeMidiInputs();
+     removeHardwareListeners();
+     if (nullClockRunning.exchange (false) && nullClock.joinable())
+@@ -186,6 +215,7 @@ juce::String Player::initialise()
+         nullClockRunning = true;
+         nullClock = std::thread ([this]
+         {
++            scheduleAsAudioThread();
+             juce::AudioBuffer<float> scratch (2, nullBlockSize);
+             // The null input (recording.md §5): channel 1 is a sawtooth
+             // over one second of the input clock — consecutive samples
+@@ -736,26 +766,33 @@ juce::var Player::openInput (const juce::String& name, const void* owner)
+         result->setProperty ("error", "input needs a name");
+         return juce::var (result.get());
+     }
+-    std::lock_guard<std::mutex> hold (inputsLock);
+-    if (rings.count (name.toStdString()) > 0 || captures.count (name.toStdString()) > 0)
+-    {
+-        result->setProperty ("error", "input \"" + name + "\" is already open");
+-        return juce::var (result.get());
+-    }
+-    try
+-    {
+-        auto ring = std::make_shared<field::RingInput> ((uint32_t) std::lround (currentDeviceRate()));
+-        result->setProperty ("name", name);
+-        result->setProperty ("ring", (int) ring->id());
+-        result->setProperty ("capacity", (int) ring->capacity());
+-        result->setProperty ("channels", 2);
+-        result->setProperty ("sample_rate", currentDeviceRate());
+-        rings[name.toStdString()] = { std::move (ring), owner };
+-    }
+-    catch (const std::exception& e)
++    std::shared_ptr<field::RingInput> ring;
+     {
+-        result->setProperty ("error", juce::String (e.what()));
++        std::lock_guard<std::mutex> hold (inputsLock);
++        if (rings.count (name.toStdString()) > 0 || captures.count (name.toStdString()) > 0)
++        {
++            result->setProperty ("error", "input \"" + name + "\" is already open");
++            return juce::var (result.get());
++        }
++        try
++        {
++            ring = std::make_shared<field::RingInput> ((uint32_t) std::lround (currentDeviceRate()));
++            result->setProperty ("name", name);
++            result->setProperty ("ring", (int) ring->id());
++            result->setProperty ("capacity", (int) ring->capacity());
++            result->setProperty ("channels", 2);
++            result->setProperty ("sample_rate", currentDeviceRate());
++            rings[name.toStdString()] = { ring, owner };
++        }
++        catch (const std::exception& e)
++        {
++            result->setProperty ("error", juce::String (e.what()));
++            return juce::var (result.get());
++        }
+     }
++    // An output can name its lead input before the input opens, as
++    // `field seq` does before its voice connects.
++    midiOutputs.bindLeadInput (name, ring);
+     return juce::var (result.get());
+ }
+ 
+@@ -970,6 +1007,8 @@ juce::var Player::status (bool consumePeak)
+         result->setProperty ("record", juce::var (rec.get()));
+     }
+     result->setProperty ("click_ticks", click.tickCount());
++    if (! midiOutputs.empty())
++        result->setProperty ("outputs", midiOutputs.describe());
+ 
+     double deviceRate = nullMode ? nullSampleRate : 0.0;
+     if (! nullMode)
+@@ -1026,6 +1065,7 @@ void Player::rebuildLiveConverter()
+ juce::int64 Player::pullAudio (const float* const* in, int numInputs, float* const* out, int numChannels, int n)
+ {
+     blockSawRequest = false;
++    blockBed = {};
+     {
+         // The pointer is only readable under the lock (cursor's finding:
+         // checking it first races a message-thread load). A missed lock
+@@ -1035,6 +1075,7 @@ juce::int64 Player::pullAudio (const float* const* in, int numInputs, float* con
+         {
+             for (int c = 0; c < numChannels; ++c)
+                 std::fill (out[c], out[c] + n, 0.0f);
++            blockBed.missed = true;
+             return -1;
+         }
+         // What the latch may act on: a request this pull saw, so the
+@@ -1057,6 +1098,11 @@ juce::int64 Player::pullAudio (const float* const* in, int numInputs, float* con
+             // into whichever loop is in force, as status reports it —
+             // which is where a take beginning here is placed.
+             const juce::int64 position = liveSession->wrappedPosition();
++            const bool region = liveSession->loopRegionTo() > liveSession->loopRegionFrom();
++            // Converted delivery renders the bed in steps of its own, so its
++            // advance only approximates a block's.
++            blockBed = { false, (double) liveRate, liveConverter == nullptr ? 0 : n + 1024, region ? liveSession->loopRegionFrom() : 0,
++                         region ? liveSession->loopRegionTo() : liveLoop ? liveLength : 0 };
+             if (livePlaying.load())
+             {
+                 if (liveConverter == nullptr)
+@@ -1142,6 +1188,11 @@ juce::int64 Player::pullAudio (const float* const* in, int numInputs, float* con
+         // A file bed's position and pull under the same lock as a live
+         // one's, so record's jump falls wholly before or after them.
+         const juce::int64 position = transport.isPlaying() ? positionSamples() : -1;
++        // A resampled file reads through a buffer. At the device's rate,
++        // juce::ResamplingAudioSource still reads 3 samples more than a block
++        // on its first block after a flush, which a stop and a locate cause.
++        blockBed = { false, fileSampleRate, juce::exactlyEqual (fileSampleRate, currentDeviceRate()) ? 3 : n + 1024, 0,
++                     looping ? fileLengthSamples : 0 };
+         juce::AudioBuffer<float> buffer (const_cast<float**> (out), numChannels, n);
+         juce::AudioSourceChannelInfo info (&buffer, 0, n);
+         transport.getNextAudioBlock (info);
+@@ -1161,6 +1212,20 @@ void Player::processBlock (const float* const* in, int numInputs, float* const*
+     // same block-start position the capture latches on; with no bed it
+     // counts on the free clock, which is a metronome by itself.
+     click.render (position == -2 ? freeBefore : position, currentDeviceRate(), out, numOutputs, n);
++    {
++        const double deviceRate = currentDeviceRate();
++        field::MidiBlock midi;
++        midi.startMs = blockStartMs;
++        midi.missed = blockBed.missed;
++        midi.rolling = position >= 0;
++        midi.position = position;
++        midi.bedPerFrame = blockBed.rate > 0.0 && deviceRate > 0.0 ? blockBed.rate / deviceRate : 1.0;
++        midi.advance = std::llround (n * midi.bedPerFrame);
++        midi.slack = blockBed.slack;
++        midi.wrapFrom = blockBed.wrapFrom;
++        midi.wrapTo = blockBed.wrapTo;
++        midiOutputs.play (midi);
++    }
+     // Counted after the pull: a finalize that has seen two more epochs
+     // knows the block that was in flight when it cleared activeCapture
+     // has fully passed through here.
+@@ -1737,9 +1802,15 @@ juce::var Player::armSet (const juce::Array<juce::var>& tracks, const juce::Stri
+     juce::StringArray sources;
+     if (! midi.empty())
+     {
+-        const auto available = juce::MidiInput::getAvailableDevices();
++        // A take records what you play, not the parts the daemon's own
++        // outputs play beside it (sequencer.md §2.5).
++        auto available = juce::MidiInput::getAvailableDevices();
++        const bool listedNone = available.isEmpty();
++        if (! captureOwnOutputs)
++            available.removeIf ([this] (const juce::MidiDeviceInfo& source) { return midiOutputs.publishes (source.identifier); });
+         if (available.isEmpty())
+-            return fail ("no MIDI sources to record from: start field keys or connect a controller first");
++            return fail ("no MIDI sources to record from: start field keys or connect a controller first"
++                         + (listedNone ? field::midiClientRefusalNote() : juce::String()));
+         for (const auto& source : available)
+             if (auto input = juce::MidiInput::openDevice (source.identifier, this))
+             {
+@@ -2259,11 +2330,7 @@ juce::Array<juce::var> Player::stopRecording()
+     for (int c = 0; c < companionCount; ++c)
+         midi = midi || companions[(size_t) c].midiTake.load() != nullptr;
+     if (midi)
+-    {
+-        const auto epoch = callbackEpoch.load();
+-        for (int i = 0; i < 300 && callbackEpoch.load() < epoch + 2; ++i)
+-            std::this_thread::sleep_for (std::chrono::milliseconds (1));
+-    }
++        waitOutBlocks();
+     // Detach first, then wait out the callback: the block that read
+     // activeCapture before the store may still be pushing, and the epoch
+     // counter advances only after a block's push is done. Two epochs
+@@ -2281,19 +2348,13 @@ juce::Array<juce::var> Player::stopRecording()
+     captureStartAt = -1;
+     captureUntil = -1;
+     captureLoop = false;
+-    const auto epoch = callbackEpoch.load();
+-    for (int i = 0; i < 300 && callbackEpoch.load() < epoch + 2; ++i)
+-        std::this_thread::sleep_for (std::chrono::milliseconds (1));
++    waitOutBlocks();
+     // Under a loop, the block in flight at those stores can have taken
+     // the standby over just before them and stored activeCapture just
+     // after. No later block takes one over, so a second detach and wait
+     // leave nothing pushing.
+     if (wasLoop && activeCapture.exchange (nullptr) != nullptr)
+-    {
+-        const auto again = callbackEpoch.load();
+-        for (int i = 0; i < 300 && callbackEpoch.load() < again + 2; ++i)
+-            std::this_thread::sleep_for (std::chrono::milliseconds (1));
+-    }
++        waitOutBlocks();
+     captureStarted = false;
+     capturesEnded = 0;
+     companionMidiRunning = false;
+@@ -2525,3 +2586,34 @@ juce::String Player::setClick (const juce::var& schedule)
+     }
+     return {};
+ }
++
++void Player::waitOutBlocks() const
++{
++    // Two epochs: the block in flight when the caller let go of something
++    // may already have counted one.
++    const auto epoch = callbackEpoch.load();
++    for (int i = 0; i < 300 && callbackEpoch.load() < epoch + 2; ++i)
++        std::this_thread::sleep_for (std::chrono::milliseconds (1));
++}
++
++// ---- MIDI outputs (sequencer.md §2.5) ---------------------------------------
++
++juce::var Player::openMidiOutput (const juce::var& request, const void* owner)
++{
++    midiSender.start();
++    return midiOutputs.open (request, owner, [this] (const juce::String& name) -> std::shared_ptr<field::LiveInput>
++    {
++        std::lock_guard<std::mutex> hold (inputsLock);
++        if (const auto ring = rings.find (name.toStdString()); ring != rings.end())
++            return ring->second.ring;
++        if (const auto monitored = captures.find (name.toStdString()); monitored != captures.end())
++            return monitored->second.input;
++        return nullptr;
++    });
++}
++
++juce::String Player::closeMidiOutput (const juce::String& name) { return midiOutputs.close (name); }
++
++void Player::closeMidiOutputsOwnedBy (const void* owner) { midiOutputs.closeOwnedBy (owner); }
++
++void Player::closeMidiOutputs() { midiOutputs.closeAll(); }
+diff --git a/native/audiod/src/player.h b/native/audiod/src/player.h
+index 44773465..42854937 100644
+--- a/native/audiod/src/player.h
++++ b/native/audiod/src/player.h
+@@ -16,6 +16,7 @@
+ 
+ #include "capture.h"
+ #include "click.h"
++#include "midi_out.h"
+ #include "dsp/resample.h"
+ 
+ namespace field
+@@ -117,6 +118,17 @@ class Player : private juce::AudioIODeviceCallback, private juce::MidiInputCallb
+     void closeInputs();
+     bool liveMode() const { return liveSession != nullptr; }
+ 
++    // MIDI outputs (sequencer.md §2.5): `midi_out` opens an output or
++    // replaces its schedule, and answers {error} or {name, events,
++    // pulses}. An output closes with the connection that opened it,
++    // `owner`, as an input does, and every close ends its notes.
++    juce::var openMidiOutput (const juce::var& request, const void* owner);
++    juce::String closeMidiOutput (const juce::String& name);
++    void closeMidiOutputsOwnedBy (const void* owner);
++    void closeMidiOutputs();
++    // Heartbeat: frees the schedules the callback has swapped out.
++    void serviceMidiOutputs() { midiOutputs.reclaim(); }
++
+     juce::String play();
+     void pause();
+     void stop(); // pause + rewind to 0
+@@ -148,8 +160,8 @@ class Player : private juce::AudioIODeviceCallback, private juce::MidiInputCallb
+     // while recording is refused.
+     juce::var arm (const juce::String& track, const juce::String& device, int input);
+     // Arming for MIDI (keyboard-instrument.md §12.4) opens every MIDI
+-    // input the system lists and no audio input, so it never asks for
+-    // the microphone. Returns {error} or {kind, sources, sample_rate,
++    // input the system lists but the daemon's own outputs' sources, and
++    // no audio input, so it never asks for the microphone. Returns {error} or {kind, sources, sample_rate,
+     // output_latency}. Like arm, it moves an existing arm of either kind.
+     juce::var armMidi (const juce::String& track, const std::vector<ChaseSeed>& seeds = {});
+     // Arms several tracks at once (arming.md §2.2): each entry is
+@@ -313,6 +325,10 @@ class Player : private juce::AudioIODeviceCallback, private juce::MidiInputCallb
+     // FIELD_AUDIOD_LATCH_STALL_MS, so a test can land record's hold
+     // between the two.
+     const int latchStallMs;
++    // And whether MIDI capture hears the daemon's own outputs, from
++    // FIELD_AUDIOD_CAPTURE_OUTPUTS=1, so a test can record a schedule in
++    // the daemon that sends it.
++    const bool captureOwnOutputs;
+     // locate without its refusal under a take: record jumps to `at` once
+     // its transactions are open.
+     juce::String seek (juce::int64 sample);
+@@ -441,6 +457,19 @@ class Player : private juce::AudioIODeviceCallback, private juce::MidiInputCallb
+     // hold of that lock, so a block that saw it pulled after the jump, and
+     // one that did not may have read the position from before it.
+     bool blockSawRequest = false;
++    // Audio thread: what the MIDI outputs need to know of the bed this
++    // block's pull played, read under liveLock with its position.
++    struct BedFacts
++    {
++        bool missed = false; // the pull missed liveLock
++        double rate = 0.0;
++        // How far the next block's position may stray from this one's plus
++        // its advance before it counts as a jump.
++        juce::int64 slack = 0;
++        juce::int64 wrapFrom = 0;
++        juce::int64 wrapTo = 0;
++    };
++    BedFacts blockBed;
+     std::atomic<bool> captureStarted { false };
+     // The position the requested take waits for (record's `at` when a
+     // `start` was given); -1 means the next block, whatever its position.
+@@ -506,6 +535,9 @@ class Player : private juce::AudioIODeviceCallback, private juce::MidiInputCallb
+     std::atomic<bool> companionMidiRunning { false };
+     field::Click click;
+     std::atomic<juce::uint64> callbackEpoch { 0 };
++    // Returns once a block begun after the call has finished, or after
++    // 300 ms when the device is not running, where nothing is in a block.
++    void waitOutBlocks() const;
+     // Largest |sample| on the armed input since status last read it; the
+     // V1 meter (recording.md §11's meters question, resolved in §12).
+     std::atomic<float> inputPeak { 0.0f };
+@@ -575,4 +607,7 @@ class Player : private juce::AudioIODeviceCallback, private juce::MidiInputCallb
+     int chaseSeedCount = 0;
+     std::atomic<bool> chaseSeeded { false };
+     juce::SpinLock chaseSeedLock;
++
++    field::MidiOutputs midiOutputs;
++    field::MidiSender midiSender { midiOutputs };
+ };
+diff --git a/native/audiod/src/ring_input.h b/native/audiod/src/ring_input.h
+index 99fdaca4..5123bbed 100644
+--- a/native/audiod/src/ring_input.h
++++ b/native/audiod/src/ring_input.h
+@@ -45,6 +45,7 @@ class RingInput final : public LiveInput
+     // writer dropped frames because nothing read for longer than the ring
+     // holds, what is held is stale, and the reader starts at the present.
+     void read (float* left, float* right, int n) override;
++    juce::int64 readerMargin() const override { return (juce::int64) (block + writerBurst); }
+ 
+     // For `status`: frames written, read, and dropped by the writer, how
+     // often the reader ran dry, the frames it skipped for drift, and the
+diff --git a/native/audiod/src/server.cpp b/native/audiod/src/server.cpp
+index 064c43a6..d1ee070f 100644
+--- a/native/audiod/src/server.cpp
++++ b/native/audiod/src/server.cpp
+@@ -193,6 +193,10 @@ juce::String Server::dispatch (const juce::var& request, const void* owner)
+         // `monitor` on arm's audio entries: capture inputs a session's
+         // input windows read (live-supercollider.md §12).
+         features.add ("live-monitor");
++        // The midi_out and midi_out_close ops, `outputs` in status, and
++        // MIDI capture leaving the daemon's own outputs out (sequencer.md
++        // §2.5).
++        features.add ("midi-out");
+         ok->setProperty ("features", features);
+     }
+     else if (op == "devices")
+@@ -249,6 +253,23 @@ juce::String Server::dispatch (const juce::var& request, const void* owner)
+         if (error.isNotEmpty())
+             return jsonLine (errorResponse (id, error));
+     }
++    else if (op == "midi_out")
++    {
++        // A MIDI output's schedule (sequencer.md §2.5): opens the output,
++        // or replaces the schedule of the one open under the name.
++        auto info = player.openMidiOutput (request, owner);
++        if (info.getProperty ("error", juce::var()).isString())
++            return jsonLine (errorResponse (id, info.getProperty ("error", juce::var()).toString()));
++        if (auto* o = info.getDynamicObject())
++            for (auto& prop : o->getProperties())
++                ok->setProperty (prop.name, prop.value);
++    }
++    else if (op == "midi_out_close")
++    {
++        auto error = player.closeMidiOutput (request.getProperty ("name", juce::var()).toString());
++        if (error.isNotEmpty())
++            return jsonLine (errorResponse (id, error));
++    }
+     else if (op == "ramp")
+     {
+         auto error = player.liveRamp (request.getProperty ("track", juce::var()).toString(),
+@@ -753,9 +774,11 @@ void Server::sweepClosedConnections()
+         {
+             if ((*it)->reader.joinable())
+                 (*it)->reader.join();
+-            // An input dies with the connection that opened it: a
+-            // `field keys` killed outright never closes its own.
++            // An input or a MIDI output dies with the connection that
++            // opened it: a `field keys` or `field seq` killed outright
++            // never closes its own.
+             player.closeInputsOwnedBy (it->get());
++            player.closeMidiOutputsOwnedBy (it->get());
+             DisconnectNamedPipe (asHandle ((*it)->pipe));
+             CloseHandle (asHandle ((*it)->pipe));
+             it = connections.erase (it);
+@@ -899,9 +922,11 @@ void Server::sweepClosedConnections()
+         {
+             if ((*it)->reader.joinable())
+                 (*it)->reader.join();
+-            // An input dies with the connection that opened it: a
+-            // `field keys` killed outright never closes its own.
++            // An input or a MIDI output dies with the connection that
++            // opened it: a `field keys` or `field seq` killed outright
++            // never closes its own.
+             player.closeInputsOwnedBy (it->get());
++            player.closeMidiOutputsOwnedBy (it->get());
+             ::close ((*it)->fd);
+             it = connections.erase (it);
+         }
+diff --git a/src/audiod/client.ts b/src/audiod/client.ts
+index e8cb4e31..c59ed21c 100644
+--- a/src/audiod/client.ts
++++ b/src/audiod/client.ts
+@@ -17,6 +17,7 @@ import {
+   helloResponseSchema,
+   inputResponseSchema,
+   loadResponseSchema,
++  midiOutResponseSchema,
+   okResponseSchema,
+   PROTOCOL_VERSION,
+   recordResponseSchema,
+@@ -29,6 +30,7 @@ import {
+   type ChasedController,
+   type AudiodEvent,
+   type ClickSchedule,
++  type MidiOut,
+ } from './protocol.js';
+ 
+ // Client for the per-project field-audiod daemon (playback.md §3): connects
+@@ -339,6 +341,15 @@ export class AudiodClient extends EventEmitter {
+   click(schedule: ClickSchedule) {
+     return this.request('click', schedule, okResponseSchema);
+   }
++  // A MIDI output (protocol.ts midiOutSchema). Requires supports('midi-out').
++  // Under a name already open, it replaces the schedule and keeps the
++  // port; the output closes with this connection.
++  midiOut(output: MidiOut) {
++    return this.request('midi_out', output, midiOutResponseSchema);
++  }
++  closeMidiOut(name: string) {
++    return this.request('midi_out_close', { name }, okResponseSchema);
++  }
+   // Every transaction under .field/recording/, complete or not.
+   recordings() {
+     return this.request('recordings', {}, recordingsResponseSchema);
+diff --git a/src/audiod/midi-out.test.ts b/src/audiod/midi-out.test.ts
+new file mode 100644
+index 00000000..5b8f9cbb
+--- /dev/null
++++ b/src/audiod/midi-out.test.ts
+@@ -0,0 +1,632 @@
++import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
++import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { createInterface } from 'node:readline';
++import { promisify } from 'node:util';
++import { afterEach, beforeEach, describe, expect, it, type TestContext } from 'vitest';
++import { writeWavFloat32 } from '../audio/wav.js';
++import { createSong, createTrack } from '../commands/create.js';
++import { init } from '../commands/init.js';
++import { compileSession } from '../graph/live.js';
++import { removeTempProject } from '../testing/temp.js';
++import { AudiodClient, daemonBinary } from './client.js';
++import { midiTakeLineSchema, okResponseSchema, type MidiOut, type MidiTakeLine } from './protocol.js';
++
++// MIDI outputs (sequencer.md §2.5) against the real daemon in null-output
++// mode. The callback's selection, held notes, the clock's transport
++// messages, and a stop with messages handed over early are proven in
++// `--midi-out-selftest` against a fake clock; these tests send through
++// real virtual MIDI and read it back with `--midi-monitor` and MIDI takes.
++// The probe for a MIDI service is opening an output with a source: only
++// a Linux machine without the ALSA sequencer, and Windows, which has no
++// virtual ports, may skip.
++//
++// Sources and a destination named for this run's pid keep what
++// `--midi-monitor` reads to this run's own. A MIDI take hears every source
++// on the machine, another daemon's outputs included, so the messages also
++// keep apart. Each run sends on a channel chosen by its pid, and never on
++// channel 16, which the takes in src/commands/record-midi-daemon.test.ts
++// read. The tests that read a take send on pitches chosen by the pid, below
++// the ones the other tests send. Two runs share both 1 time in 60, and then
++// the tests that read a take can fail on each other's messages.
++
++const binary = (() => {
++  try {
++    return daemonBinary();
++  } catch {
++    return undefined;
++  }
++})();
++
++const execFileAsync = promisify(execFile);
++const RATE = 48000;
++const BAR = 96000; // 120 bpm, 4/4
++const CHANNEL = process.pid % 15;
++const ON = 0x90 | CHANNEL;
++const OFF = 0x80 | CHANNEL;
++const TAKE_PITCH = (Math.floor(process.pid / 15) % 4) * 12; // 0, 12, 24, or 36, with 12 pitches each
++const PITCH = 48;
++const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
++
++async function waitFor(predicate: () => boolean | Promise<boolean>, ms: number, what: string): Promise<void> {
++  const deadline = Date.now() + ms;
++  while (!(await predicate())) {
++    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
++    await sleep(20);
++  }
++}
++
++// Twelve silent bars, the bed a schedule plays against.
++function scaffold(root: string): void {
++  init({ dir: root, name: 'midi-out' });
++  createSong(root, 'bed');
++  createTrack(root, 'bed', 'voice');
++  writeFileSync(join(root, 'songs/bed/tracks/voice.yaml'), 'name: voice\ninputs: []\n');
++  writeFileSync(join(root, 'songs/bed/tracks/main.yaml'), 'name: main\ninputs:\n  - track: voice\n');
++  writeFileSync(
++    join(root, 'songs/bed/song.yaml'),
++    'name: bed\ntime:\n  tempo:\n    - at: 0\n      bpm: 120\n  meter:\n    - at: 0\n      numerator: 4\n      denominator: 4\nlength: [12]\n',
++  );
++}
++
++interface Line {
++  midi: number[];
++  host_ms: number;
++  timestamp_ms?: number;
++}
++
++interface Monitor {
++  child: ChildProcessWithoutNullStreams;
++  lines: Line[];
++  stderr: string;
++  ended: boolean;
++  closed: Promise<void>;
++}
++
++// Notes `length` samples long, starting at each of `starts`.
++function notes(starts: number[], length: number, first = PITCH): MidiOut['events'] {
++  const events = starts.flatMap((sample, i) => [
++    { sample, midi: [ON, first + i, 100] },
++    { sample: sample + length, midi: [OFF, first + i, 0] },
++  ]);
++  return events.sort((a, b) => a.sample - b.sample || a.midi[0]! - b.midi[0]!);
++}
++
++// The pitches a run of monitor lines leaves sounding.
++function held(lines: Line[]): Set<number> {
++  const sounding = new Set<number>();
++  for (const { midi } of lines) {
++    if (midi[0] === ON && midi[2]! > 0) sounding.add(midi[1]!);
++    else if (midi[0] === OFF || midi[0] === ON) sounding.delete(midi[1]!);
++  }
++  return sounding;
++}
++
++describe.skipIf(!binary)('MIDI outputs through the daemon', () => {
++  let root: string;
++  let client: AudiodClient;
++  const monitors: Monitor[] = [];
++  const name = (what: string) => `Field Seq Test ${process.pid} ${what}`;
++
++  beforeEach(async () => {
++    root = mkdtempSync(join(tmpdir(), 'field-midi-out-'));
++    scaffold(root);
++    client = await AudiodClient.connect(root, { nullOutput: true, idleSeconds: 60 });
++    await client.session((await compileSession(root, 'bed')).session);
++  });
++
++  afterEach(async () => {
++    delete process.env['FIELD_AUDIOD_CAPTURE_OUTPUTS'];
++    const left = monitors.splice(0);
++    for (const monitor of left) if (!monitor.ended) monitor.child.kill('SIGKILL');
++    await Promise.all(left.map((monitor) => monitor.closed));
++    try {
++      await client.quit();
++    } catch {
++      // already gone
++    }
++    client.close();
++    await removeTempProject(root);
++  });
++
++  // Prints what the source `port` sends, or with `destination`, publishes
++  // a virtual destination named `port` and prints what reaches it.
++  async function monitor(port: string, destination = false): Promise<Monitor> {
++    const child = spawn(binary!, ['--midi-monitor', port, ...(destination ? ['--destination'] : [])], { stdio: 'pipe' });
++    const watching: Monitor = {
++      child,
++      lines: [],
++      stderr: '',
++      ended: false,
++      closed: new Promise((resolve) => child.on('close', () => resolve())),
++    };
++    child.on('close', () => {
++      watching.ended = true;
++    });
++    child.stdin.on('error', () => {});
++    child.stderr.on('data', (chunk) => {
++      watching.stderr += String(chunk);
++    });
++    let ready = false;
++    createInterface({ input: child.stdout }).on('line', (text) => {
++      const line = JSON.parse(text) as Record<string, unknown>;
++      if ('ready' in line) ready = true;
++      else if ('error' in line) watching.stderr += String(line['error']);
++      else watching.lines.push(line as unknown as Line);
++    });
++    monitors.push(watching);
++    await waitFor(() => ready || watching.ended, 6000, `--midi-monitor ${port}`);
++    if (!ready) throw new Error(`--midi-monitor ${port} exited: ${watching.stderr}`);
++    return watching;
++  }
++
++  // Replaces the daemon with a new process, on the same session. A daemon
++  // that is quitting can still accept a connection and then drop it, so
++  // this waits for the process to exit.
++  async function replaceDaemon(): Promise<void> {
++    const first = client.pid!;
++    try {
++      await client.quit();
++    } catch {
++      // the daemon can close the connection before it answers
++    }
++    client.close();
++    await waitFor(
++      () => {
++        try {
++          process.kill(first, 0);
++          return false;
++        } catch {
++          return true;
++        }
++      },
++      5000,
++      'the first daemon to exit',
++    );
++    client = await AudiodClient.connect(root, { nullOutput: true, idleSeconds: 60 });
++    await client.session((await compileSession(root, 'bed')).session);
++  }
++
++  // Opens an output, or skips where the machine has no virtual MIDI. macOS
++  // can refuse a process its first MIDI client, and only a new process
++  // clears that, so a refusal there replaces the daemon, which has not
++  // published anything when `through` is `client`.
++  async function open(ctx: TestContext, output: MidiOut, through?: AudiodClient) {
++    for (let attempt = 0; ; attempt++) {
++      try {
++        return await (through ?? client).midiOut(output);
++      } catch (error) {
++        const message = String(error);
++        if (/cannot create a virtual MIDI source/.test(message)) {
++          if (process.platform === 'linux' && !existsSync('/dev/snd/seq')) {
++            const reason = `no MIDI service: this Linux machine has no ALSA sequencer at /dev/snd/seq, and midi_out said ${message}`;
++            console.warn(`skipping a MIDI output test: ${reason}`);
++            ctx.skip(reason);
++          }
++          if (process.platform === 'win32') {
++            const reason = `no virtual MIDI ports on Windows, and midi_out said ${message}`;
++            console.warn(`skipping a MIDI output test: ${reason}`);
++            ctx.skip(reason);
++          }
++          if (process.platform === 'darwin' && through === undefined && attempt < 4) {
++            await replaceDaemon();
++            continue;
++          }
++        }
++        throw error;
++      }
++    }
++  }
++
++  it('checks its selection, held notes, clock, and flush against a fake clock', async () => {
++    const { stdout } = await execFileAsync(binary!, ['--midi-out-selftest']);
++    expect(stdout.trim()).toBe('{"ok":true}');
++  });
++
++  it('leaves --midi-monitor\'s wait for a source at once on SIGTERM', { timeout: 10_000 }, async () => {
++    const child = spawn(binary!, ['--midi-monitor', name('nowhere')], { stdio: 'pipe' });
++    const closed = new Promise((resolve) => child.on('close', resolve));
++    const spawned = Date.now();
++    await sleep(300);
++    child.kill('SIGTERM');
++    await closed;
++    expect(Date.now() - spawned).toBeLessThan(2000);
++  });
++
++  it('advertises midi-out, and refuses a malformed schedule, an unknown destination, and an unknown close', async () => {
++    expect(client.supports('midi-out')).toBe(true);
++    const base = { name: 'bad', rate: RATE, lead: 0, events: [] };
++    await expect(client.request('midi_out', { ...base, source: 'A', destination: 'B' }, okResponseSchema)).rejects.toThrow(
++      'midi_out takes a source or a destination, and not both',
++    );
++    await expect(
++      client.midiOut({ ...base, source: name('bad'), events: [{ sample: 10, midi: [ON, 1, 1] }, { sample: 5, midi: [OFF, 1, 0] }] }),
++    ).rejects.toThrow('events are in time order');
++    await expect(client.midiOut({ ...base, destination: name('nowhere') })).rejects.toThrow(`no MIDI destination named ${name('nowhere')}`);
++    await expect(client.closeMidiOut('bad')).rejects.toThrow('no MIDI output named "bad"');
++    expect((await client.status()).outputs).toBeUndefined();
++  });
++
++  it(
++    'sends a schedule on time across a loop wrap, as a MIDI take in the same daemon records it, with none late',
++    { timeout: 30_000 },
++    async (ctx) => {
++      // A take leaves the daemon's own outputs out, unless this seam lets
++      // it hear them; it reaches the daemon at its spawn, so the daemon
++      // the setup started is replaced.
++      process.env['FIELD_AUDIOD_CAPTURE_OUTPUTS'] = '1';
++      await replaceDaemon();
++
++      // Short notes off the block grid, one at the loop's start and one
++      // ending just before its end, through a one-bar loop.
++      const starts = [0, 6137, 15011, 30500, 48001, 61999, 79123, 94500];
++      const events = notes(starts, 1300, TAKE_PITCH);
++      const source = name('timing');
++      await open(ctx, { name: 'seq:timing', source, rate: RATE, lead: 0, events });
++      await waitFor(
++        async () => (await client.armMidi('//songs/bed/track:voice')).sources.includes(source),
++        5000,
++        `${source} to be armed`,
++      );
++      await client.loop(0, BAR);
++      const started = await client.record();
++      await sleep(4600);
++      const stopped = await client.stop();
++      const take = stopped.take!;
++      const lines: MidiTakeLine[] = readFileSync(join(root, take.file), 'utf8')
++        .split('\n')
++        .filter((line) => line !== '')
++        .map((line) => midiTakeLineSchema.parse(JSON.parse(line)))
++        .filter((line) => events.some((e) => e.midi[0] === line.midi[0] && e.midi[1] === line.midi[1]));
++
++      const startedAt = started.started_at_samples >= 0 ? started.started_at_samples : take.started_at_samples!;
++      let afterWrap = 0;
++      for (const line of lines) {
++        const bed = (startedAt + line.at) % BAR;
++        if (startedAt + line.at >= BAR) afterWrap++;
++        const scheduled = events.filter((e) => e.midi.join() === line.midi.join());
++        const off = Math.min(...scheduled.map((e) => Math.min(Math.abs(e.sample - bed), BAR - Math.abs(e.sample - bed))));
++        expect(off, `${JSON.stringify(line.midi)} at bed sample ${bed}`).toBeLessThanOrEqual(48);
++      }
++      // Two passes and more, each with every note.
++      expect(lines.length).toBeGreaterThanOrEqual(2 * events.length);
++      expect(afterWrap).toBeGreaterThanOrEqual(events.length);
++      const [output] = (await client.status()).outputs!;
++      expect(output).toMatchObject({ name: 'seq:timing', source, late: 0, dropped: 0 });
++    },
++  );
++
++  it('sends every event of a session the daemon converts to the device rate, with no lead', { timeout: 30_000 }, async (ctx) => {
++    const rate = 44100;
++    const songYaml = join(root, 'songs/bed/song.yaml');
++    writeFileSync(songYaml, `${readFileSync(songYaml, 'utf8')}rate: ${rate}\n`);
++    await client.session((await compileSession(root, 'bed')).session);
++    const every = 1000;
++    const events = Array.from({ length: 400 }, (_, i) => ({ sample: i * every, midi: [ON, PITCH, 100] }));
++    await open(ctx, { name: 'seq:converted', source: name('converted'), rate, lead: 0, events });
++    await client.locate(0);
++    await client.play();
++    await sleep(2000);
++    const status = await client.status();
++    await client.stop();
++    expect(status.state).toBe('playing');
++    const due = Math.floor(status.sample / every) + 1;
++    expect(status.outputs![0]).toMatchObject({ dropped: 0 });
++    expect(status.outputs![0]!.sent).toBeGreaterThanOrEqual(due - 2);
++  });
++
++  it('plays through the first blocks of a file bed at the device rate, and of a play after a locate', { timeout: 30_000 }, async (ctx) => {
++    const wav = join(root, 'bed.wav');
++    writeWavFloat32(wav, RATE, [new Float32Array(10 * RATE), new Float32Array(10 * RATE)]);
++    const source = name('file');
++    const events = [
++      { sample: 0, midi: [ON, PITCH, 100] },
++      { sample: 2 * RATE, midi: [ON, PITCH + 1, 100] },
++      { sample: 8 * RATE, midi: [OFF, PITCH, 0] },
++      { sample: 8 * RATE, midi: [OFF, PITCH + 1, 0] },
++    ];
++    const pulses = Array.from({ length: 480 }, (_, i) => i * 1000);
++    await open(ctx, { name: 'seq:file', source, rate: RATE, lead: 0, events, clock: { pulses } });
++    const watching = await monitor(source);
++    await client.load(wav);
++    const transport = () => watching.lines.filter((l) => l.midi[0] !== 0xf8).map((l) => l.midi);
++
++    await client.play();
++    await sleep(400);
++    await client.stop();
++    await sleep(200);
++    expect(transport()).toEqual([[0xfa], [ON, PITCH, 100], [OFF, PITCH, 0], [0xfc]]);
++
++    const mark = watching.lines.length;
++    await client.locate(2 * RATE);
++    await client.play();
++    await sleep(400);
++    await client.stop();
++    await sleep(200);
++    // Pulse 96 is on a sixteenth, so the position is 16, and the note at
++    // the same sample starts with it.
++    expect(watching.lines.slice(mark).filter((l) => l.midi[0] !== 0xf8).map((l) => l.midi)).toEqual([
++      [0xf2, 16, 0],
++      [0xfb],
++      [ON, PITCH + 1, 100],
++      [OFF, PITCH + 1, 0],
++      [0xfc],
++    ]);
++  });
++
++  it(
++    'ends every note it started on stop, pause, locate, wrap, a replaced schedule, a close, and a dropped connection',
++    { timeout: 60_000 },
++    async (ctx) => {
++      // Notes two seconds long, one every tenth of a second: half a second
++      // in, five are sounding and none has ended on its own.
++      const starts = Array.from({ length: 20 }, (_, i) => i * 4800);
++      const events = notes(starts, 2 * RATE);
++
++      // Acts, then waits for a note-off for every note that sounded just
++      // before, and for nothing to sound after.
++      async function endsNotes(watching: Monitor, what: string, act: () => Promise<unknown>) {
++        await waitFor(() => held(watching.lines).size >= 3, 3000, `notes to sound before the ${what}`);
++        const mark = watching.lines.length;
++        const sounding = held(watching.lines);
++        await act();
++        await waitFor(
++          () => [...sounding].every((pitch) => watching.lines.slice(mark).some((l) => l.midi[0] === OFF && l.midi[1] === pitch)),
++          2000,
++          `a note-off for each of ${[...sounding].join(', ')} after the ${what}`,
++        );
++      }
++
++      const source = name('held');
++      await open(ctx, { name: 'seq:held', source, rate: RATE, lead: 0, events });
++      const watching = await monitor(source);
++
++      await client.locate(0);
++      await client.play();
++      await endsNotes(watching, 'stop', () => client.stop());
++      expect(held(watching.lines)).toEqual(new Set());
++
++      await client.play();
++      await endsNotes(watching, 'pause', () => client.pause());
++      expect(held(watching.lines)).toEqual(new Set());
++
++      // A locate ends the notes and starts none of them again: the notes
++      // under bar 9 started before it.
++      await client.stop();
++      await client.play();
++      await endsNotes(watching, 'locate', () => client.locate(8 * BAR + 24000));
++      const afterLocate = watching.lines.length;
++      await sleep(300);
++      expect(watching.lines.slice(afterLocate).filter((l) => l.midi[0] === ON)).toEqual([]);
++
++      // The wrap of a one-second loop ends every note before the loop's
++      // start begins the first one again.
++      await client.stop();
++      await client.loop(0, RATE);
++      const beforeWrap = watching.lines.length;
++      await client.play();
++      await waitFor(
++        () => watching.lines.slice(beforeWrap).filter((l) => l.midi[0] === ON && l.midi[1] === PITCH).length >= 2,
++        4000,
++        'the loop to wrap',
++      );
++      const lap = watching.lines.slice(beforeWrap);
++      const again = lap.findIndex((l, i) => i > 0 && l.midi[0] === ON && l.midi[1] === PITCH);
++      expect(held(lap.slice(0, again))).toEqual(new Set());
++      await client.stop();
++      await client.loop();
++
++      // A replaced schedule ends the old one's notes, and the new one's
++      // play from the same source.
++      await client.play();
++      await endsNotes(watching, 'replaced schedule', () =>
++        client.midiOut({ name: 'seq:held', source, rate: RATE, lead: 0, events: notes(starts, 2 * RATE, 80) }),
++      );
++      await waitFor(() => watching.lines.some((l) => l.midi[0] === ON && l.midi[1]! >= 80), 3000, 'the new schedule to play');
++
++      await endsNotes(watching, 'close', () => client.closeMidiOut('seq:held'));
++      expect(held(watching.lines)).toEqual(new Set());
++      expect((await client.status()).outputs).toBeUndefined();
++
++      // An output closes with the connection that opened it.
++      await client.stop();
++      const dropping = await AudiodClient.connect(root, { spawnIfNeeded: false });
++      const dropped = name('dropped');
++      await open(ctx, { name: 'seq:dropped', source: dropped, rate: RATE, lead: 0, events }, dropping);
++      const watchingDropped = await monitor(dropped);
++      await client.play();
++      await endsNotes(watchingDropped, 'dropped connection', async () => dropping.close());
++      await waitFor(async () => (await client.status()).outputs === undefined, 2000, 'the output to close');
++    },
++  );
++
++  it('leaves its own outputs out of a MIDI take', { timeout: 30_000 }, async (ctx) => {
++    const source = name('beside');
++    const played = TAKE_PITCH + 8;
++    await open(ctx, { name: 'seq:beside', source, rate: RATE, lead: 0, events: notes([0, 4800, 9600], 2400, TAKE_PITCH) });
++    const keys = spawn(binary!, ['--keys', name('keys')], { stdio: 'pipe' });
++    const keyLines: string[] = [];
++    createInterface({ input: keys.stdout }).on('line', (line) => keyLines.push(line));
++    keys.stdin.on('error', () => {});
++    const keysClosed = new Promise((resolve) => keys.on('close', resolve));
++    try {
++      await waitFor(() => keyLines.some((line) => line.includes('"ready"')), 5000, '--keys to publish');
++      // Until the helper's source reaches the daemon's list, it may have
++      // nothing to arm but its own output, which it leaves out.
++      let sources: string[] = [];
++      await waitFor(
++        async () => {
++          try {
++            sources = (await client.armMidi('//songs/bed/track:voice')).sources;
++          } catch (error) {
++            // JUCE lists a source that vanishes during the listing as <error>.
++            if (!/no MIDI sources to record from|cannot open any MIDI source/.test(String(error))) throw error;
++          }
++          return sources.includes(name('keys'));
++        },
++        5000,
++        `${name('keys')} to be armed`,
++      );
++      expect(sources).not.toContain(source);
++      await client.locate(0);
++      const started = await client.record();
++      await sleep(150);
++      keys.stdin.write(`${JSON.stringify({ midi: [ON, played, 90] })}\n${JSON.stringify({ midi: [OFF, played, 0] })}\n`);
++      await sleep(400);
++      await client.stop();
++      const lines = readFileSync(join(root, started.file), 'utf8')
++        .split('\n')
++        .filter((line) => line !== '')
++        .map((line) => midiTakeLineSchema.parse(JSON.parse(line)))
++        .filter((line) => (line.midi[0]! & 0x0f) === CHANNEL && line.midi[1]! >= TAKE_PITCH && line.midi[1]! < TAKE_PITCH + 12);
++      expect(lines.map((line) => line.midi)).toEqual([
++        [ON, played, 90],
++        [OFF, played, 0],
++      ]);
++      expect((await client.status()).outputs![0]!.sent).toBeGreaterThanOrEqual(6);
++    } finally {
++      keys.kill('SIGKILL');
++      await keysClosed;
++    }
++  });
++
++  it.skipIf(process.platform !== 'darwin')(
++    "stamps a destination's messages with the time its source sends them, handing each to CoreMIDI early, across a wrap",
++    { timeout: 30_000 },
++    async (ctx) => {
++      // A loop of 94 blocks keeps every block on the 512-frame grid, and
++      // each event sits mid-block, so it is queued well before its time.
++      const loop = 94 * 512;
++      const starts = [256, 4864, 10496, 20224, 30976, 40192, 47360];
++      const events = notes(starts, 512);
++      const destination = name('destination');
++      const source = name('source');
++      await open(ctx, { name: 'seq:source', source, rate: RATE, lead: 0, events });
++      const atDestination = await monitor(destination, true);
++      await waitFor(
++        async () => {
++          try {
++            await client.midiOut({ name: 'seq:destination', destination, rate: RATE, lead: 0, events });
++            return true;
++          } catch (error) {
++            if (!/no MIDI destination named/.test(String(error))) throw error;
++            return false;
++          }
++        },
++        5000,
++        `${destination} to be listed`,
++      );
++      const fromSource = await monitor(source);
++      await client.loop(0, loop);
++      await client.locate(0);
++      await client.play();
++      await waitFor(() => fromSource.lines.length >= 3 * events.length, 6000, 'three passes from the source');
++      await client.stop();
++      await sleep(200);
++
++      const passes = 3 * events.length;
++      const sent = fromSource.lines.slice(0, passes);
++      const stamped = atDestination.lines.slice(0, passes);
++      expect(stamped.map((l) => l.midi)).toEqual(sent.map((l) => l.midi));
++      for (let i = 0; i < passes; i++) {
++        expect(Math.abs(stamped[i]!.timestamp_ms! - sent[i]!.host_ms), `message ${i} ${JSON.stringify(sent[i]!.midi)}`).toBeLessThan(1);
++      }
++      // A stop with nothing still scheduled sends the destination no
++      // flush, which reaches it as a System Reset.
++      expect(atDestination.lines.some((l) => l.midi[0] === 0xff)).toBe(false);
++      // Every event of the passes compared went to CoreMIDI ahead of its
++      // time; the stop's note-offs went at once.
++      const toDestination = (await client.status()).outputs!.find((o) => o.name === 'seq:destination')!;
++      expect(toDestination).toMatchObject({ destination, late: 0, dropped: 0 });
++      expect(toDestination.early).toBeGreaterThanOrEqual(passes);
++    },
++  );
++
++  it(
++    "sends MIDI clock only while playing, with Start, Stop, Song Position Pointer, and Continue at the transport's changes",
++    { timeout: 30_000 },
++    async (ctx) => {
++      const pulses = Array.from({ length: 12 * 96 }, (_, i) => i * 1000);
++      const source = name('clock');
++      await open(ctx, { name: 'seq:clock', source, rate: RATE, lead: 0, events: [], clock: { pulses } });
++      const watching = await monitor(source);
++      const settle = () => sleep(400);
++
++      await client.locate(0);
++      await client.play();
++      await settle();
++      await client.stop();
++      await settle();
++      await client.locate(2 * BAR); // bar 3
++      await client.play();
++      await settle();
++      await client.locate(8 * BAR + 24000); // beat 2 of bar 9
++      await settle();
++      await client.loop(8 * BAR, 9 * BAR); // wraps from bar 10 to bar 9
++      await waitFor(
++        () => watching.lines.filter((l) => l.midi[0] === 0xfc).length >= 3,
++        4000,
++        'the wrap',
++      );
++      await settle();
++      await client.pause();
++      await settle();
++      await client.stop();
++      await client.loop();
++      await client.locate(193500); // between sixteenths
++      await client.play();
++      await settle();
++      await client.stop();
++      await settle();
++
++      const transport = watching.lines.filter((l) => l.midi[0] !== 0xf8);
++      expect(transport.map((l) => l.midi)).toEqual([
++        [0xfa], // play from the top: Start
++        [0xfc], // stop
++        [0xf2, 32, 0], // play from bar 3
++        [0xfb],
++        [0xfc], // locate to beat 2 of bar 9 while playing
++        [0xf2, 4, 1], // 132
++        [0xfb],
++        [0xfc], // the wrap to bar 9
++        [0xf2, 0, 1], // 128
++        [0xfb],
++        [0xfc], // pause
++        [0xf2, 33, 0], // play from pulse 193.5: the next sixteenth is 33
++        [0xfb],
++        [0xfc], // stop
++      ]);
++
++      // No pulse between a Stop and the Start or Continue after it, and
++      // after each Continue the next pulse is 6 times the position: at
++      // once on a sixteenth, and 4500 samples on from pulse 193.5.
++      let stopped = false;
++      const firstPulseAfter: number[] = [];
++      let resumedAt: number | undefined;
++      for (const line of watching.lines) {
++        if (line.midi[0] === 0xfc) stopped = true;
++        else if (line.midi[0] === 0xfa || line.midi[0] === 0xfb) {
++          stopped = false;
++          resumedAt = line.host_ms;
++        } else if (line.midi[0] === 0xf8) {
++          expect(stopped, `a pulse at ${line.host_ms} while stopped`).toBe(false);
++          if (resumedAt !== undefined) firstPulseAfter.push(line.host_ms - resumedAt);
++          resumedAt = undefined;
++        }
++      }
++      expect(firstPulseAfter).toHaveLength(5);
++      for (const gap of firstPulseAfter.slice(0, 4)) expect(gap).toBeLessThan(5);
++      expect(firstPulseAfter[4]).toBeGreaterThan((4500 / RATE) * 1000 - 5);
++      expect(firstPulseAfter[4]).toBeLessThan((4500 / RATE) * 1000 + 15);
++
++      // 48 pulses a second while it plays.
++      const spacing = watching.lines
++        .filter((l) => l.midi[0] === 0xf8)
++        .map((l, i, all) => (i > 0 ? l.host_ms - all[i - 1]!.host_ms : NaN))
++        .filter((gap) => gap > 0 && gap < 100)
++        .sort((a, b) => a - b);
++      expect(spacing[Math.floor(spacing.length / 2)]).toBeCloseTo(1000 / 48, 0);
++    },
++  );
++});
+diff --git a/src/audiod/protocol.ts b/src/audiod/protocol.ts
+index 8275d590..cee8beb8 100644
+--- a/src/audiod/protocol.ts
++++ b/src/audiod/protocol.ts
+@@ -187,6 +187,56 @@ export const clickScheduleSchema = z.strictObject({
+ });
+ export type ClickSchedule = z.infer<typeof clickScheduleSchema>;
+ 
++// A MIDI output (sequencer.md §2.5, daemon feature "midi-out"): MIDI
++// messages on the bed's timeline at `rate`, as the click's ticks are,
++// which the daemon sends on time from a virtual `source` it publishes or
++// to an existing `destination` port. Events are in time order, and at one
++// sample note-offs come first, then controller changes and bends, then
++// note-ons. `lead` sends each event that many samples early, and
++// `lead_input` adds the reader margin of the input it names. `clock`
++// adds MIDI clock pulses, with the transport's Start, Stop, Song Position
++// Pointer, and Continue around them. A `midi_out` under a name already
++// open replaces the schedule and keeps the port.
++export const midiOutEventSchema = z.strictObject({
++  sample: z.number().int().min(0),
++  midi: z.array(z.number().int().min(0).max(255)).min(1).max(3),
++});
++export const midiClockSchema = z.strictObject({ pulses: z.array(z.number().int().min(0)) });
++const midiOutFields = {
++  name: z.string().min(1),
++  rate: z.number().positive(),
++  lead: z.number().int().min(0),
++  lead_input: z.string().min(1).optional(),
++  events: z.array(midiOutEventSchema),
++  clock: midiClockSchema.optional(),
++};
++export const midiOutSchema = z.union([
++  z.strictObject({ ...midiOutFields, source: z.string().min(1) }),
++  z.strictObject({ ...midiOutFields, destination: z.string().min(1) }),
++]);
++export type MidiOut = z.infer<typeof midiOutSchema>;
++
++export const midiOutResponseSchema = z.object({
++  ok: z.literal(true),
++  name: z.string(),
++  events: z.number().int(),
++  pulses: z.number().int().optional(), // with a clock
++});
++
++// An open MIDI output in status: the messages it sent, those sent more
++// than a millisecond after their time, and those its queue had no room
++// for. A destination on macOS also counts as `early` the messages handed
++// to CoreMIDI ahead of their time.
++export const outputStatusSchema = z.object({
++  name: z.string(),
++  source: z.string().optional(),
++  destination: z.string().optional(),
++  sent: z.number().int(),
++  late: z.number().int(),
++  early: z.number().int().optional(),
++  dropped: z.number().int(),
++});
++
+ // A take's manifest (capture.cpp writeManifest): the transaction's
+ // facts, plus the frame count once it is complete. `recordings` lists
+ // these, `stop` and `pause` return the one they finalized, `recover`
+@@ -356,6 +406,7 @@ export const statusResponseSchema = z.object({
+   loop_from: z.number().int().optional(),
+   loop_to: z.number().int().optional(),
+   inputs: z.array(inputStatusSchema).optional(), // open live inputs (daemon feature "live-input")
++  outputs: z.array(outputStatusSchema).optional(), // open MIDI outputs (daemon feature "midi-out")
+ });
+ 
+ export const okResponseSchema = z.object({ ok: z.literal(true) });
+diff --git a/src/keys/helper-native.test.ts b/src/keys/helper-native.test.ts
+index f6356f17..aa2cb9a1 100644
+--- a/src/keys/helper-native.test.ts
++++ b/src/keys/helper-native.test.ts
+@@ -164,8 +164,11 @@ describe.skipIf(!binary)('field-audiod --keys and --midi-monitor (native round t
+       expect(await lineAt(monitor, 0)).toEqual({ ready: true, name: base });
+ 
+       keys.child.stdin.write('{"midi":[144,60,100]}\n\n  \n{"midi":[128,60,0]}\n');
+-      expect(await lineAt(monitor, 1)).toEqual({ midi: [144, 60, 100] });
+-      expect(await lineAt(monitor, 2)).toEqual({ midi: [128, 60, 0] });
++      const on = await lineAt(monitor, 1);
++      const off = await lineAt(monitor, 2);
++      expect(on).toEqual({ midi: [144, 60, 100], host_ms: expect.any(Number) });
++      expect(off).toEqual({ midi: [128, 60, 0], host_ms: expect.any(Number) });
++      expect(off['host_ms']).toBeGreaterThanOrEqual(on['host_ms'] as number);
+ 
+       keys.child.stdin.end();
+       expect(await keys.closed).toBe(0);
