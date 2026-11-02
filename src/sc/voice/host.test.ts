@@ -158,6 +158,11 @@ describe('the voice host protocol', () => {
     expect(parseHostLine('@field {"voice_on":60,"voice":1}')).toEqual({ voice_on: 60, voice: 1 });
     expect(parseHostLine('Booting server on 127.0.0.1')).toBeUndefined();
     expect(parseHostLine('@field {not json')).toBeUndefined();
+    // What real sclang prints when macOS refuses its MIDI client: the
+    // primitive ends no line, and the message has a newline in it.
+    expect(
+      parseHostLine('Could not create MIDI client. error: @field {"error":"the MIDI client did not start: Primitive \'_InitMIDI\' failed.\\nFailed."}'),
+    ).toEqual({ error: "the MIDI client did not start: Primitive '_InitMIDI' failed.\nFailed." });
     expect(parseHostLine('@field {"surprise":1}')).toBeUndefined();
   });
 

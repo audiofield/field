@@ -163,6 +163,8 @@ describe.skipIf(!binary || process.platform === 'win32')('field sc voice', () =>
 // With no project there is no daemon to ask for the system output, and
 // scsynth given no device opens the microphone (keyboard-instrument.md
 // §10.1), so the voice names what `field-audiod --keys` reports.
+const REFUSED_LINE = `@field ${JSON.stringify({ error: "the MIDI client did not start: Primitive '_InitMIDI' failed.\nFailed." })}`;
+
 const HELPER_STUB = `#!/usr/bin/env node
 const { writeFileSync } = require('node:fs');
 console.log(JSON.stringify({ ready: true, name: process.argv[3], output: 'Stub Out' }));
@@ -227,7 +229,8 @@ const starts = ${JSON.stringify(join(dir, 'host-starts'))};
 const before = existsSync(starts) ? readFileSync(starts, 'utf8').length : 0;
 appendFileSync(starts, '.');
 if (before < ${refusals}) {
-  console.log('@field {"error":"the MIDI client did not start: Primitive _InitMIDI failed"}');
+  process.stdout.write('Could not create MIDI client. error: ');
+  console.log(${JSON.stringify(REFUSED_LINE)});
   process.exit(1);
 }
 ${STUB.replace('#!/usr/bin/env node\n', '')}`;
@@ -262,8 +265,21 @@ ${STUB.replace('#!/usr/bin/env node\n', '')}`;
 
   it('stops with the reason when macOS refuses a new host too', { timeout: 30_000 }, async () => {
     writeFileSync(join(dir, 'sclang'), refusedHost(2));
-    await expect(voiceOn('darwin')).rejects.toThrow('the MIDI client did not start');
+    const error: Error = await voiceOn('darwin').then(
+      () => new Error('it started'),
+      (reason: Error) => reason,
+    );
+    expect(error.message).toBe("the voice host did not start: the MIDI client did not start: Primitive '_InitMIDI' failed.\nFailed.");
     expect(readFileSync(join(dir, 'host-starts'), 'utf8')).toBe('..');
+  });
+
+  it('shows no raw protocol when the host dies on a status line it cannot parse', { timeout: 30_000 }, async () => {
+    writeFileSync(join(dir, 'sclang'), `#!/usr/bin/env node\nconsole.log('Could not create MIDI client. error: @field {not json');\nprocess.exit(1);\n`);
+    const error: Error = await voiceOn('linux').then(
+      () => new Error('it started'),
+      (reason: Error) => reason,
+    );
+    expect(error.message).toBe('the voice host did not start: sclang exited with code 1 before the voice host was ready');
   });
 
   it('does not start the host again off macOS', { timeout: 30_000 }, async () => {

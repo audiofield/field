@@ -86,6 +86,8 @@ const hostLine = z.union([
   z.object({ reload_error: z.string() }),
 ]);
 
+const HOST_LINE = '@field ';
+
 export type VoiceHostStatus =
   | { state: 'live'; device: string; sampleRate: number }
   | { state: 'restarting' }
@@ -97,10 +99,14 @@ export type VoiceHostStatus =
   | { state: 'reloaded' }
   | { state: 'reload-failed'; reason: string };
 
+// A primitive can fail without ending its line, as `_InitMIDI` does with
+// `Could not create MIDI client. error: `, so a status can start partway
+// through a line.
 export function parseHostLine(line: string): z.infer<typeof hostLine> | undefined {
-  if (!line.startsWith('@field ')) return undefined;
+  const at = line.indexOf(HOST_LINE);
+  if (at < 0) return undefined;
   try {
-    return hostLine.parse(JSON.parse(line.slice('@field '.length)));
+    return hostLine.parse(JSON.parse(line.slice(at + HOST_LINE.length)));
   } catch {
     return undefined;
   }
@@ -164,7 +170,7 @@ export class VoiceHost {
         const banner = tail.findLastIndex((l) => l.includes('*** Welcome to SuperCollider'));
         const detail = tail
           .slice(banner + 1)
-          .filter((l) => !l.startsWith('@field ') && l.trim() !== '')
+          .filter((l) => !l.includes(HOST_LINE) && l.trim() !== '')
           .slice(-OUTPUT_TAIL)
           .join('\n');
         const cause = lastError ?? `sclang exited with code ${code} before the voice host was ready`;

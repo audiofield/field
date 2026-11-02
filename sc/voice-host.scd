@@ -82,6 +82,9 @@ stopServer = {
 // exit does not stop the code that called it, so a failure is the last
 // thing its branch does.
 fail = { |message|
+	// A primitive can fail without ending its line, as _InitMIDI does, and a
+	// status starts its own.
+	"".postln;
 	emit.(["error", message]);
 	stopServer.();
 	1.exit;
@@ -262,8 +265,8 @@ run = {
 
 // A voice hears the sources there when the host starts, so a command
 // publishes its own, as `field keys` publishes Field Keys, first.
-// macOS can refuse a new process its MIDI client, which throws here, and
-// an error nothing catches leaves sclang running with no host.
+// An error nothing catches leaves sclang running with no host. macOS can
+// refuse a new process its MIDI client, which throws here.
 midiProblem = try { MIDIClient.init(verbose: false); nil } { |error| "the MIDI client did not start: " ++ error.errorString.replace("ERROR: ", "") };
 if (midiProblem.notNil) {
 	fail.(midiProblem);
